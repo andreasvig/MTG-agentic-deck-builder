@@ -1,15 +1,20 @@
 import { describe, expect, it } from "vitest";
 
+import type { CardSearchResult } from "./card";
+import type { DeckCardEntry, DeckSection } from "./deck";
 import {
+  COMMAND_ZONE_GROUP_ID,
+  createDeckLibrary,
   createEmptyDeck,
   getColorIdentityWarnings,
   getCommanderColorIdentity,
+  groupIdForEntry,
   isWithinCommanderColorIdentity,
   parseStoredDeck,
-  placementForCategory,
+  parseStoredDeckLibrary,
+  placementForGroup,
+  UNASSIGNED_GROUP_ID,
 } from "./deck";
-import type { DeckCardEntry, DeckSection } from "./deck";
-import type { CardSearchResult } from "./card";
 import { counterspell, ghalta, solRing } from "../test/fixtures";
 
 describe("deck domain", () => {
@@ -21,19 +26,80 @@ describe("deck domain", () => {
     expect(parseStoredDeck('{"name":"Incomplete"}', fallback)).toBe(fallback);
   });
 
-  it("maps editor categories to the correct deck sections", () => {
-    expect(placementForCategory("command_zone")).toEqual({
-      section: "command_zone",
-      categories: ["command_zone"],
-    });
-    expect(placementForCategory("creatures")).toEqual({
+  it("migrates fixed categories and maybeboard cards to Not assigned", () => {
+    const legacy = createEmptyDeck(new Date("2026-01-01T00:00:00Z"));
+    const legacyValue = {
+      ...legacy,
+      custom_groups: undefined,
+      cards: [
+        { ...makeEntry(ghalta, "command_zone"), categories: ["command_zone"] },
+        { ...makeEntry(solRing, "mainboard"), categories: ["other_spells"] },
+        {
+          ...makeEntry(counterspell, "mainboard"),
+          section: "maybeboard",
+          categories: ["maybeboard"],
+        },
+      ],
+    };
+
+    const migrated = parseStoredDeck(JSON.stringify(legacyValue));
+
+    expect(migrated.custom_groups).toEqual([]);
+    expect(migrated.cards[0]?.categories).toEqual([COMMAND_ZONE_GROUP_ID]);
+    expect(migrated.cards[1]?.categories).toEqual([UNASSIGNED_GROUP_ID]);
+    expect(migrated.cards[2]).toMatchObject({
       section: "mainboard",
-      categories: ["creatures"],
+      categories: [UNASSIGNED_GROUP_ID],
     });
-    expect(placementForCategory("maybeboard")).toEqual({
-      section: "maybeboard",
-      categories: ["maybeboard"],
+  });
+
+  it("maps command-zone and custom-group placements", () => {
+    expect(placementForGroup(COMMAND_ZONE_GROUP_ID)).toEqual({
+      section: "command_zone",
+      categories: [COMMAND_ZONE_GROUP_ID],
     });
+    expect(placementForGroup(UNASSIGNED_GROUP_ID)).toEqual({
+      section: "mainboard",
+      categories: [UNASSIGNED_GROUP_ID],
+    });
+    expect(placementForGroup("group-ramp")).toEqual({
+      section: "mainboard",
+      categories: ["group-ramp"],
+    });
+  });
+
+  it("parses a persisted deck library and repairs a missing active id", () => {
+    const first = createEmptyDeck(
+      new Date("2026-01-01T00:00:00Z"),
+      "First",
+    );
+    const second = createEmptyDeck(
+      new Date("2026-01-02T00:00:00Z"),
+      "Second",
+    );
+    second.id = "second";
+    const fallback = createDeckLibrary(first);
+
+    const parsed = parseStoredDeckLibrary(
+      JSON.stringify({
+        active_deck_id: "missing",
+        decks: [first, second],
+      }),
+      fallback,
+    );
+
+    expect(parsed.active_deck_id).toBe(first.id);
+    expect(parsed.decks.map((deck) => deck.name)).toEqual(["First", "Second"]);
+  });
+
+  it("resolves only persisted custom groups for mainboard cards", () => {
+    const entry = makeEntry(solRing, "mainboard");
+    entry.categories = ["group-ramp"];
+
+    expect(
+      groupIdForEntry(entry, [{ id: "group-ramp", name: "Ramp" }]),
+    ).toBe("group-ramp");
+    expect(groupIdForEntry(entry, [])).toBe(UNASSIGNED_GROUP_ID);
   });
 
   it("validates cards against the union of command-zone color identities", () => {
@@ -92,6 +158,8 @@ function makeEntry(
     quantity: 1,
     section,
     categories:
-      section === "command_zone" ? ["command_zone"] : ["other_spells"],
+      section === "command_zone"
+        ? [COMMAND_ZONE_GROUP_ID]
+        : [UNASSIGNED_GROUP_ID],
   };
 }

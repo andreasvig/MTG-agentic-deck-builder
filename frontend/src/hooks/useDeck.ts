@@ -2,13 +2,19 @@ import { useCallback, useEffect, useMemo, useReducer } from "react";
 
 import type { CardSearchResult } from "../domain/card";
 import { getCardPrice, isBasicLand } from "../domain/card";
-import type { Deck, DeckCategory, DeckCardEntry } from "../domain/deck";
+import type { Deck, DeckCardEntry, DeckLibrary } from "../domain/deck";
 import {
+  COMMAND_ZONE_GROUP_ID,
+  createDeckLibrary,
+  createEmptyDeck,
+  DECK_LIBRARY_STORAGE_KEY,
   DECK_STORAGE_KEY,
   getColorIdentityWarnings,
   getCommanderColorIdentity,
   parseStoredDeck,
-  placementForCategory,
+  parseStoredDeckLibrary,
+  placementForGroup,
+  UNASSIGNED_GROUP_ID,
 } from "../domain/deck";
 
 const MAX_UNDO_STEPS = 30;
@@ -19,8 +25,8 @@ interface DeckMutationResult {
 }
 
 interface DeckState {
-  deck: Deck;
-  history: Deck[];
+  library: DeckLibrary;
+  historyByDeck: Record<string, Deck[]>;
   announcement: string;
 }
 
@@ -29,20 +35,25 @@ type DeckAction =
       type: "mutate";
       mutation: (current: Deck) => DeckMutationResult | null;
     }
-  | { type: "undo" };
+  | { type: "undo" }
+  | { type: "create_deck" }
+  | { type: "select_deck"; deckId: string };
 
 export function useDeck() {
   const [state, dispatch] = useReducer(deckReducer, undefined, createInitialState);
-  const { deck, history, announcement } = state;
+  const deck = activeDeck(state.library);
+  const history = state.historyByDeck[deck.id] ?? [];
 
   useEffect(() => {
     try {
-      const storage = getLocalStorage();
-      storage?.setItem(DECK_STORAGE_KEY, JSON.stringify(deck));
+      getLocalStorage()?.setItem(
+        DECK_LIBRARY_STORAGE_KEY,
+        JSON.stringify(state.library),
+      );
     } catch {
-      // The deck remains usable when storage is disabled or full.
+      // The library remains usable when storage is disabled or full.
     }
-  }, [deck]);
+  }, [state.library]);
 
   const mutate = useCallback(
     (mutation: (current: Deck) => DeckMutationResult | null) => {
@@ -52,8 +63,8 @@ export function useDeck() {
   );
 
   const addCard = useCallback(
-    (card: CardSearchResult, target?: DeckCategory, quantity = 1) => {
-      const category = target ?? suggestedCategory(card);
+    (card: CardSearchResult, targetGroupId?: string, quantity = 1) => {
+      const groupId = targetGroupId ?? UNASSIGNED_GROUP_ID;
       mutate((current) => {
         const existingIndex = current.cards.findIndex(
           (entry) => entry.card.scryfall_id === card.scryfall_id,
@@ -72,7 +83,7 @@ export function useDeck() {
           };
         }
 
-        const placement = placementForCategory(category);
+        const placement = placementForGroup(groupId);
         return {
           deck: {
             ...current,
@@ -90,7 +101,7 @@ export function useDeck() {
               },
             ],
           },
-          announcement: `${card.name} added to ${category.replaceAll("_", " ")}.`,
+          announcement: `${card.name} added to the deck.`,
         };
       });
     },
@@ -142,49 +153,107 @@ export function useDeck() {
   );
 
   const moveCard = useCallback(
-    (scryfallId: string, category: DeckCategory) => {
+    (scryfallId: string, groupId: string) => {
       mutate((current) => {
         const entry = current.cards.find(
           (candidate) => candidate.card.scryfall_id === scryfallId,
         );
-        if (!entry) {
+        const validGroup =
+          groupId === COMMAND_ZONE_GROUP_ID ||
+          groupId === UNASSIGNED_GROUP_ID ||
+          current.custom_groups.some((group) => group.id === groupId);
+        if (!entry || !validGroup) {
           return null;
         }
-        const placement = placementForCategory(category);
         return {
           deck: {
             ...current,
             cards: current.cards.map((candidate) =>
               candidate.card.scryfall_id === scryfallId
-                ? { ...candidate, ...placement }
+                ? { ...candidate, ...placementForGroup(groupId) }
                 : candidate,
             ),
           },
-          announcement: `${entry.card.name} moved to ${category.replaceAll("_", " ")}.`,
+          announcement: `${entry.card.name} moved to a custom group.`,
         };
       });
     },
     [mutate],
   );
 
+  const addCustomGroup = useCallback(
+    (name: string) => {
+      const normalizedName = name.trim();
+      if (!normalizedName) {
+        return;
+      }
+      const groupId = createLocalId("group");
+      mutate((current) => {
+        if (
+          current.custom_groups.some(
+            (group) =>
+              group.name.toLocaleLowerCase() ===
+              normalizedName.toLocaleLowerCase(),
+          )
+        ) {
+          return null;
+        }
+        return {
+          deck: {
+            ...current,
+            custom_groups: [
+              ...current.custom_groups,
+              { id: groupId, name: normalizedName },
+            ],
+          },
+          announcement: `${normalizedName} group created.`,
+        };
+      });
+    },
+    [mutate],
+  );
+
+  const renameDeck = useCallback(
+    (name: string) => {
+      const normalizedName = name.trim();
+      if (!normalizedName) {
+        return;
+      }
+      mutate((current) =>
+        current.name === normalizedName
+          ? null
+          : {
+              deck: { ...current, name: normalizedName },
+              announcement: `Deck renamed to ${normalizedName}.`,
+            },
+      );
+    },
+    [mutate],
+  );
+
+  const createDeck = useCallback(() => {
+    dispatch({ type: "create_deck" });
+  }, []);
+
+  const selectDeck = useCallback((deckId: string) => {
+    dispatch({ type: "select_deck", deckId });
+  }, []);
+
   const undo = useCallback(() => {
     dispatch({ type: "undo" });
   }, []);
 
   const statistics = useMemo(() => {
-    const activeEntries = deck.cards.filter(
-      (entry) => entry.section !== "maybeboard",
-    );
-    const cardCount = activeEntries.reduce(
+    const cardCount = deck.cards.reduce(
       (total, entry) => total + entry.quantity,
       0,
     );
-    const price = activeEntries.reduce(
+    const price = deck.cards.reduce(
       (total, entry) =>
         total + getCardPrice(entry.card.details as CardSearchResult) * entry.quantity,
       0,
     );
-    const manaCards = activeEntries.filter(
+    const manaCards = deck.cards.filter(
       (entry) =>
         entry.section !== "command_zone" &&
         entry.card.details &&
@@ -199,10 +268,10 @@ export function useDeck() {
       (total, entry) => total + entry.quantity,
       0,
     );
-    const commanderCount = activeEntries
+    const commanderCount = deck.cards
       .filter((entry) => entry.section === "command_zone")
       .reduce((total, entry) => total + entry.quantity, 0);
-    const singletonWarnings = getSingletonWarnings(activeEntries);
+    const singletonWarnings = getSingletonWarnings(deck.cards);
     const colorIdentityWarnings = getColorIdentityWarnings(deck.cards);
     const commanderColorIdentity = getCommanderColorIdentity(deck.cards);
     return {
@@ -224,60 +293,141 @@ export function useDeck() {
 
   return {
     deck,
-    announcement,
+    decks: state.library.decks,
+    announcement: state.announcement,
     canUndo: history.length > 0,
     statistics,
     addCard,
     setQuantity,
     removeCard,
     moveCard,
+    addCustomGroup,
+    renameDeck,
+    createDeck,
+    selectDeck,
     undo,
   };
 }
 
 function createInitialState(): DeckState {
-  let storedValue: string | null = null;
+  let storedLibrary: string | null = null;
+  let legacyDeck: string | null = null;
   try {
-    storedValue = getLocalStorage()?.getItem(DECK_STORAGE_KEY) ?? null;
+    const storage = getLocalStorage();
+    storedLibrary = storage?.getItem(DECK_LIBRARY_STORAGE_KEY) ?? null;
+    legacyDeck = storage?.getItem(DECK_STORAGE_KEY) ?? null;
   } catch {
-    // Treat blocked or malformed browser storage as an empty local deck.
+    // Treat blocked or malformed browser storage as an empty library.
   }
 
+  const migrationFallback = legacyDeck
+    ? createDeckLibrary(parseStoredDeck(legacyDeck))
+    : createDeckLibrary();
   return {
-    deck: parseStoredDeck(storedValue),
-    history: [],
+    library: parseStoredDeckLibrary(storedLibrary, migrationFallback),
+    historyByDeck: {},
     announcement: "Deck ready.",
   };
 }
 
 function deckReducer(state: DeckState, action: DeckAction): DeckState {
+  const current = activeDeck(state.library);
+
+  if (action.type === "select_deck") {
+    if (!state.library.decks.some((deck) => deck.id === action.deckId)) {
+      return state;
+    }
+    return {
+      ...state,
+      library: { ...state.library, active_deck_id: action.deckId },
+      announcement: "Deck selected.",
+    };
+  }
+
+  if (action.type === "create_deck") {
+    const deck = createEmptyDeck(new Date(), nextDeckName(state.library.decks));
+    return {
+      ...state,
+      library: {
+        active_deck_id: deck.id,
+        decks: [...state.library.decks, deck],
+      },
+      announcement: `${deck.name} created.`,
+    };
+  }
+
   if (action.type === "undo") {
-    const previous = state.history.at(-1);
+    const history = state.historyByDeck[current.id] ?? [];
+    const previous = history.at(-1);
     if (!previous) {
       return { ...state, announcement: "Nothing to undo." };
     }
     return {
-      deck: previous,
-      history: state.history.slice(0, -1),
+      library: replaceDeck(state.library, previous),
+      historyByDeck: {
+        ...state.historyByDeck,
+        [current.id]: history.slice(0, -1),
+      },
       announcement: "Last deck change undone.",
     };
   }
 
-  const result = action.mutation(state.deck);
+  const result = action.mutation(current);
   if (!result) {
     return state;
   }
+  const updatedDeck = {
+    ...result.deck,
+    updated_at: new Date().toISOString(),
+  };
+  const history = state.historyByDeck[current.id] ?? [];
   return {
-    deck: {
-      ...result.deck,
-      updated_at: new Date().toISOString(),
+    library: replaceDeck(state.library, updatedDeck),
+    historyByDeck: {
+      ...state.historyByDeck,
+      [current.id]: [
+        ...history.slice(-(MAX_UNDO_STEPS - 1)),
+        current,
+      ],
     },
-    history: [
-      ...state.history.slice(-(MAX_UNDO_STEPS - 1)),
-      state.deck,
-    ],
     announcement: result.announcement,
   };
+}
+
+function activeDeck(library: DeckLibrary): Deck {
+  return (
+    library.decks.find((deck) => deck.id === library.active_deck_id) ??
+    library.decks[0]!
+  );
+}
+
+function replaceDeck(library: DeckLibrary, replacement: Deck): DeckLibrary {
+  return {
+    ...library,
+    decks: library.decks.map((deck) =>
+      deck.id === replacement.id ? replacement : deck,
+    ),
+  };
+}
+
+function nextDeckName(decks: Deck[]): string {
+  const base = "Untitled Commander";
+  if (!decks.some((deck) => deck.name === base)) {
+    return base;
+  }
+  let suffix = 2;
+  while (decks.some((deck) => deck.name === `${base} ${suffix}`)) {
+    suffix += 1;
+  }
+  return `${base} ${suffix}`;
+}
+
+function createLocalId(prefix: string): string {
+  const suffix =
+    typeof crypto !== "undefined" && "randomUUID" in crypto
+      ? crypto.randomUUID()
+      : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  return `${prefix}-${suffix}`;
 }
 
 function getLocalStorage(): Storage | null {
@@ -289,16 +439,6 @@ function getLocalStorage(): Storage | null {
     return null;
   }
   return window.localStorage;
-}
-
-function suggestedCategory(card: CardSearchResult): DeckCategory {
-  if (card.type_line.includes("Land")) {
-    return "lands";
-  }
-  if (card.type_line.includes("Creature")) {
-    return "creatures";
-  }
-  return "other_spells";
 }
 
 function getSingletonWarnings(entries: DeckCardEntry[]): Set<string> {

@@ -1,13 +1,21 @@
 import {
   AlertTriangle,
+  Check,
   CirclePlus,
   Minus,
   MoreHorizontal,
   Plus,
   Search,
   Trash2,
+  X,
 } from "lucide-react";
-import { useMemo } from "react";
+import {
+  type FormEvent,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 
 import type { CardSearchResult } from "../domain/card";
 import {
@@ -15,11 +23,12 @@ import {
   getCardPrice,
   primaryCardType,
 } from "../domain/card";
-import type { DeckCardEntry, DeckCategory } from "../domain/deck";
+import type { DeckCardEntry, DeckCustomGroup } from "../domain/deck";
 import {
-  categoryForEntry,
-  categoryLabels,
-  categoryOrder,
+  COMMAND_ZONE_GROUP_ID,
+  groupIdForEntry,
+  groupName,
+  UNASSIGNED_GROUP_ID,
 } from "../domain/deck";
 import { CardArt } from "./CardArt";
 
@@ -29,13 +38,15 @@ export type SortMode = "alphabet" | "mana" | "price";
 
 interface DeckBoardProps {
   entries: DeckCardEntry[];
+  customGroups: DeckCustomGroup[];
   view: ViewMode;
   group: GroupMode;
   sort: SortMode;
   filter: string;
   singletonWarnings: Set<string>;
   colorIdentityWarnings: Set<string>;
-  onSearch: (target?: DeckCategory) => void;
+  onSearch: (targetGroupId?: string, targetLabel?: string) => void;
+  onAddCustomGroup: (name: string) => void;
   onSelect: (card: CardSearchResult) => void;
   onSetQuantity: (scryfallId: string, quantity: number) => void;
   onRemove: (scryfallId: string) => void;
@@ -44,12 +55,14 @@ interface DeckBoardProps {
 interface CardGroup {
   id: string;
   label: string;
-  target?: DeckCategory;
+  marker: "command_zone" | "unassigned" | "custom" | "type";
+  targetGroupId?: string;
   entries: DeckCardEntry[];
 }
 
 export function DeckBoard({
   entries,
+  customGroups,
   view,
   group,
   sort,
@@ -57,50 +70,18 @@ export function DeckBoard({
   singletonWarnings,
   colorIdentityWarnings,
   onSearch,
+  onAddCustomGroup,
   onSelect,
   onSetQuantity,
   onRemove,
 }: DeckBoardProps) {
   const groups = useMemo(
-    () => makeGroups(entries, group, sort, filter),
-    [entries, filter, group, sort],
+    () => makeGroups(entries, customGroups, group, sort, filter),
+    [customGroups, entries, filter, group, sort],
   );
   const visibleEntries = groups.flatMap((cardGroup) => cardGroup.entries);
 
-  if (entries.length === 0) {
-    return (
-      <div className="deck-empty">
-        <span className="deck-empty__mark" aria-hidden="true">
-          <Search size={25} />
-        </span>
-        <h2>Start with your commander</h2>
-        <p>
-          Search any printing, choose a commander, or begin filling the
-          mainboard.
-        </p>
-        <div>
-          <button
-            className="primary-button"
-            type="button"
-            onClick={() => onSearch("command_zone")}
-          >
-            <CirclePlus aria-hidden="true" size={17} />
-            Choose commander
-          </button>
-          <button
-            className="secondary-button"
-            type="button"
-            onClick={() => onSearch()}
-          >
-            <Search aria-hidden="true" size={16} />
-            Browse cards
-          </button>
-        </div>
-      </div>
-    );
-  }
-
-  if (visibleEntries.length === 0) {
+  if (entries.length > 0 && visibleEntries.length === 0) {
     return (
       <div className="deck-empty deck-empty--filter">
         <Search aria-hidden="true" size={23} />
@@ -117,7 +98,7 @@ export function DeckBoard({
           <span>Qty</span>
           <span>Card</span>
           <span>Type</span>
-          <span>Category</span>
+          <span>Custom group</span>
           <span>Mana</span>
           <span>EUR</span>
           <span>Actions</span>
@@ -129,6 +110,7 @@ export function DeckBoard({
               {cardGroup.entries.map((entry) => (
                 <ListRow
                   entry={entry}
+                  customGroups={customGroups}
                   warning={warningCopy(
                     singletonWarnings.has(entry.card.oracle_id),
                     colorIdentityWarnings.has(entry.card.oracle_id),
@@ -142,6 +124,9 @@ export function DeckBoard({
             </section>
           ) : null,
         )}
+        {group === "custom" ? (
+          <AddGroupSlot compact onAdd={onAddCustomGroup} />
+        ) : null}
       </div>
     );
   }
@@ -233,7 +218,9 @@ export function DeckBoard({
             <button
               className="visual-group__empty"
               type="button"
-              onClick={() => onSearch(cardGroup.target)}
+              onClick={() =>
+                onSearch(cardGroup.targetGroupId, cardGroup.label)
+              }
             >
               <CirclePlus aria-hidden="true" size={18} />
               Add to {cardGroup.label.toLowerCase()}
@@ -241,6 +228,9 @@ export function DeckBoard({
           )}
         </section>
       ))}
+      {group === "custom" ? (
+        <AddGroupSlot onAdd={onAddCustomGroup} />
+      ) : null}
     </div>
   );
 }
@@ -250,7 +240,7 @@ function GroupHeader({
   onSearch,
 }: {
   group: CardGroup;
-  onSearch: (target?: DeckCategory) => void;
+  onSearch: (targetGroupId?: string, targetLabel?: string) => void;
 }) {
   const quantity = group.entries.reduce(
     (total, entry) => total + entry.quantity,
@@ -263,7 +253,7 @@ function GroupHeader({
   );
   return (
     <header className="group-header">
-      <span className={`group-marker group-marker--${group.target ?? "type"}`} />
+      <span className={`group-marker group-marker--${group.marker}`} />
       <h2>{group.label}</h2>
       <span>{quantity} cards</span>
       <strong>{formatEuro(subtotal, "—")}</strong>
@@ -272,7 +262,7 @@ function GroupHeader({
         type="button"
         aria-label={`Add card to ${group.label}`}
         title={`Add to ${group.label}`}
-        onClick={() => onSearch(group.target)}
+        onClick={() => onSearch(group.targetGroupId, group.label)}
       >
         <CirclePlus aria-hidden="true" size={16} />
       </button>
@@ -280,14 +270,116 @@ function GroupHeader({
   );
 }
 
+function AddGroupSlot({
+  compact = false,
+  onAdd,
+}: {
+  compact?: boolean;
+  onAdd: (name: string) => void;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [name, setName] = useState("");
+  const editorRef = useRef<HTMLFormElement>(null);
+
+  useEffect(() => {
+    if (!editing || compact) {
+      return;
+    }
+    const frame = window.requestAnimationFrame(() => {
+      const editor = editorRef.current;
+      if (typeof editor?.scrollIntoView === "function") {
+        editor.scrollIntoView({
+          block: "nearest",
+          inline: "start",
+        });
+      }
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [compact, editing]);
+
+  const cancel = () => {
+    setEditing(false);
+    setName("");
+  };
+  const submit = (event: FormEvent) => {
+    event.preventDefault();
+    if (!name.trim()) {
+      return;
+    }
+    onAdd(name);
+    cancel();
+  };
+
+  if (!editing) {
+    return (
+      <button
+        className={`add-group-slot ${compact ? "add-group-slot--compact" : ""}`}
+        type="button"
+        onClick={() => setEditing(true)}
+      >
+        <CirclePlus aria-hidden="true" size={19} />
+        Add custom group
+      </button>
+    );
+  }
+
+  return (
+    <form
+      ref={editorRef}
+      className={`add-group-slot add-group-slot--editing ${
+        compact ? "add-group-slot--compact" : ""
+      }`}
+      onSubmit={submit}
+    >
+      <label>
+        <span>Group name</span>
+        <input
+          autoFocus
+          value={name}
+          maxLength={40}
+          onChange={(event) => setName(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.key === "Escape") {
+              event.preventDefault();
+              cancel();
+            }
+          }}
+        />
+      </label>
+      <div>
+        <button
+          className="icon-button icon-button--compact"
+          type="submit"
+          disabled={!name.trim()}
+          aria-label="Create custom group"
+          title="Create group"
+        >
+          <Check aria-hidden="true" size={16} />
+        </button>
+        <button
+          className="icon-button icon-button--compact"
+          type="button"
+          aria-label="Cancel custom group"
+          title="Cancel"
+          onClick={cancel}
+        >
+          <X aria-hidden="true" size={16} />
+        </button>
+      </div>
+    </form>
+  );
+}
+
 function ListRow({
   entry,
+  customGroups,
   warning,
   onSelect,
   onSetQuantity,
   onRemove,
 }: {
   entry: DeckCardEntry;
+  customGroups: DeckCustomGroup[];
   warning: ValidationWarning | null;
   onSelect: (card: CardSearchResult) => void;
   onSetQuantity: (scryfallId: string, quantity: number) => void;
@@ -333,7 +425,7 @@ function ListRow({
         ) : null}
       </button>
       <span className="list-type">{card.type_line}</span>
-      <span>{categoryLabels[categoryForEntry(entry)]}</span>
+      <span>{groupName(groupIdForEntry(entry, customGroups), customGroups)}</span>
       <span className="mana-line">{card.mana_cost || "—"}</span>
       <span>{formatEuro(getCardPrice(card) * entry.quantity, "—")}</span>
       <div className="list-actions">
@@ -362,6 +454,7 @@ function ListRow({
 
 function makeGroups(
   entries: DeckCardEntry[],
+  customGroups: DeckCustomGroup[],
   groupMode: GroupMode,
   sortMode: SortMode,
   filter: string,
@@ -380,21 +473,34 @@ function makeGroups(
   const sortEntries = (cards: DeckCardEntry[]) =>
     [...cards].sort((left, right) => compareEntries(left, right, sortMode));
 
-  const hasMaybeboard = entries.some(
-    (entry) => entry.section === "maybeboard",
-  );
-
   if (groupMode === "custom") {
-    return categoryOrder
-      .filter((category) => category !== "maybeboard" || hasMaybeboard)
-      .map((category) => ({
-      id: category,
-      label: categoryLabels[category],
-      target: category,
+    const definitions = [
+      {
+        id: COMMAND_ZONE_GROUP_ID,
+        label: "Command zone",
+        marker: "command_zone" as const,
+      },
+      {
+        id: UNASSIGNED_GROUP_ID,
+        label: "Not assigned",
+        marker: "unassigned" as const,
+      },
+      ...customGroups.map((customGroup) => ({
+        id: customGroup.id,
+        label: customGroup.name,
+        marker: "custom" as const,
+      })),
+    ];
+    return definitions.map((definition) => ({
+      ...definition,
+      targetGroupId: definition.id,
       entries: sortEntries(
-        filtered.filter((entry) => categoryForEntry(entry) === category),
+        filtered.filter(
+          (entry) =>
+            groupIdForEntry(entry, customGroups) === definition.id,
+        ),
       ),
-      }));
+    }));
   }
 
   const mainboard = filtered.filter((entry) => entry.section === "mainboard");
@@ -411,19 +517,12 @@ function makeGroups(
   ].filter((type) =>
     mainboard.some((entry) => primaryCardType(entry.card.details) === type),
   );
-  const maybeboardGroup: CardGroup = {
-    id: "maybeboard",
-    label: "Maybeboard",
-    target: "maybeboard",
-    entries: sortEntries(
-      filtered.filter((entry) => entry.section === "maybeboard"),
-    ),
-  };
   return [
     {
-      id: "command_zone",
+      id: COMMAND_ZONE_GROUP_ID,
       label: "Command zone",
-      target: "command_zone",
+      marker: "command_zone",
+      targetGroupId: COMMAND_ZONE_GROUP_ID,
       entries: sortEntries(
         filtered.filter((entry) => entry.section === "command_zone"),
       ),
@@ -431,13 +530,13 @@ function makeGroups(
     ...presentTypes.map((type) => ({
       id: `type-${type}`,
       label: type,
+      marker: "type" as const,
       entries: sortEntries(
         mainboard.filter(
           (entry) => primaryCardType(entry.card.details) === type,
         ),
       ),
     })),
-    ...(hasMaybeboard ? [maybeboardGroup] : []),
   ];
 }
 

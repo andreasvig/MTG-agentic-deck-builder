@@ -178,6 +178,24 @@ export const counterspell: CardSearchResult = {
   collector_number: "267",
 };
 
+export const gamble: CardSearchResult = {
+  ...solRing,
+  oracle_id: "41f9f4a2-77ea-4fe9-aec3-8f3b00cc75f3",
+  scryfall_id: "7e52bdca-31bb-4f72-bb11-8d98c6c0b756",
+  name: "Gamble",
+  mana_cost: "{R}",
+  mana_value: 1,
+  type_line: "Sorcery",
+  oracle_text:
+    "Search your library for a card, put that card into your hand, discard a card at random, then shuffle.",
+  colors: ["R"],
+  color_identity: ["R"],
+  set_code: "uma",
+  set_name: "Ultimate Masters",
+  collector_number: "128",
+  rarity: "rare",
+};
+
 export function searchPage(
   query: string,
   cards: CardSearchResult[] = [solRing, llanowarElves],

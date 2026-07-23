@@ -72,6 +72,24 @@ export const counterspell: CardSearchResult = {
   rarity: "uncommon",
 };
 
+export const gamble: CardSearchResult = {
+  ...solRing,
+  oracle_id: "oracle-gamble",
+  scryfall_id: "printing-gamble",
+  name: "Gamble",
+  mana_cost: "{R}",
+  mana_value: 1,
+  type_line: "Sorcery",
+  oracle_text:
+    "Search your library for a card, put that card into your hand, discard a card at random, then shuffle.",
+  colors: ["R"],
+  color_identity: ["R"],
+  set_code: "uma",
+  set_name: "Ultimate Masters",
+  collector_number: "128",
+  rarity: "rare",
+};
+
 export function cardSearchPage(
   cards: CardSearchResult[] = [solRing],
   query = 'name:"Sol Ring"',

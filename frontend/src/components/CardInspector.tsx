@@ -11,15 +11,20 @@ import { useEffect, useRef } from "react";
 import type { BackendHealthState } from "../hooks/useBackendHealth";
 import type { CardSearchResult, MagicColor } from "../domain/card";
 import { formatEuro, getCardPrice } from "../domain/card";
-import type { DeckCategory } from "../domain/deck";
-import { categoryLabels, categoryOrder } from "../domain/deck";
+import type { DeckCustomGroup } from "../domain/deck";
+import {
+  COMMAND_ZONE_GROUP_ID,
+  UNASSIGNED_GROUP_ID,
+} from "../domain/deck";
 import { CardArt } from "./CardArt";
 import { ConnectionStatus } from "./ConnectionStatus";
 
 interface CardInspectorProps {
   card: CardSearchResult | null;
   quantity: number;
-  category?: DeckCategory;
+  groupId?: string;
+  customGroups: DeckCustomGroup[];
+  showCustomGroupControl: boolean;
   singletonWarning: boolean;
   colorIdentityWarning: boolean;
   commanderColorIdentity: ReadonlySet<MagicColor> | null;
@@ -28,7 +33,7 @@ interface CardInspectorProps {
   onCheckHealth: () => void;
   onAdd: (card: CardSearchResult) => void;
   onSetQuantity: (scryfallId: string, quantity: number) => void;
-  onMove: (scryfallId: string, category: DeckCategory) => void;
+  onMove: (scryfallId: string, groupId: string) => void;
   onRemove: (scryfallId: string) => void;
   onClose: () => void;
 }
@@ -36,7 +41,9 @@ interface CardInspectorProps {
 export function CardInspector({
   card,
   quantity,
-  category,
+  groupId,
+  customGroups,
+  showCustomGroupControl,
   singletonWarning,
   colorIdentityWarning,
   commanderColorIdentity,
@@ -240,25 +247,30 @@ export function CardInspector({
                     </button>
                   </div>
                 </div>
-                <label>
-                  Section
-                  <select
-                    value={category}
-                    aria-label={`Move ${card.name} to section`}
-                    onChange={(event) =>
-                      onMove(
-                        card.scryfall_id,
-                        event.target.value as DeckCategory,
-                      )
-                    }
-                  >
-                    {categoryOrder.map((option) => (
-                      <option value={option} key={option}>
-                        {categoryLabels[option]}
+                {showCustomGroupControl ? (
+                  <label>
+                    Custom group
+                    <select
+                      value={groupId ?? UNASSIGNED_GROUP_ID}
+                      aria-label={`Move ${card.name} to custom group`}
+                      onChange={(event) =>
+                        onMove(card.scryfall_id, event.target.value)
+                      }
+                    >
+                      <option value={COMMAND_ZONE_GROUP_ID}>
+                        Command zone
                       </option>
-                    ))}
-                  </select>
-                </label>
+                      <option value={UNASSIGNED_GROUP_ID}>
+                        Not assigned
+                      </option>
+                      {customGroups.map((customGroup) => (
+                        <option value={customGroup.id} key={customGroup.id}>
+                          {customGroup.name}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                ) : null}
                 <button
                   className="remove-button"
                   type="button"
@@ -283,8 +295,8 @@ export function CardInspector({
           <div className="inspector-empty">
             <h2>Select a card</h2>
             <p>
-              Card text, printing details, price, quantity and section controls
-              appear here.
+              Card text, printing details, price, quantity and custom group
+              controls appear here.
             </p>
           </div>
         )}

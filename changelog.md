@@ -53,6 +53,10 @@ All notable changes to this project will be documented in this file.
   containment, scroll locking, and inactive-background isolation.
 - Added production-build checks, provider/API/domain/component tests, a paired
   development-server smoke test, and Playwright desktop/mobile workflows.
+- Added a persistent local deck library with deck creation, switching, inline
+  renaming, and commander-art thumbnails in the navigation rail.
+- Added user-created custom groups with permanent Command zone and Not assigned
+  groups plus an always-available new-group slot.
 
 ### Repository
 
@@ -77,7 +81,15 @@ All notable changes to this project will be documented in this file.
   enhancement.
 - Added color-identity warnings based on the union of known command-zone cards,
   shown in search results, deck cards, list rows, and the card inspector.
+- Added a direct Ghalta plus Gamble regression workflow for illegal red color
+  identity, including the pre-add warning and persisted deck warning.
 - Consolidated quick add into the regular search workflow and removed the
   redundant top-right Search and Add actions.
-- Renamed the grouping choices to Custom and Card types, and hid the maybeboard
-  group until it contains cards.
+- Renamed the grouping choices to Custom and Card types and removed the former
+  fixed-category and maybeboard columns from the editor surface.
+- Replaced fixed editable card categories with custom-group-only placement.
+  Card-type grouping is now derived and does not expose move controls.
+- Removed the standalone maybeboard from the active editor model; legacy
+  maybeboard and fixed-category cards migrate safely into Not assigned.
+- Capped sparse desktop group widths and hardened mobile group creation, card
+  actions, deck-name editing, and touch targets against clipping.

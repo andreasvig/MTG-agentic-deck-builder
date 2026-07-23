@@ -7,6 +7,8 @@ import {
   List,
   Menu,
   MoreHorizontal,
+  Pencil,
+  Plus,
   Search,
   Undo2,
   WandSparkles,
@@ -23,9 +25,10 @@ import {
 } from "./components/DeckBoard";
 import { SearchDrawer } from "./components/SearchDrawer";
 import type { CardSearchResult } from "./domain/card";
-import { formatEuro } from "./domain/card";
-import type { DeckCategory } from "./domain/deck";
-import { categoryForEntry } from "./domain/deck";
+import { formatEuro, getCardImage } from "./domain/card";
+import {
+  groupIdForEntry,
+} from "./domain/deck";
 import { useBackendHealth } from "./hooks/useBackendHealth";
 import { useDeck } from "./hooks/useDeck";
 import { useMediaQuery } from "./hooks/useMediaQuery";
@@ -33,13 +36,15 @@ import { useMediaQuery } from "./hooks/useMediaQuery";
 import "./styles.css";
 
 interface SearchRequest {
-  target?: DeckCategory;
+  targetGroupId?: string;
+  targetLabel?: string;
   initialQuery?: string;
 }
 
 function App() {
   const {
     deck,
+    decks,
     announcement,
     canUndo,
     statistics,
@@ -47,6 +52,10 @@ function App() {
     setQuantity,
     removeCard,
     moveCard,
+    addCustomGroup,
+    renameDeck,
+    createDeck,
+    selectDeck,
     undo,
   } = useDeck();
   const { health, check } = useBackendHealth();
@@ -59,6 +68,8 @@ function App() {
   const [searchRequest, setSearchRequest] = useState<SearchRequest | null>(null);
   const [selectedCard, setSelectedCard] = useState<CardSearchResult | null>(null);
   const [toolbarQuery, setToolbarQuery] = useState("");
+  const [renamingDeck, setRenamingDeck] = useState(false);
+  const [deckNameDraft, setDeckNameDraft] = useState(deck.name);
   const returnFocus = useRef<HTMLElement | null>(null);
   const menuTrigger = useRef<HTMLButtonElement>(null);
   const sidebarRef = useRef<HTMLElement>(null);
@@ -71,7 +82,11 @@ function App() {
     : undefined;
 
   const openSearch = useCallback(
-    (target?: DeckCategory, initialQuery?: string) => {
+    (
+      targetGroupId?: string,
+      targetLabel?: string,
+      initialQuery?: string,
+    ) => {
       returnFocus.current =
         document.activeElement instanceof HTMLElement
           ? document.activeElement
@@ -79,7 +94,7 @@ function App() {
       if (isMobile) {
         setSelectedCard(null);
       }
-      setSearchRequest({ target, initialQuery });
+      setSearchRequest({ targetGroupId, targetLabel, initialQuery });
     },
     [isMobile],
   );
@@ -133,6 +148,13 @@ function App() {
     };
   }, [closeNavigation, navigationOpen]);
 
+  useEffect(() => {
+    setRenamingDeck(false);
+    setDeckNameDraft(deck.name);
+    setSelectedCard(null);
+    setFilter("");
+  }, [deck.id, deck.name]);
+
   const submitToolbarSearch = (event: FormEvent) => {
     event.preventDefault();
     const query = toolbarQuery.trim();
@@ -140,7 +162,31 @@ function App() {
       return;
     }
     setToolbarQuery("");
-    openSearch(undefined, query);
+    openSearch(undefined, undefined, query);
+  };
+
+  const beginDeckRename = () => {
+    setDeckNameDraft(deck.name);
+    setRenamingDeck(true);
+  };
+
+  const finishDeckRename = () => {
+    if (deckNameDraft.trim()) {
+      renameDeck(deckNameDraft);
+    } else {
+      setDeckNameDraft(deck.name);
+    }
+    setRenamingDeck(false);
+  };
+
+  const chooseDeck = (deckId: string) => {
+    selectDeck(deckId);
+    setNavigationOpen(false);
+  };
+
+  const startNewDeck = () => {
+    createDeck();
+    setNavigationOpen(false);
   };
 
   const legalityCopy = {
@@ -206,16 +252,59 @@ function App() {
         </nav>
 
         <div className="sidebar-section">
-          <div className="section-label">Local deck</div>
-          <div className="deck-link deck-link--active">
-            <span className="deck-thumbnail">
-              <Command aria-hidden="true" size={17} />
-            </span>
-            <span>
-              <strong>{deck.name}</strong>
-              <small>{statistics.cardCount} cards · saved locally</small>
-            </span>
+          <div className="section-label">Local decks</div>
+          <div className="deck-library">
+            {decks.map((libraryDeck) => {
+              const commander = libraryDeck.cards.find(
+                (entry) =>
+                  entry.section === "command_zone" && entry.card.details,
+              )?.card.details;
+              const commanderArt = commander
+                ? (commander.image_uris?.art_crop ??
+                  commander.card_faces[0]?.image_uris?.art_crop ??
+                  getCardImage(commander, "small"))
+                : null;
+              const cardCount = libraryDeck.cards.reduce(
+                (total, entry) => total + entry.quantity,
+                0,
+              );
+              return (
+                <button
+                  className={`deck-link ${
+                    libraryDeck.id === deck.id ? "deck-link--active" : ""
+                  }`}
+                  type="button"
+                  aria-pressed={libraryDeck.id === deck.id}
+                  onClick={() => chooseDeck(libraryDeck.id)}
+                  key={libraryDeck.id}
+                >
+                  <span className="deck-thumbnail">
+                    {commanderArt && commander ? (
+                      <img
+                        className="deck-thumbnail__art"
+                        src={commanderArt}
+                        alt={`${commander.name} commander`}
+                      />
+                    ) : (
+                      <Command aria-hidden="true" size={17} />
+                    )}
+                  </span>
+                  <span>
+                    <strong>{libraryDeck.name}</strong>
+                    <small>{cardCount} cards · saved locally</small>
+                  </span>
+                </button>
+              );
+            })}
           </div>
+          <button
+            className="create-deck-button"
+            type="button"
+            onClick={startNewDeck}
+          >
+            <Plus aria-hidden="true" size={16} />
+            Create new deck
+          </button>
         </div>
 
         <div className="sidebar-footnote">
@@ -259,11 +348,58 @@ function App() {
           >
             <Menu aria-hidden="true" size={20} />
           </button>
-          <div className="deck-identity">
-            <span>
-              <small>Commander</small>
-              <strong>{deck.name}</strong>
-            </span>
+          <div
+            className={`deck-identity ${
+              renamingDeck ? "deck-identity--editing" : ""
+            }`}
+            onDoubleClick={beginDeckRename}
+          >
+            {renamingDeck ? (
+              <input
+                autoFocus
+                value={deckNameDraft}
+                maxLength={80}
+                aria-label="Deck name"
+                onChange={(event) => setDeckNameDraft(event.target.value)}
+                onFocus={(event) => {
+                  const input = event.currentTarget;
+                  input.select();
+                  window.requestAnimationFrame(() => {
+                    if (input.isConnected) {
+                      input.scrollLeft = 0;
+                    }
+                  });
+                }}
+                onBlur={finishDeckRename}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") {
+                    event.preventDefault();
+                    finishDeckRename();
+                  }
+                  if (event.key === "Escape") {
+                    event.preventDefault();
+                    setDeckNameDraft(deck.name);
+                    setRenamingDeck(false);
+                  }
+                }}
+              />
+            ) : (
+              <span>
+                <small>Commander</small>
+                <strong>{deck.name}</strong>
+              </span>
+            )}
+            {!renamingDeck ? (
+              <button
+                className="icon-button icon-button--compact deck-name-edit"
+                type="button"
+                aria-label="Rename deck"
+                title="Rename deck"
+                onClick={beginDeckRename}
+              >
+                <Pencil aria-hidden="true" size={14} />
+              </button>
+            ) : null}
           </div>
           <div className="deck-metrics" aria-label="Deck summary">
             <span>Commander</span>
@@ -385,6 +521,7 @@ function App() {
             </div>
             <DeckBoard
               entries={deck.cards}
+              customGroups={deck.custom_groups}
               view={view}
               group={group}
               sort={sort}
@@ -392,6 +529,7 @@ function App() {
               singletonWarnings={statistics.singletonWarnings}
               colorIdentityWarnings={statistics.colorIdentityWarnings}
               onSearch={openSearch}
+              onAddCustomGroup={addCustomGroup}
               onSelect={setSelectedCard}
               onSetQuantity={setQuantity}
               onRemove={removeCard}
@@ -401,9 +539,13 @@ function App() {
           <CardInspector
             card={selectedCard}
             quantity={selectedEntry?.quantity ?? 0}
-            category={
-              selectedEntry ? categoryForEntry(selectedEntry) : undefined
+            groupId={
+              selectedEntry
+                ? groupIdForEntry(selectedEntry, deck.custom_groups)
+                : undefined
             }
+            customGroups={deck.custom_groups}
+            showCustomGroupControl={group === "custom"}
             singletonWarning={
               selectedCard
                 ? statistics.singletonWarnings.has(selectedCard.oracle_id)
@@ -462,7 +604,8 @@ function App() {
       {searchRequest ? (
         <SearchDrawer
           initialQuery={searchRequest.initialQuery}
-          target={searchRequest.target}
+          targetGroupId={searchRequest.targetGroupId}
+          targetLabel={searchRequest.targetLabel}
           entries={deck.cards}
           onAdd={addCard}
           onSetQuantity={setQuantity}

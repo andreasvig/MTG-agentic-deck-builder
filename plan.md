@@ -36,10 +36,12 @@ agent that can inspect a deck, explain suggestions, and propose safe edits.
 - Select any legal command-zone configuration, including partners, named
   partners, Friends Forever, backgrounds, Doctor's companion, and a companion.
 - Add, remove, and change card quantities.
-- Use visual category columns as the primary editing view, with a compact list
-  view available as a toggle.
-- Organize cards into functional categories such as ramp, removal, and draw.
-- Keep an optional maybeboard.
+- Use visual custom-group columns as the primary editing view, with a compact
+  list view and derived card-type grouping available as toggles.
+- Start each deck with Command zone and Not assigned groups, then let the user
+  create functional groups such as ramp, removal, and draw.
+- Keep cards movable only between custom groups; card-type grouping is derived
+  from card data and cannot be edited.
 - Persist all changes locally.
 
 ### Card Discovery
@@ -178,10 +180,12 @@ Completed in the first usable slice:
 - A typed, provider-neutral card-search boundary backed by live Scryfall search.
 - Search loading, empty, invalid-query, provider-error, and pagination states.
 - A single detailed in-context search drawer with inline quantities.
-- A persistent local deck with add, remove, move, quantity, and 30-step undo.
-- Command zone, core functional categories, maybeboard, and singleton warnings.
-- Visual category stacks, dense list mode, grouping, sorting, and local filtering.
-- Card inspection, selected-printing EUR estimates, and deck/category totals.
+- A persistent local deck library with creation, switching, renaming, commander
+  thumbnails, add, remove, custom-group move, quantity, and 30-step undo.
+- Command zone, Not assigned, user-created custom groups, and singleton warnings.
+- Visual custom-group stacks, derived card-type grouping, dense list mode,
+  sorting, and local filtering.
+- Card inspection, selected-printing EUR estimates, and deck/custom-group totals.
 - Command-zone color-identity validation in search, deck cards, and inspection.
 - Purpose-built desktop and mobile layouts with keyboard-contained drawers.
 - Backend, frontend, process-runner, production-build, and browser workflow

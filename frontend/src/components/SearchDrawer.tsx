@@ -19,9 +19,9 @@ import {
 
 import type { CardSearchPage, CardSearchResult } from "../domain/card";
 import { formatEuro, getCardPrice } from "../domain/card";
-import type { DeckCardEntry, DeckCategory } from "../domain/deck";
+import type { DeckCardEntry } from "../domain/deck";
 import {
-  categoryLabels,
+  COMMAND_ZONE_GROUP_ID,
   getCommanderColorIdentity,
   isWithinCommanderColorIdentity,
 } from "../domain/deck";
@@ -36,17 +36,19 @@ type SearchState =
 
 interface SearchDrawerProps {
   initialQuery?: string;
-  target?: DeckCategory;
+  targetGroupId?: string;
+  targetLabel?: string;
   entries: DeckCardEntry[];
   client?: ApiClient;
-  onAdd: (card: CardSearchResult, target?: DeckCategory) => void;
+  onAdd: (card: CardSearchResult, targetGroupId?: string) => void;
   onSetQuantity: (scryfallId: string, quantity: number) => void;
   onClose: () => void;
 }
 
 export function SearchDrawer({
   initialQuery = "",
-  target,
+  targetGroupId,
+  targetLabel,
   entries,
   client = apiClient,
   onAdd,
@@ -220,7 +222,7 @@ export function SearchDrawer({
         <header className="search-drawer__header">
           <div>
             <p className="eyebrow">
-              {target ? `Adding to ${categoryLabels[target]}` : "Card search"}
+              {targetLabel ? `Adding to ${targetLabel}` : "Card search"}
             </p>
             <h2 id="search-title">Find cards</h2>
           </div>
@@ -324,7 +326,7 @@ export function SearchDrawer({
                     );
                     const quantity = exactEntry?.quantity ?? 0;
                     const colorIdentityWarning =
-                      target !== "command_zone" &&
+                      targetGroupId !== COMMAND_ZONE_GROUP_ID &&
                       !isWithinCommanderColorIdentity(
                         card,
                         commanderColorIdentity,
@@ -392,7 +394,7 @@ export function SearchDrawer({
                                 className="add-printing-button"
                                 type="button"
                                 aria-label={`Add ${card.name} to deck`}
-                                onClick={() => onAdd(card, target)}
+                                onClick={() => onAdd(card, targetGroupId)}
                               >
                                 <CirclePlus aria-hidden="true" size={16} />
                                 Add

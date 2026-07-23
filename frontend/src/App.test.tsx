@@ -3,8 +3,13 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import App from "./App";
-import { createEmptyDeck, DECK_STORAGE_KEY } from "./domain/deck";
-import { cardSearchPage, counterspell, ghalta } from "./test/fixtures";
+import {
+  createEmptyDeck,
+  DECK_LIBRARY_STORAGE_KEY,
+  DECK_STORAGE_KEY,
+  UNASSIGNED_GROUP_ID,
+} from "./domain/deck";
+import { cardSearchPage, gamble, ghalta } from "./test/fixtures";
 
 const healthResponse = {
   status: "ok",
@@ -13,6 +18,7 @@ const healthResponse = {
 };
 
 beforeEach(() => {
+  window.localStorage.clear();
   vi.spyOn(globalThis, "fetch").mockImplementation((input) => {
     const url = String(input);
     if (url.includes("/cards/search")) {
@@ -34,7 +40,13 @@ describe("deck workspace", () => {
     render(<App />);
 
     expect(
-      screen.getByRole("heading", { name: "Start with your commander" }),
+      screen.getByRole("heading", { name: "Command zone" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("heading", { name: "Not assigned" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Add custom group" }),
     ).toBeInTheDocument();
     expect(await screen.findByText("Backend online")).toBeInTheDocument();
 
@@ -91,10 +103,92 @@ describe("deck workspace", () => {
     expect(screen.getByText("1 / 100")).toBeInTheDocument();
 
     await waitFor(() => {
-      expect(window.localStorage.getItem(DECK_STORAGE_KEY)).toContain(
+      expect(window.localStorage.getItem(DECK_LIBRARY_STORAGE_KEY)).toContain(
         '"name":"Sol Ring"',
       );
     });
+  });
+
+  it("keeps custom grouping explicit and manages multiple local decks", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.click(
+      screen.getByRole("button", { name: "Add custom group" }),
+    );
+    await user.type(screen.getByRole("textbox", { name: "Group name" }), "Ramp");
+    await user.click(
+      screen.getByRole("button", { name: "Create custom group" }),
+    );
+    expect(screen.getByRole("heading", { name: "Ramp" })).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Card search" }));
+    await user.type(
+      screen.getByRole("textbox", {
+        name: "Search card name or Scryfall syntax",
+      }),
+      "Sol Ring",
+    );
+    await user.click(
+      await screen.findByRole("button", { name: "Add Sol Ring to deck" }),
+    );
+    await user.keyboard("{Escape}");
+    await user.click(screen.getByRole("button", { name: "Inspect Sol Ring" }));
+
+    const customGroupSelect = screen.getByRole("combobox", {
+      name: "Move Sol Ring to custom group",
+    });
+    expect(customGroupSelect).toHaveValue(UNASSIGNED_GROUP_ID);
+    await user.selectOptions(
+      customGroupSelect,
+      screen.getByRole("option", { name: "Ramp" }),
+    );
+    expect(
+      screen.getByRole("combobox", {
+        name: "Move Sol Ring to custom group",
+      }),
+    ).toHaveDisplayValue("Ramp");
+
+    await user.selectOptions(
+      screen.getByRole("combobox", { name: "Group cards" }),
+      "type",
+    );
+    expect(
+      screen.queryByRole("combobox", {
+        name: "Move Sol Ring to custom group",
+      }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Add custom group" }),
+    ).not.toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Artifact" })).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Rename deck" }));
+    const deckName = screen.getByRole("textbox", { name: "Deck name" });
+    await user.clear(deckName);
+    await user.type(deckName, "Dinosaur Ramp");
+    await user.keyboard("{Enter}");
+    expect(
+      screen.getByRole("heading", { name: "Dinosaur Ramp" }),
+    ).toBeInTheDocument();
+
+    await user.click(
+      screen.getByRole("button", { name: "Create new deck" }),
+    );
+    expect(
+      screen.getByRole("heading", { name: "Untitled Commander" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: /Dinosaur Ramp/ }),
+    ).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: /Dinosaur Ramp/ }));
+    expect(
+      screen.getByRole("heading", { name: "Dinosaur Ramp" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Inspect Sol Ring" }),
+    ).toBeInTheDocument();
   });
 
   it("opens full search from the toolbar instead of auto-adding", async () => {
@@ -138,7 +232,7 @@ describe("deck workspace", () => {
       const url = String(input);
       if (url.includes("/cards/search")) {
         return Promise.resolve(
-          Response.json(cardSearchPage([counterspell]), { status: 200 }),
+          Response.json(cardSearchPage([gamble]), { status: 200 }),
         );
       }
       return Promise.resolve(Response.json(healthResponse, { status: 200 }));
@@ -146,18 +240,23 @@ describe("deck workspace", () => {
     const user = userEvent.setup();
     render(<App />);
 
+    expect(
+      screen.getByRole("img", {
+        name: "Ghalta, Primal Hunger commander",
+      }),
+    ).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Card search" }));
     await user.type(
       screen.getByRole("textbox", {
         name: "Search card name or Scryfall syntax",
       }),
-      "Counterspell",
+      "Gamble",
     );
     expect(
       await screen.findByText("Outside commander color identity"),
     ).toBeInTheDocument();
     await user.click(
-      screen.getByRole("button", { name: "Add Counterspell to deck" }),
+      screen.getByRole("button", { name: "Add Gamble to deck" }),
     );
     await user.keyboard("{Escape}");
 
@@ -168,11 +267,11 @@ describe("deck workspace", () => {
     ).not.toBeInTheDocument();
 
     await user.click(
-      screen.getByRole("button", { name: "Inspect Counterspell" }),
+      screen.getByRole("button", { name: "Inspect Gamble" }),
     );
     expect(
       screen.getByText(
-        "U is outside this deck's G commander color identity.",
+        "R is outside this deck's G commander color identity.",
       ),
     ).toBeInTheDocument();
   });
