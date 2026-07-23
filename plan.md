@@ -1,0 +1,170 @@
+# MTG Agentic Deck Builder
+
+## Goal
+
+Build a local-first Commander deck builder inspired by Archidekt. The first
+version should be a useful manual deck editor. A later version will add a chat
+agent that can inspect a deck, explain suggestions, and propose safe edits.
+
+## Product Principles
+
+- Local and single-user; no accounts or cloud sync.
+- Commander-focused rather than a general-purpose MTG deck builder.
+- Fast visual editing with card images, search, filters, and deck statistics.
+- Support every legal Commander configuration rather than assuming one
+  commander.
+- Deck rules and mutations live in the backend so the UI and agent share them.
+- Agent edits are proposed as a visible diff and require confirmation.
+- External data access is cached and isolated behind provider interfaces.
+
+## Proposed Stack
+
+- Frontend: React, TypeScript, and Vite
+- Backend: FastAPI and Python
+- Storage: SQLite
+- Card data: Scryfall API and/or Scryfall bulk data
+- Pricing: Cardmarket trend prices through a dedicated cached provider
+- Development URLs:
+  - Frontend: `http://127.0.0.1:41737`
+  - Backend: `http://127.0.0.1:43127`
+
+## MVP Scope
+
+### Deck Management
+
+- Create, rename, duplicate, and delete local decks.
+- Select any legal command-zone configuration, including partners, named
+  partners, Friends Forever, backgrounds, Doctor's companion, and a companion.
+- Add, remove, and change card quantities.
+- Use visual category columns as the primary editing view, with a compact list
+  view available as a toggle.
+- Organize cards into functional categories such as ramp, removal, and draw.
+- Keep an optional maybeboard.
+- Persist all changes locally.
+
+### Card Discovery
+
+- Search by card name.
+- Support useful Scryfall-style filters.
+- Show card image, mana cost, type, rules text, color identity, and legality.
+- Filter results to the commander's color identity by default.
+- Preserve the selected printing so its image and price are deterministic.
+
+### Pricing
+
+- Show the current Cardmarket trend price in EUR for the selected printing.
+- Show individual card prices and the estimated total deck price.
+- Cache daily price snapshots with their source and observation timestamp.
+- Map Scryfall printings to Cardmarket products through stable provider IDs.
+- Keep the provider replaceable because official Cardmarket price-guide access
+  requires approved credentials and may not be available in every environment.
+- Defer collection ownership and budget enforcement until a later phase.
+
+### Commander Validation
+
+- Validate deck size.
+- Validate Commander legality and color identity.
+- Validate compatibility between multiple commanders and command-zone cards.
+- Validate singleton rules and cards with quantity exceptions.
+- Show errors separately from warnings.
+- Allow explicit Rule Zero overrides, but retain and display the underlying
+  legality warning.
+
+### Deck Insight
+
+- Mana curve and color distribution.
+- Card type and functional-category counts.
+- Land and average mana-value summaries.
+- Clear deck completion and validation status.
+
+### Portability
+
+- Import common plaintext deck lists.
+- Export a canonical plaintext deck list.
+- Defer Archidekt, Moxfield, file, and URL imports until a later phase.
+- Defer direct third-party account sync until the local workflow is solid.
+
+## Later Agent Phase
+
+Add a deck-scoped chat assistant with tools that can:
+
+- Inspect the current deck, commander, statistics, and validation results.
+- Search Scryfall for legal cards.
+- Suggest additions, removals, and one-for-one swaps.
+- Explain synergy, curve, interaction, budget, and win-condition gaps.
+- Propose a structured deck patch before making changes.
+- Apply a confirmed patch through the same deck service used by the UI.
+- Preserve an undoable change history.
+
+The assistant will use Pydantic AI. Initial model candidates are
+`gemini-3.6-flash` and `gemini-3.5-flash-lite`; select between them using a
+small eval of latency, tool-call reliability, suggestion quality, and cost.
+
+Planned tools:
+
+- Inspect, validate, and summarize the current deck.
+- Propose and apply typed deck patches through the deck service.
+- Search Scryfall through a custom card-data tool.
+- Search the web through a Sonar-backed tool.
+- Fetch and extract a specific web page.
+- Query EDHREC through a custom provider only after a permitted, stable access
+  method is identified.
+
+The recommendation layer should use provider interfaces. Scryfall is the first
+supported card-data provider. Direct EDHREC scraping is not acceptable because
+the site restricts automated queries.
+
+## Initial Architecture
+
+```text
+React UI
+   |
+FastAPI routes
+   |
+Deck and rules services ----- Scryfall provider/cache
+   |
+SQLite
+
+Later:
+Chat agent -> typed tools -> deck and rules services
+```
+
+The agent must not write directly to SQLite. All deck mutations should pass
+through typed domain actions so manual and agent changes have identical
+validation, history, and tests.
+
+## Milestones
+
+1. Scaffold React and FastAPI applications with the uncommon development ports.
+2. Add the card-data provider, local cache, and card search.
+3. Implement Cardmarket trend-price synchronization and deck price totals.
+4. Implement decks, all command-zone configurations, persistence, and
+   plaintext import/export.
+5. Add validation, categories, statistics, and the visual/list editing views.
+6. Add focused backend and frontend tests for deck operations.
+7. Add drag-and-drop categories and additional import formats.
+8. Design Pydantic AI tools and a preview/confirm/undo workflow.
+9. Add the chat assistant and permitted recommendation providers.
+10. Add power-level guidance and an opening-hand/playtest view.
+
+## Out of Scope for MVP
+
+- User accounts, hosted deployment, and multiplayer collaboration
+- Card collection and inventory management
+- Buying cards or marketplace integration
+- Full game simulation or rules engine
+- Drag-and-drop category editing
+- Power-level or Commander-bracket scoring
+- Opening-hand and playtest views
+- Archidekt, Moxfield, file, and URL imports
+- Direct EDHREC scraping
+
+## Open Decisions
+
+- Whether deck pricing uses the selected printing or the cheapest eligible
+  printing by default
+- Which approved Cardmarket data-access method and credentials are available
+- Exact Sonar web-search provider and API
+- Permitted source for commander-specific recommendation data
+- Which Gemini candidate wins the agent eval
+- Desired power-level or Commander-bracket model for the later phase
