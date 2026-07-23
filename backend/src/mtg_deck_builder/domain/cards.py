@@ -161,6 +161,10 @@ class CardSearchPage(CardModel):
     total_results: Annotated[int, Field(ge=0)]
     has_more: bool
     cards: list[CardSearchResult]
+    name_match_scores: dict[
+        UUID,
+        Annotated[float, Field(ge=0, le=1)],
+    ] = Field(default_factory=dict)
     warnings: list[str] = Field(default_factory=list)
     strategy: SearchStrategy = "syntax"
     interpretation: str | None = None

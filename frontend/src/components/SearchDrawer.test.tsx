@@ -170,6 +170,91 @@ describe("card search dialog", () => {
     ).toBeInTheDocument();
   });
 
+  it("shows per-card fuzzy scores and every cutoff candidate", async () => {
+    const page = cardSearchPage(undefined, "sol rng");
+    page.strategy = "fuzzy";
+    page.interpretation = "Closest card names above 0.450";
+    page.name_match_scores = { "printing-sol-ring": 0.933333 };
+    const debug = searchDebugSummary();
+    debug.stages = [
+      {
+        name: "Fuzzy name lookup",
+        status: "ok",
+        duration_ms: 83.2,
+        input_count: null,
+        output_count: 1,
+      },
+    ];
+    debug.trace.decision = {
+      input_kind: "card_name",
+      strategy: "fuzzy",
+      fuzzy_cutoff: 0.45,
+      fuzzy_top_score: 0.933333,
+      fuzzy_routing_signal: "accept_name_match",
+    };
+    debug.trace.stages = [
+      {
+        name: "Fuzzy name lookup",
+        status: "ok",
+        duration_ms: 83.2,
+        output: {
+          count: 1,
+          top: [
+            {
+              rank: 1,
+              scryfall_id: "printing-sol-ring",
+              name: "Sol Ring",
+            },
+          ],
+        },
+        details: {
+          fuzzy_cutoff: 0.45,
+          top_score: 0.933333,
+          routing_signal: "accept_name_match",
+          fuzzy_candidates: [
+            {
+              name: "Sol Ring",
+              matched_alias: "sol ring",
+              score: 0.933333,
+              accepted_by_score: true,
+              returned_after_filters: true,
+            },
+            {
+              name: "Soul Burn",
+              matched_alias: "soul burn",
+              score: 0.4,
+              accepted_by_score: false,
+              returned_after_filters: false,
+            },
+          ],
+        },
+      },
+    ];
+    page.debug = debug;
+
+    render(
+      <SearchDrawer
+        initialQuery="sol rng"
+        entries={[]}
+        client={{
+          getHealth: vi.fn(),
+          searchCards: vi.fn().mockResolvedValue(page),
+        }}
+        onAdd={vi.fn()}
+        onSetQuantity={vi.fn()}
+        onClose={vi.fn()}
+      />,
+    );
+
+    expect(await screen.findByText("Fuzzy 0.933")).toBeInTheDocument();
+    await userEvent.click(screen.getByText("Search trace"));
+    await userEvent.click(screen.getByText("Fuzzy name lookup"));
+    expect(screen.getByText("Fuzzy candidates")).toBeInTheDocument();
+    expect(screen.getByText(/below cutoff/)).toBeInTheDocument();
+    expect(screen.getByText("0.933")).toBeInTheDocument();
+    expect(screen.getByText("0.400")).toBeInTheDocument();
+  });
+
   it("keeps the trace available when a search returns no cards", async () => {
     const page = cardSearchPage([], "misspelled card");
     page.debug = searchDebugSummary();

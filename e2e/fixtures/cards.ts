@@ -207,6 +207,7 @@ export function searchPage(
     total_results: cards.length,
     has_more: false,
     cards,
+    name_match_scores: {},
     warnings: [],
     strategy: "exact",
     interpretation: "Exact card name",

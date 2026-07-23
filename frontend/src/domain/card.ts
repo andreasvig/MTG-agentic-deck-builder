@@ -82,6 +82,7 @@ export interface CardSearchPage {
   total_results: number;
   has_more: boolean;
   cards: CardSearchResult[];
+  name_match_scores: Record<string, number>;
   warnings: string[];
   strategy: SearchStrategy;
   interpretation: string | null;

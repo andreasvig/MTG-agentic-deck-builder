@@ -75,6 +75,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     result_limit=runtime_settings.search_debug_result_limit,
                 ),
                 debug_default_enabled=runtime_settings.search_debug_enabled,
+                fuzzy_candidate_limit=(
+                    runtime_settings.fuzzy_name_candidate_limit
+                ),
+                fuzzy_min_score=runtime_settings.fuzzy_name_min_score,
             )
             yield
 

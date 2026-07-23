@@ -189,6 +189,8 @@ Completed in the first usable slice:
 - React and FastAPI scaffolds on ports `41737` and `43127`.
 - A typed, provider-neutral card-search boundary backed by live Scryfall search.
 - Layered exact, fuzzy, intent, and explicit-Scryfall search routing.
+- Multi-result exact and fuzzy name layers with normalized per-card scores,
+  configurable fuzzy candidate count and cutoff, and full cutoff traces.
 - Local `BAAI/bge-small-en-v1.5` semantic ranking for intent candidates, with a
   bounded optional Gemini 3.5 Flash Lite rerank through OpenRouter.
 - Search filters for subset or exact color identity, colorless cards, mana
@@ -198,8 +200,8 @@ Completed in the first usable slice:
   rankings, rank deltas, warnings, and final results.
 - An expandable in-search trace explorer for provider queries, rank movement,
   exact LLM messages, response metadata, and raw JSON.
-- Cached Scryfall card-name catalog fallback for typos that its named-card
-  endpoint does not resolve.
+- Cached Scryfall card-name catalog ranking for typo recovery and cutoff
+  tuning.
 - Search loading, empty, invalid-query, provider-error, and pagination states.
 - A single detailed in-context search drawer with inline quantities.
 - A persistent local deck library with creation, switching, renaming, commander

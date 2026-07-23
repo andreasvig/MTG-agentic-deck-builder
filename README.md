@@ -45,6 +45,8 @@ services, including their reload subprocesses.
 
 - Search Scryfall-backed card data by exact name, typo-tolerant name, natural
   deck-building intent, or Scryfall syntax.
+- Return the exact card first plus other names containing the same text, and
+  show a normalized name-match score on every exact or fuzzy result.
 - Narrow every search by allowed or exact color identity, mana value, and daily
   Scryfall EUR estimate.
 - Rank intent candidates with the local `BAAI/bge-small-en-v1.5` embedding
@@ -89,6 +91,8 @@ default for every client, enable it in `.env`, then restart the servers:
 MTG_SEARCH_DEBUG_ENABLED=true
 MTG_SEARCH_DEBUG_LOG_PATH=local-data/search-debug.jsonl
 MTG_SEARCH_DEBUG_RESULT_LIMIT=25
+MTG_FUZZY_NAME_CANDIDATE_LIMIT=12
+MTG_FUZZY_NAME_MIN_SCORE=0.45
 ```
 
 Debug responses expose a compact stage and timing summary in the search
@@ -99,15 +103,20 @@ The trace remains available when a search returns no cards.
 
 The append-only JSONL file records the raw query and filters,
 classification decision, generated Scryfall query, provider ordering and
-counts, per-layer timings, before/after rankings, rank deltas, warnings, and
-final results. For the LLM layer it also records the complete parsed and raw
-JSON request and response bodies, response status, model, provider, and
-reasoning effort. Credentials and authorization headers are never included.
+counts, per-layer timings, before/after rankings, name-match scores, fuzzy
+cutoff decisions, warnings, and final results. For the LLM layer it also
+records the complete parsed and raw JSON request and response bodies, response
+status, model, provider, and reasoning effort. Credentials and authorization
+headers are never included.
 
-Name searches first use Scryfall's exact and fuzzy endpoints. If both miss, the
-backend compares against Scryfall's lightweight card-name catalog, cached for
-the process lifetime, before fetching the selected card. This covers omissions
-such as `galta` → `Ghalta, Primal Hunger` without invoking an LLM.
+An exact full-name hit returns that card first plus every Scryfall result whose
+name contains the query. Without a full-name hit, the backend ranks several
+names from Scryfall's lightweight card-name catalog, cached for the process
+lifetime, and fetches every candidate at or above
+`MTG_FUZZY_NAME_MIN_SCORE`. The trace shows accepted and rejected candidates,
+their matched aliases, and their raw `0..1` similarity values. This covers
+typos such as `galta` -> `Ghalta, Primal Hunger` without invoking an LLM and
+makes the cutoff directly tunable.
 
 Each line is an independent JSON object, so an interrupted write cannot corrupt
 earlier searches. Read the complete log as a JSON array with:

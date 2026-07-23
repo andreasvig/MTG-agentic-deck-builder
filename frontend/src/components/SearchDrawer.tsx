@@ -143,6 +143,10 @@ export function SearchDrawer({
               page: {
                 ...result,
                 cards: [...current.page.cards, ...result.cards],
+                name_match_scores: {
+                  ...current.page.name_match_scores,
+                  ...result.name_match_scores,
+                },
               },
             };
           }
@@ -624,6 +628,8 @@ export function SearchDrawer({
                         entry.card.scryfall_id !== card.scryfall_id,
                     );
                     const quantity = exactEntry?.quantity ?? 0;
+                    const nameMatchScore =
+                      state.page?.name_match_scores[card.scryfall_id];
                     const colorIdentityWarning =
                       targetGroupId !== COMMAND_ZONE_GROUP_ID &&
                       !isWithinCommanderColorIdentity(
@@ -654,6 +660,14 @@ export function SearchDrawer({
                           </button>
                           <span className="mana-line">{card.mana_cost || "No mana cost"}</span>
                           <span className="type-line">{card.type_line}</span>
+                          {typeof nameMatchScore === "number" ? (
+                            <span className="search-card__match-score">
+                              {state.page?.strategy === "fuzzy"
+                                ? "Fuzzy"
+                                : "Name"}{" "}
+                              {nameMatchScore.toFixed(3)}
+                            </span>
+                          ) : null}
                           <span className="printing-line">
                             {card.set_code.toUpperCase()} #{card.collector_number}
                             {" · "}

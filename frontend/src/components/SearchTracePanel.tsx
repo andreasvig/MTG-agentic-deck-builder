@@ -16,12 +16,13 @@ const DETAIL_LABELS: Array<[string, string]> = [
   ["provider_total_results", "Provider results"],
   ["interpretation", "Interpretation"],
   ["reason", "Decision"],
-  ["provider_match", "Closest match"],
-  ["accepted_by_filters", "Passed filters"],
+  ["fuzzy_cutoff", "Fuzzy cutoff"],
+  ["top_score", "Top score"],
+  ["routing_signal", "Routing signal"],
   ["model", "Model"],
   ["provider", "Provider"],
   ["reasoning_effort", "Reasoning"],
-  ["candidate_limit", "LLM candidates"],
+  ["candidate_limit", "Candidate limit"],
   ["max_tokens", "Output limit"],
   ["error_type", "Error"],
 ];
@@ -98,6 +99,8 @@ function TraceStage({
     return [{ key, label, value: displayValue(stage.details[key]) }];
   });
   const exchange = recordValue(stage.details?.exchange);
+  const nameMatches = recordList(stage.details?.name_matches);
+  const fuzzyCandidates = recordList(stage.details?.fuzzy_candidates);
   const outputCards = stage.output?.top.slice(0, 8) ?? [];
   const rankChanges = stage.rank_changes?.slice(0, 12) ?? [];
 
@@ -166,9 +169,61 @@ function TraceStage({
           </section>
         ) : null}
 
+        {nameMatches.length > 0 ? (
+          <NameCandidateList
+            candidates={nameMatches}
+            title="Contained name matches"
+          />
+        ) : null}
+
+        {fuzzyCandidates.length > 0 ? (
+          <NameCandidateList
+            candidates={fuzzyCandidates}
+            title="Fuzzy candidates"
+          />
+        ) : null}
+
         {exchange ? <LlmExchange exchange={exchange} /> : null}
       </div>
     </details>
+  );
+}
+
+function NameCandidateList({
+  candidates,
+  title,
+}: {
+  candidates: Record<string, unknown>[];
+  title: string;
+}) {
+  return (
+    <section className="search-debug-candidates">
+      <h4>{title}</h4>
+      <div>
+        {candidates.map((candidate, index) => {
+          const accepted = candidate.accepted_by_score;
+          const returned = candidate.returned_after_filters;
+          const status =
+            accepted === false
+              ? "below cutoff"
+              : returned === false
+                ? "filtered out"
+                : textValue(candidate.match_kind)?.replaceAll("_", " ") ??
+                  "accepted";
+          const alias = textValue(candidate.matched_alias);
+          return (
+            <span key={`${textValue(candidate.name) ?? "candidate"}-${index}`}>
+              <strong>{textValue(candidate.name) ?? "Unknown card"}</strong>
+              <small>
+                {status}
+                {alias ? ` · via "${alias}"` : ""}
+              </small>
+              <code>{numberValue(candidate.score)?.toFixed(3) ?? "–"}</code>
+            </span>
+          );
+        })}
+      </div>
+    </section>
   );
 }
 
@@ -318,6 +373,15 @@ function recordValue(value: unknown): Record<string, unknown> | null {
   return typeof value === "object" && value !== null && !Array.isArray(value)
     ? (value as Record<string, unknown>)
     : null;
+}
+
+function recordList(value: unknown): Record<string, unknown>[] {
+  return Array.isArray(value)
+    ? value.flatMap((item) => {
+        const record = recordValue(item);
+        return record ? [record] : [];
+      })
+    : [];
 }
 
 function textValue(value: unknown): string | null {

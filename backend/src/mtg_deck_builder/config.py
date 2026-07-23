@@ -62,6 +62,8 @@ class Settings(BaseSettings):
     search_debug_enabled: bool = False
     search_debug_log_path: Path = Path("local-data/search-debug.jsonl")
     search_debug_result_limit: Annotated[int, Field(ge=1, le=100)] = 25
+    fuzzy_name_candidate_limit: Annotated[int, Field(ge=2, le=30)] = 12
+    fuzzy_name_min_score: Annotated[float, Field(ge=0, le=1)] = 0.45
 
     @field_validator(
         "host",

@@ -13,6 +13,7 @@ from mtg_deck_builder.domain import (
     CardSearchQuery,
     CardSearchResult,
 )
+from mtg_deck_builder.providers import FuzzyNameCandidate
 from mtg_deck_builder.search import (
     HybridCardSearchProvider,
     OpenRouterCardReranker,
@@ -60,10 +61,10 @@ class StubScryfall:
     def __init__(
         self,
         pages: list[CardSearchPage],
-        fuzzy_card: CardSearchResult | None = None,
+        fuzzy_candidates: list[FuzzyNameCandidate] | None = None,
     ) -> None:
         self.pages = pages
-        self.fuzzy_card = fuzzy_card
+        self.fuzzy_candidates = fuzzy_candidates or []
         self.search_calls: list[CardSearchQuery] = []
         self.fuzzy_calls: list[str] = []
 
@@ -71,9 +72,14 @@ class StubScryfall:
         self.search_calls.append(query)
         return self.pages.pop(0)
 
-    async def find_fuzzy(self, name: str) -> CardSearchResult | None:
+    async def rank_fuzzy_names(
+        self,
+        name: str,
+        *,
+        limit: int,
+    ) -> list[FuzzyNameCandidate]:
         self.fuzzy_calls.append(name)
-        return self.fuzzy_card
+        return self.fuzzy_candidates[:limit]
 
 
 class ReverseRanker:
@@ -157,47 +163,144 @@ def test_example_intents_compile_to_broad_candidate_queries() -> None:
         ), query
 
 
-def test_hybrid_search_uses_exact_then_fuzzy_name_layers() -> None:
+def test_exact_name_layer_returns_and_scores_contained_names() -> None:
     forest = make_card(colors=["G"])
-    scryfall = StubScryfall([empty_page()], fuzzy_card=forest)
-    provider = HybridCardSearchProvider(scryfall)  # type: ignore[arg-type]
-
-    result = asyncio.run(
-        provider.search(
-            CardSearchQuery(
-                q="foret",
-                filters=CardSearchFilters(colors=["G"], include_colorless=False),
-            )
-        )
+    forest_bear = make_card(
+        "Forest Bear",
+        scryfall_id="3e3f0bcd-0796-494d-bf51-94b33c1671e9",
+        colors=["G"],
     )
-
-    assert scryfall.search_calls[0].q == '!"foret" game:paper id<=g -id=c'
-    assert scryfall.fuzzy_calls == ["foret"]
-    assert result.cards == [forest]
-    assert result.strategy == "fuzzy"
-    assert result.interpretation == "Closest card name: Forest"
-
-
-def test_scryfall_corrected_exact_result_is_reported_as_fuzzy() -> None:
-    forest = make_card(colors=["G"])
     scryfall = StubScryfall(
         [
             CardSearchPage(
-                query='!"foret"',
+                query="name:/forest/",
                 page=1,
-                total_results=1,
+                total_results=2,
                 has_more=False,
-                cards=[forest],
+                cards=[forest_bear, forest],
             )
         ]
     )
     provider = HybridCardSearchProvider(scryfall)  # type: ignore[arg-type]
 
+    result = asyncio.run(provider.search(CardSearchQuery(q="forest")))
+
+    assert scryfall.search_calls[0].q == "name:/forest/ game:paper"
+    assert scryfall.fuzzy_calls == []
+    assert result.cards == [forest, forest_bear]
+    assert result.strategy == "exact"
+    assert result.interpretation == 'Name contains "forest"'
+    assert result.name_match_scores[forest.scryfall_id] == 1
+    assert result.name_match_scores[forest_bear.scryfall_id] == 0.705882
+
+
+def test_hybrid_search_returns_multiple_fuzzy_names_above_cutoff() -> None:
+    forest = make_card(colors=["G"])
+    forest_bear = make_card(
+        "Forest Bear",
+        scryfall_id="3e3f0bcd-0796-494d-bf51-94b33c1671e9",
+        colors=["G"],
+    )
+    scryfall = StubScryfall(
+        [
+            empty_page(),
+            CardSearchPage(
+                query="fuzzy candidates",
+                page=1,
+                total_results=2,
+                has_more=False,
+                cards=[forest_bear, forest],
+            ),
+        ],
+        fuzzy_candidates=[
+            FuzzyNameCandidate(
+                name="Forest",
+                matched_alias="forest",
+                score=0.909091,
+            ),
+            FuzzyNameCandidate(
+                name="Forest Bear",
+                matched_alias="forest bear",
+                score=0.625,
+            ),
+            FuzzyNameCandidate(
+                name="Frost",
+                matched_alias="frost",
+                score=0.4,
+            ),
+        ],
+    )
+    provider = HybridCardSearchProvider(  # type: ignore[arg-type]
+        scryfall,
+        fuzzy_min_score=0.45,
+    )
+
+    result = asyncio.run(
+        provider.search(
+            CardSearchQuery(
+                q="foret",
+                filters=CardSearchFilters(
+                    colors=["G"],
+                    include_colorless=False,
+                ),
+            )
+        )
+    )
+
+    assert scryfall.search_calls[0].q == (
+        "name:/foret/ game:paper id<=g -id=c"
+    )
+    assert scryfall.search_calls[1].q == (
+        '(!"Forest" OR !"Forest Bear") game:paper id<=g -id=c'
+    )
+    assert scryfall.fuzzy_calls == ["foret"]
+    assert result.cards == [forest, forest_bear]
+    assert result.strategy == "fuzzy"
+    assert result.interpretation == "Closest card names above 0.450"
+    assert result.name_match_scores == {
+        forest.scryfall_id: 0.909091,
+        forest_bear.scryfall_id: 0.625,
+    }
+
+
+def test_contained_partial_does_not_block_stronger_fuzzy_layer() -> None:
+    forest = make_card()
+    as_foretold = make_card(
+        "As Foretold",
+        scryfall_id="3e3f0bcd-0796-494d-bf51-94b33c1671e9",
+    )
+    scryfall = StubScryfall(
+        [
+            CardSearchPage(
+                query="name:/foret/",
+                page=1,
+                total_results=1,
+                has_more=False,
+                cards=[as_foretold],
+            ),
+            CardSearchPage(
+                query="fuzzy candidates",
+                page=1,
+                total_results=1,
+                has_more=False,
+                cards=[forest],
+            ),
+        ],
+        fuzzy_candidates=[
+            FuzzyNameCandidate(
+                name="Forest",
+                matched_alias="forest",
+                score=0.909091,
+            ),
+        ],
+    )
+    provider = HybridCardSearchProvider(scryfall)  # type: ignore[arg-type]
+
     result = asyncio.run(provider.search(CardSearchQuery(q="foret")))
 
-    assert scryfall.fuzzy_calls == []
     assert result.strategy == "fuzzy"
-    assert result.interpretation == "Closest card name: Forest"
+    assert result.cards == [forest]
+    assert result.name_match_scores[forest.scryfall_id] == 0.909091
 
 
 def test_intent_results_are_locally_ranked() -> None:
@@ -312,7 +415,30 @@ def test_debug_mode_returns_summary_and_writes_layer_ordering(
 def test_debug_mode_logs_exact_and_fuzzy_layer_decisions(tmp_path: Path) -> None:
     forest = make_card(colors=["G"])
     log_path = tmp_path / "search-debug.jsonl"
-    scryfall = StubScryfall([empty_page()], fuzzy_card=forest)
+    scryfall = StubScryfall(
+        [
+            empty_page(),
+            CardSearchPage(
+                query="fuzzy candidates",
+                page=1,
+                total_results=1,
+                has_more=False,
+                cards=[forest],
+            ),
+        ],
+        fuzzy_candidates=[
+            FuzzyNameCandidate(
+                name="Forest",
+                matched_alias="forest",
+                score=0.909091,
+            ),
+            FuzzyNameCandidate(
+                name="Frost",
+                matched_alias="frost",
+                score=0.4,
+            ),
+        ],
+    )
     provider = HybridCardSearchProvider(  # type: ignore[arg-type]
         scryfall,
         debug_logger=JsonlSearchDebugLogger(log_path),
@@ -328,15 +454,35 @@ def test_debug_mode_logs_exact_and_fuzzy_layer_decisions(tmp_path: Path) -> None
     assert len(records) == 1
     assert records[0]["decision"]["input_kind"] == "card_name"
     assert records[0]["decision"]["strategy"] == "fuzzy"
+    assert records[0]["decision"]["fuzzy_cutoff"] == 0.45
+    assert records[0]["decision"]["fuzzy_routing_signal"] == (
+        "accept_name_match"
+    )
     assert [stage["name"] for stage in records[0]["stages"]] == [
         "Intent compilation",
-        "Exact name lookup",
+        "Contained name lookup",
         "Fuzzy name lookup",
     ]
-    assert records[0]["stages"][2]["details"] == {
-        "provider_match": "Forest",
-        "accepted_by_filters": True,
-    }
+    fuzzy_details = records[0]["stages"][2]["details"]
+    assert fuzzy_details["fuzzy_cutoff"] == 0.45
+    assert fuzzy_details["top_score"] == 0.909091
+    assert fuzzy_details["routing_signal"] == "accept_name_match"
+    assert fuzzy_details["fuzzy_candidates"] == [
+        {
+            "name": "Forest",
+            "matched_alias": "forest",
+            "score": 0.909091,
+            "accepted_by_score": True,
+            "returned_after_filters": True,
+        },
+        {
+            "name": "Frost",
+            "matched_alias": "frost",
+            "score": 0.4,
+            "accepted_by_score": False,
+            "returned_after_filters": False,
+        },
+    ]
 
 
 def test_search_debug_can_be_enabled_for_one_request(tmp_path: Path) -> None:

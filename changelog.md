@@ -82,6 +82,12 @@ All notable changes to this project will be documented in this file.
 - Added an in-search trace explorer with numbered layers, provider queries,
   ranking changes, exact LLM prompts and responses, usage metadata, and
   expandable raw JSON, including for zero-result searches.
+- Added multi-result name search: a full exact hit now returns every containing
+  card name with the exact card ranked first, while typo search returns several
+  ranked fuzzy candidates instead of one opaque correction.
+- Added normalized name-match values to result cards and complete fuzzy
+  candidate tables to debug traces, including matched aliases, cutoff
+  acceptance, filter outcome, and configurable candidate/cutoff settings.
 
 ### Repository
 

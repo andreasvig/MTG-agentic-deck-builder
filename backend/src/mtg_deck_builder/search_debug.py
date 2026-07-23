@@ -96,6 +96,10 @@ class SearchDebugTrace:
                     "total_results": page.total_results,
                     "has_more": page.has_more,
                     "returned": self._card_snapshot(page.cards),
+                    "name_match_scores": {
+                        str(scryfall_id): score
+                        for scryfall_id, score in page.name_match_scores.items()
+                    },
                     "warnings": page.warnings,
                 },
             }

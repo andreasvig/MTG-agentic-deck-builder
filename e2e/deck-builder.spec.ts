@@ -337,6 +337,17 @@ test("search communicates empty and provider-recovery states", async ({
       return;
     }
 
+    if (query === "galta") {
+      const response = searchPage(query, [ghalta]);
+      response.strategy = "fuzzy";
+      response.interpretation = "Closest card names above 0.450";
+      response.name_match_scores = {
+        [ghalta.scryfall_id]: 0.909091,
+      };
+      await fulfillJson(route, response);
+      return;
+    }
+
     await fulfillJson(route, searchPage(query, []));
   });
 
@@ -352,6 +363,12 @@ test("search communicates empty and provider-recovery states", async ({
   await searchInput.fill("Absolutely Not A Card");
   await expect(
     page.getByRole("heading", { name: "No cards found" }),
+  ).toBeVisible();
+
+  await searchInput.fill("galta");
+  await expect(page.getByText("Fuzzy 0.909")).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "Add Ghalta, Primal Hunger to deck" }),
   ).toBeVisible();
 
   await searchInput.fill("provider down");

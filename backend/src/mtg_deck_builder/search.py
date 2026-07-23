@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from decimal import Decimal
 from threading import Lock
 from typing import Any, Protocol
+from uuid import UUID
 
 import httpx2
 
@@ -18,7 +19,11 @@ from mtg_deck_builder.domain import (
     CardSearchQuery,
     CardSearchResult,
 )
-from mtg_deck_builder.providers import ScryfallCardSearchProvider
+from mtg_deck_builder.providers import (
+    FuzzyNameCandidate,
+    ScryfallCardSearchProvider,
+    name_similarity_score,
+)
 from mtg_deck_builder.search_debug import (
     JsonlSearchDebugLogger,
     SearchDebugTrace,
@@ -353,12 +358,20 @@ class HybridCardSearchProvider:
         llm_ranker: CardRanker | None = None,
         debug_logger: JsonlSearchDebugLogger | None = None,
         debug_default_enabled: bool = True,
+        fuzzy_candidate_limit: int = 12,
+        fuzzy_min_score: float = 0.45,
     ) -> None:
+        if fuzzy_candidate_limit < 2:
+            raise ValueError("fuzzy_candidate_limit must be at least 2")
+        if not 0 <= fuzzy_min_score <= 1:
+            raise ValueError("fuzzy_min_score must be between 0 and 1")
         self._scryfall = scryfall
         self._semantic_ranker = semantic_ranker
         self._llm_ranker = llm_ranker
         self._debug_logger = debug_logger
         self._debug_default_enabled = debug_default_enabled
+        self._fuzzy_candidate_limit = fuzzy_candidate_limit
+        self._fuzzy_min_score = fuzzy_min_score
 
     async def search(self, query: CardSearchQuery) -> CardSearchPage:
         trace = (
@@ -387,6 +400,8 @@ class HybridCardSearchProvider:
                         "max_tokens",
                         None,
                     ),
+                    "fuzzy_candidate_limit": self._fuzzy_candidate_limit,
+                    "fuzzy_min_score": self._fuzzy_min_score,
                 },
             )
             if self._debug_logger is not None
@@ -451,19 +466,32 @@ class HybridCardSearchProvider:
 
         provider_query = CardSearchQuery(
             q=_join_query(
-                _exact_name_query(query.q),
+                _contained_name_query(query.q),
                 "game:paper",
                 compile_filter_query(query.filters),
             ),
             page=query.page,
         )
         exact_started = stage_started()
-        exact_page = await self._scryfall.search(
-            provider_query
+        provider_exact_page = await self._scryfall.search(provider_query)
+        exact_cards = _sort_cards_by_name_score(
+            provider_exact_page.cards,
+            query.q,
+        )
+        exact_scores = _name_match_scores(exact_cards, query.q)
+        exact_page = provider_exact_page.model_copy(
+            update={
+                "cards": exact_cards,
+                "name_match_scores": exact_scores,
+            }
+        )
+        has_full_name_match = any(
+            _card_has_exact_name(card, query.q)
+            for card in exact_page.cards
         )
         if trace is not None:
             trace.add_stage(
-                "Exact name lookup",
+                "Contained name lookup",
                 status="ok",
                 duration_ms=stage_elapsed_ms(exact_started),
                 output_cards=exact_page.cards,
@@ -472,41 +500,86 @@ class HybridCardSearchProvider:
                     "provider_order": provider_query.order,
                     "provider_total_results": exact_page.total_results,
                     "has_more": exact_page.has_more,
+                    "full_name_found": has_full_name_match,
+                    "name_matches": _name_match_details(
+                        exact_page.cards,
+                        exact_scores,
+                        query.q,
+                    ),
                 },
             )
-        if exact_page.cards or query.page > 1:
-            corrected_name = (
-                exact_page.cards[0].name
-                if exact_page.cards
-                and not any(
-                    _card_has_exact_name(card, query.q)
-                    for card in exact_page.cards
-                )
-                else None
-            )
+        if has_full_name_match or query.page > 1:
             if trace is not None:
                 trace.set_decision(
-                    strategy="fuzzy" if corrected_name else "exact",
-                    scryfall_corrected_name=corrected_name,
+                    strategy="exact",
+                    name_match_kind=(
+                        "full_name"
+                        if has_full_name_match
+                        else "contained_name"
+                    ),
+                    top_name_score=(
+                        exact_scores.get(exact_page.cards[0].scryfall_id)
+                        if exact_page.cards
+                        else None
+                    ),
                 )
             return exact_page.model_copy(
                 update={
                     "query": query.q,
-                    "strategy": "fuzzy" if corrected_name else "exact",
-                    "interpretation": (
-                        f"Closest card name: {corrected_name}"
-                        if corrected_name
-                        else "Exact card name"
-                    ),
+                    "strategy": "exact",
+                    "interpretation": f'Name contains "{query.q}"',
                 }
             )
 
         fuzzy_started = stage_started()
-        fuzzy_card = await self._scryfall.find_fuzzy(query.q)
-        fuzzy_cards = (
-            [fuzzy_card]
-            if fuzzy_card is not None and card_matches_filters(fuzzy_card, query.filters)
-            else []
+        fuzzy_candidates = await self._scryfall.rank_fuzzy_names(
+            query.q,
+            limit=self._fuzzy_candidate_limit,
+        )
+        accepted_candidates = [
+            candidate
+            for candidate in fuzzy_candidates
+            if candidate.score >= self._fuzzy_min_score
+        ]
+        fuzzy_page = await self._fetch_fuzzy_candidates(
+            query,
+            accepted_candidates,
+        )
+        candidate_by_name = {
+            candidate.name.casefold(): candidate
+            for candidate in accepted_candidates
+        }
+        fuzzy_cards = sorted(
+            fuzzy_page.cards,
+            key=lambda card: _fuzzy_card_order(card, candidate_by_name),
+        )
+        fuzzy_scores = {
+            card.scryfall_id: candidate.score
+            for card in fuzzy_cards
+            if (
+                candidate := candidate_by_name.get(card.name.casefold())
+            )
+            is not None
+        }
+        returned_names = {card.name.casefold() for card in fuzzy_cards}
+        fuzzy_details = [
+            {
+                "name": candidate.name,
+                "matched_alias": candidate.matched_alias,
+                "score": candidate.score,
+                "accepted_by_score": candidate.score >= self._fuzzy_min_score,
+                "returned_after_filters": candidate.name.casefold()
+                in returned_names,
+            }
+            for candidate in fuzzy_candidates
+        ]
+        top_score = (
+            fuzzy_candidates[0].score if fuzzy_candidates else None
+        )
+        routing_signal = (
+            "accept_name_match"
+            if accepted_candidates
+            else "intent_candidate"
         )
         if trace is not None:
             trace.add_stage(
@@ -515,22 +588,65 @@ class HybridCardSearchProvider:
                 duration_ms=stage_elapsed_ms(fuzzy_started),
                 output_cards=fuzzy_cards,
                 details={
-                    "provider_match": fuzzy_card.name if fuzzy_card else None,
-                    "accepted_by_filters": bool(fuzzy_cards),
+                    "provider_query": (
+                        fuzzy_page.query if accepted_candidates else None
+                    ),
+                    "candidate_limit": self._fuzzy_candidate_limit,
+                    "fuzzy_cutoff": self._fuzzy_min_score,
+                    "top_score": top_score,
+                    "routing_signal": routing_signal,
+                    "fuzzy_candidates": fuzzy_details,
                 },
             )
-            trace.set_decision(strategy="fuzzy")
+            trace.set_decision(
+                strategy="fuzzy",
+                fuzzy_cutoff=self._fuzzy_min_score,
+                fuzzy_top_score=top_score,
+                fuzzy_routing_signal=routing_signal,
+            )
         return CardSearchPage(
             query=query.q,
             page=1,
             total_results=len(fuzzy_cards),
             has_more=False,
             cards=fuzzy_cards,
+            name_match_scores=fuzzy_scores,
+            warnings=fuzzy_page.warnings,
             strategy="fuzzy",
             interpretation=(
-                f"Closest card name: {fuzzy_card.name}" if fuzzy_card is not None else None
+                f"Closest card names above {self._fuzzy_min_score:.3f}"
+                if accepted_candidates
+                else None
             ),
         )
+
+    async def _fetch_fuzzy_candidates(
+        self,
+        query: CardSearchQuery,
+        candidates: list[FuzzyNameCandidate],
+    ) -> CardSearchPage:
+        if not candidates:
+            return CardSearchPage(
+                query=query.q,
+                page=1,
+                total_results=0,
+                has_more=False,
+                cards=[],
+            )
+
+        exact_names = " OR ".join(
+            _exact_name_query(candidate.name)
+            for candidate in candidates
+        )
+        provider_query = CardSearchQuery(
+            q=_join_query(
+                f"({exact_names})",
+                "game:paper",
+                compile_filter_query(query.filters),
+            ),
+            page=1,
+        )
+        return await self._scryfall.search(provider_query)
 
     async def _search_syntax(
         self,
@@ -930,9 +1046,71 @@ def _is_scryfall_syntax(query: str) -> bool:
     return bool(_SCRYFALL_SYNTAX.search(query))
 
 
+def _contained_name_query(query: str) -> str:
+    escaped = re.escape(query).replace("/", r"\/")
+    return f"name:/{escaped}/"
+
+
 def _exact_name_query(query: str) -> str:
     escaped = query.replace("\\", "\\\\").replace('"', '\\"')
     return f'!"{escaped}"'
+
+
+def _card_name_score(card: CardSearchResult, query: str) -> float:
+    names = [card.name, *(face.name for face in card.card_faces)]
+    return max(name_similarity_score(query, name) for name in names)
+
+
+def _sort_cards_by_name_score(
+    cards: list[CardSearchResult],
+    query: str,
+) -> list[CardSearchResult]:
+    return sorted(
+        cards,
+        key=lambda card: (
+            -_card_name_score(card, query),
+            card.name.casefold(),
+        ),
+    )
+
+
+def _name_match_scores(
+    cards: list[CardSearchResult],
+    query: str,
+) -> dict[UUID, float]:
+    return {
+        card.scryfall_id: _card_name_score(card, query)
+        for card in cards
+    }
+
+
+def _name_match_details(
+    cards: list[CardSearchResult],
+    scores: dict[UUID, float],
+    query: str,
+) -> list[dict[str, Any]]:
+    return [
+        {
+            "name": card.name,
+            "score": scores[card.scryfall_id],
+            "match_kind": (
+                "full_name"
+                if _card_has_exact_name(card, query)
+                else "contained_name"
+            ),
+        }
+        for card in cards
+    ]
+
+
+def _fuzzy_card_order(
+    card: CardSearchResult,
+    candidates: dict[str, FuzzyNameCandidate],
+) -> tuple[int, float, str]:
+    candidate = candidates.get(card.name.casefold())
+    if candidate is None:
+        return (1, 0, card.name.casefold())
+    return (0, -candidate.score, card.name.casefold())
 
 
 def _card_has_exact_name(card: CardSearchResult, query: str) -> bool:

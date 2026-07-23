@@ -2201,6 +2201,7 @@ select {
 }
 
 .search-debug-ranking h4,
+.search-debug-candidates h4,
 .search-debug-exchange h4 {
   margin: 0;
   color: var(--ink-soft);
@@ -2212,6 +2213,46 @@ select {
   display: grid;
   margin-top: 5px;
   border-top: 1px solid #e0e4e1;
+}
+
+.search-debug-candidates > div {
+  display: grid;
+  margin-top: 5px;
+  border-top: 1px solid #e0e4e1;
+}
+
+.search-debug-candidates > div > span {
+  display: grid;
+  grid-template-columns: minmax(120px, 1fr) minmax(120px, 1.4fr) 46px;
+  min-height: 28px;
+  align-items: center;
+  gap: 8px;
+  border-bottom: 1px solid #e0e4e1;
+}
+
+.search-debug-candidates strong,
+.search-debug-candidates small,
+.search-debug-candidates code {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.search-debug-candidates strong {
+  color: var(--ink-soft);
+  font-size: 8px;
+}
+
+.search-debug-candidates small {
+  color: var(--muted);
+  font-size: 7px;
+}
+
+.search-debug-candidates code {
+  color: #355d40;
+  font-size: 8px;
+  font-weight: 780;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
 }
 
 .search-debug-ranking > div > span {
@@ -2485,6 +2526,18 @@ select {
 .search-card__name svg {
   flex: 0 0 auto;
   color: var(--muted);
+}
+
+.search-card__match-score {
+  align-self: flex-start;
+  padding: 2px 4px;
+  color: #355d40;
+  font-size: 8px;
+  font-weight: 760;
+  font-variant-numeric: tabular-nums;
+  background: #e4eee7;
+  border: 1px solid #c6d8ca;
+  border-radius: 3px;
 }
 
 .printing-line {

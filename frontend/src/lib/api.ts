@@ -150,6 +150,14 @@ function isCardSearchPage(value: unknown): value is CardSearchPage {
         typeof card.mana_value === "number" &&
         isRecord(card.prices),
     ) &&
+    isRecord(value.name_match_scores) &&
+    Object.values(value.name_match_scores).every(
+      (score) =>
+        typeof score === "number" &&
+        Number.isFinite(score) &&
+        score >= 0 &&
+        score <= 1,
+    ) &&
     Array.isArray(value.warnings) &&
     ["exact", "fuzzy", "intent", "syntax"].includes(String(value.strategy)) &&
     (value.interpretation === null ||

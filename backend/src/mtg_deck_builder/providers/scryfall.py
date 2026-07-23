@@ -2,8 +2,9 @@
 
 import asyncio
 import re
+from dataclasses import dataclass
 from decimal import Decimal
-from difflib import get_close_matches
+from difflib import SequenceMatcher, get_close_matches
 from time import monotonic
 from typing import Annotated, Literal
 from uuid import UUID
@@ -32,6 +33,15 @@ from mtg_deck_builder.providers.cards import CardSearchQueryError, CardSearchUna
 _NonEmptyString = Annotated[str, StringConstraints(min_length=1)]
 _Legality = Literal["legal", "not_legal", "restricted", "banned"]
 _Finish = Literal["nonfoil", "foil", "etched"]
+
+
+@dataclass(frozen=True)
+class FuzzyNameCandidate:
+    """A catalog card name and the alias that produced its similarity score."""
+
+    name: str
+    matched_alias: str
+    score: float
 
 
 class _ScryfallModel(BaseModel):
@@ -169,7 +179,7 @@ class ScryfallCardSearchProvider:
         self._request_lock = asyncio.Lock()
         self._last_request_started_at = 0.0
         self._name_catalog_lock = asyncio.Lock()
-        self._name_aliases: dict[str, str] | None = None
+        self._name_aliases: dict[str, tuple[str, ...]] | None = None
 
     async def search(self, query: CardSearchQuery) -> CardSearchPage:
         await self._wait_for_request_slot()
@@ -238,6 +248,46 @@ class ScryfallCardSearchProvider:
         except (ValueError, ValidationError) as exc:
             raise CardSearchUnavailable from exc
 
+    async def rank_fuzzy_names(
+        self,
+        name: str,
+        *,
+        limit: int = 12,
+    ) -> list[FuzzyNameCandidate]:
+        """Rank several catalog names so callers can apply and inspect a cutoff."""
+
+        if limit < 1:
+            raise ValueError("limit must be positive")
+        normalized = _normalize_card_name(name)
+        if len(normalized) < 4:
+            return []
+
+        aliases = await self._get_name_aliases()
+        scores_by_name: dict[str, tuple[float, str]] = {}
+        for alias, card_names in aliases.items():
+            score = name_similarity_score(normalized, alias)
+            for card_name in card_names:
+                current = scores_by_name.get(card_name)
+                if current is None or score > current[0]:
+                    scores_by_name[card_name] = (score, alias)
+
+        candidates = [
+            FuzzyNameCandidate(
+                name=card_name,
+                matched_alias=matched_alias,
+                score=score,
+            )
+            for card_name, (score, matched_alias) in scores_by_name.items()
+        ]
+        candidates.sort(
+            key=lambda candidate: (
+                -candidate.score,
+                abs(len(candidate.matched_alias) - len(normalized)),
+                candidate.name.casefold(),
+            )
+        )
+        return candidates[:limit]
+
     async def _request_named(self, params: dict[str, str]) -> httpx2.Response:
         await self._wait_for_request_slot()
         try:
@@ -256,9 +306,9 @@ class ScryfallCardSearchProvider:
             n=1,
             cutoff=0.72,
         )
-        return aliases[matches[0]] if matches else None
+        return aliases[matches[0]][0] if matches else None
 
-    async def _get_name_aliases(self) -> dict[str, str]:
+    async def _get_name_aliases(self) -> dict[str, tuple[str, ...]]:
         async with self._name_catalog_lock:
             if self._name_aliases is not None:
                 return self._name_aliases
@@ -275,10 +325,17 @@ class ScryfallCardSearchProvider:
             except (ValueError, ValidationError) as exc:
                 raise CardSearchUnavailable from exc
 
-            aliases: dict[str, str] = {}
+            names_by_alias: dict[str, set[str]] = {}
             for card_name in catalog.data:
+                canonical_name = _canonical_catalog_name(card_name)
                 for alias in _card_name_aliases(card_name):
-                    aliases.setdefault(alias, card_name)
+                    names_by_alias.setdefault(alias, set()).add(
+                        canonical_name
+                    )
+            aliases = {
+                alias: tuple(sorted(card_names, key=str.casefold))
+                for alias, card_names in names_by_alias.items()
+            }
             self._name_aliases = aliases
             return aliases
 
@@ -301,5 +358,27 @@ def _card_name_aliases(card_name: str) -> set[str]:
     return {alias for alias in aliases if alias}
 
 
+def _canonical_catalog_name(card_name: str) -> str:
+    faces = card_name.split(" // ")
+    return faces[0] if len(set(faces)) == 1 else card_name
+
+
 def _normalize_card_name(value: str) -> str:
     return re.sub(r"[^a-z0-9]+", " ", value.casefold()).strip()
+
+
+def name_similarity_score(query: str, candidate: str) -> float:
+    """Return a stable normalized similarity value for two card-name strings."""
+
+    normalized_query = _normalize_card_name(query)
+    normalized_candidate = _normalize_card_name(candidate)
+    if not normalized_query or not normalized_candidate:
+        return 0.0
+    return round(
+        SequenceMatcher(
+            None,
+            normalized_query,
+            normalized_candidate,
+        ).ratio(),
+        6,
+    )

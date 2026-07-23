@@ -233,7 +233,7 @@ def test_scryfall_provider_normalizes_reversible_card_from_first_face() -> None:
     assert str(card.card_faces[1].image_uris.normal).endswith("/back/propaganda.jpg")
 
 
-def test_scryfall_fuzzy_miss_uses_cached_card_name_catalog() -> None:
+def test_scryfall_fuzzy_catalog_is_cached_and_returns_ranked_candidates() -> None:
     requested_paths: list[str] = []
     catalog_requests = 0
 
@@ -262,7 +262,7 @@ def test_scryfall_fuzzy_miss_uses_cached_card_name_catalog() -> None:
         payload["name"] = "Ghalta, Primal Hunger"
         return httpx2.Response(200, json=payload)
 
-    async def run() -> tuple[str | None, str | None]:
+    async def run() -> tuple[str | None, str | None, list[tuple[str, float]]]:
         async with httpx2.AsyncClient(
             base_url="https://api.scryfall.test",
             transport=httpx2.MockTransport(handler),
@@ -273,14 +273,24 @@ def test_scryfall_fuzzy_miss_uses_cached_card_name_catalog() -> None:
             )
             first = await provider.find_fuzzy("galta")
             second = await provider.find_fuzzy("galhta")
+            candidates = await provider.rank_fuzzy_names("galta", limit=3)
             return (
                 first.name if first is not None else None,
                 second.name if second is not None else None,
+                [
+                    (candidate.name, candidate.score)
+                    for candidate in candidates
+                ],
             )
 
     assert asyncio.run(run()) == (
         "Ghalta, Primal Hunger",
         "Ghalta, Primal Hunger",
+        [
+            ("Ghalta, Primal Hunger", 0.909091),
+            ("Ghalta and Mavren", 0.454545),
+            ("Ghastly Remains", 0.4),
+        ],
     )
     assert catalog_requests == 1
     assert requested_paths == [
