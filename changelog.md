@@ -24,6 +24,17 @@ All notable changes to this project will be documented in this file.
   3.5 Flash-Lite as candidates to evaluate.
 - Defined planned agent tools for deck operations, Scryfall, Sonar web search,
   page fetching, and a permission-dependent EDHREC provider.
+- Added a React, TypeScript, and Vite frontend scaffold with a responsive
+  deck-building workspace, category-column and list views, an inspector, and a
+  live backend connection indicator.
+- Added a FastAPI backend scaffold with environment-based settings, restricted
+  local CORS, and a typed `GET /api/v1/health` endpoint.
+- Added matching Pydantic and TypeScript contracts for Commander decks, card
+  references, card entries, and deck sections.
+- Added a root development runner that checks the reserved ports, starts both
+  services, and shuts them down together.
+- Added backend and frontend test suites, deterministic dependency lockfiles,
+  environment templates, and local setup documentation.
 
 ### Repository
 

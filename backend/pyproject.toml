@@ -1,0 +1,36 @@
+[build-system]
+requires = ["hatchling>=1.31.0,<2"]
+build-backend = "hatchling.build"
+
+[project]
+name = "mtg-agentic-deck-builder-api"
+version = "0.1.0"
+description = "FastAPI backend for the local-first MTG Commander deck builder."
+readme = "README.md"
+requires-python = ">=3.12,<3.15"
+dependencies = [
+    "fastapi>=0.139.2,<0.140",
+    "pydantic-settings>=2.14.2,<3",
+    "uvicorn[standard]>=0.51.0,<0.52",
+]
+
+[dependency-groups]
+dev = [
+    "httpx2>=2.8.0,<3",
+    "pytest>=9.1.1,<10",
+    "ruff>=0.15.22,<0.16",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/mtg_deck_builder"]
+
+[tool.pytest.ini_options]
+addopts = ["-ra", "--strict-config", "--strict-markers"]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]

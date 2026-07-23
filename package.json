@@ -1,0 +1,15 @@
+{
+  "name": "mtg-agentic-deck-builder",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Local-first Commander deck builder development workspace",
+  "scripts": {
+    "setup": "uv sync --project backend --all-groups && npm install --prefix frontend",
+    "dev": "node --env-file-if-exists=.env scripts/dev.mjs",
+    "test": "uv --directory backend run pytest && npm test --prefix frontend",
+    "build": "npm run build --prefix frontend"
+  },
+  "engines": {
+    "node": ">=22.12.0"
+  }
+}
