@@ -233,6 +233,65 @@ def test_scryfall_provider_normalizes_reversible_card_from_first_face() -> None:
     assert str(card.card_faces[1].image_uris.normal).endswith("/back/propaganda.jpg")
 
 
+def test_scryfall_fuzzy_miss_uses_cached_card_name_catalog() -> None:
+    requested_paths: list[str] = []
+    catalog_requests = 0
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        nonlocal catalog_requests
+        requested_paths.append(request.url.path)
+        if request.url.path == "/catalog/card-names":
+            catalog_requests += 1
+            return httpx2.Response(
+                200,
+                json={
+                    "object": "catalog",
+                    "total_values": 3,
+                    "data": [
+                        "Ghalta and Mavren",
+                        "Ghalta, Primal Hunger",
+                        "Ghastly Remains",
+                    ],
+                },
+            )
+        if request.url.params.get("fuzzy"):
+            return httpx2.Response(404, json={"object": "error"})
+
+        assert request.url.params["exact"] == "Ghalta, Primal Hunger"
+        payload = make_card_payload()
+        payload["name"] = "Ghalta, Primal Hunger"
+        return httpx2.Response(200, json=payload)
+
+    async def run() -> tuple[str | None, str | None]:
+        async with httpx2.AsyncClient(
+            base_url="https://api.scryfall.test",
+            transport=httpx2.MockTransport(handler),
+        ) as client:
+            provider = ScryfallCardSearchProvider(
+                client,
+                minimum_request_interval_seconds=0,
+            )
+            first = await provider.find_fuzzy("galta")
+            second = await provider.find_fuzzy("galhta")
+            return (
+                first.name if first is not None else None,
+                second.name if second is not None else None,
+            )
+
+    assert asyncio.run(run()) == (
+        "Ghalta, Primal Hunger",
+        "Ghalta, Primal Hunger",
+    )
+    assert catalog_requests == 1
+    assert requested_paths == [
+        "/cards/named",
+        "/catalog/card-names",
+        "/cards/named",
+        "/cards/named",
+        "/cards/named",
+    ]
+
+
 def test_scryfall_not_found_becomes_empty_search_page() -> None:
     def handler(_: httpx2.Request) -> httpx2.Response:
         return httpx2.Response(

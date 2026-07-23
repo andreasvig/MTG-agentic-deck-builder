@@ -103,6 +103,49 @@ export interface SearchDebugSummary {
   log_written: boolean;
   total_duration_ms: number;
   stages: SearchDebugStage[];
+  trace: SearchDebugTrace;
+}
+
+export interface SearchDebugCardReference {
+  rank: number;
+  scryfall_id: string;
+  name: string;
+}
+
+export interface SearchDebugCardSnapshot {
+  count: number;
+  top: SearchDebugCardReference[];
+}
+
+export interface SearchDebugRankChange {
+  scryfall_id: string;
+  name: string;
+  before_rank: number | null;
+  after_rank: number;
+  delta: number | null;
+}
+
+export interface SearchDebugTraceStage {
+  name: string;
+  status: SearchDebugStageStatus;
+  duration_ms: number;
+  input?: SearchDebugCardSnapshot;
+  output?: SearchDebugCardSnapshot;
+  rank_changes?: SearchDebugRankChange[];
+  details?: Record<string, unknown>;
+}
+
+export interface SearchDebugTrace {
+  schema_version: number;
+  trace_id: string;
+  started_at: string;
+  completed_at: string;
+  total_duration_ms: number;
+  request: Record<string, unknown>;
+  configuration: Record<string, unknown>;
+  decision: Record<string, unknown>;
+  stages: SearchDebugTraceStage[];
+  result: Record<string, unknown>;
 }
 
 export function getCardImage(

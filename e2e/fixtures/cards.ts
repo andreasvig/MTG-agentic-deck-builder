@@ -2,6 +2,7 @@ import type {
   CardImageUris,
   CardSearchPage,
   CardSearchResult,
+  SearchDebugSummary,
 } from "../../frontend/src/domain/card";
 
 const solRingImages: CardImageUris = {
@@ -211,5 +212,166 @@ export function searchPage(
     interpretation: "Exact card name",
     reranked: false,
     debug: null,
+  };
+}
+
+export function searchDebugSummary(): SearchDebugSummary {
+  const requestBody = {
+    model: "google/gemini-3.5-flash-lite",
+    messages: [
+      {
+        role: "system",
+        content: "Rank Magic cards for the user's deck-building intent.",
+      },
+      {
+        role: "user",
+        content: JSON.stringify({
+          intent: "blue ramp",
+          cards: [{ scryfall_id: solRing.scryfall_id, name: solRing.name }],
+        }),
+      },
+    ],
+    reasoning: { effort: "minimal", exclude: true },
+    max_tokens: 900,
+  };
+  const responseBody = {
+    model: "google/gemini-3.5-flash-lite",
+    provider: "Google AI Studio",
+    choices: [
+      {
+        message: {
+          role: "assistant",
+          content: JSON.stringify({
+            ordered_scryfall_ids: [solRing.scryfall_id],
+          }),
+        },
+      },
+    ],
+    usage: { total_tokens: 312, cost: 0.00042 },
+  };
+
+  return {
+    trace_id: "f3c7af78-93ea-4d1b-8873-0eac5b4f6c5f",
+    log_path: "local-data/search-debug.jsonl",
+    log_written: true,
+    total_duration_ms: 918.4,
+    stages: [
+      {
+        name: "Scryfall intent candidates",
+        status: "ok",
+        duration_ms: 112.1,
+        input_count: null,
+        output_count: 16,
+      },
+      {
+        name: "Local semantic ranking",
+        status: "ok",
+        duration_ms: 308.7,
+        input_count: 16,
+        output_count: 16,
+      },
+      {
+        name: "OpenRouter ranking",
+        status: "ok",
+        duration_ms: 497.6,
+        input_count: 16,
+        output_count: 16,
+      },
+    ],
+    trace: {
+      schema_version: 1,
+      trace_id: "f3c7af78-93ea-4d1b-8873-0eac5b4f6c5f",
+      started_at: "2026-07-23T18:00:00Z",
+      completed_at: "2026-07-23T18:00:00.918Z",
+      total_duration_ms: 918.4,
+      request: {
+        query: "blue ramp",
+        page: 1,
+        debug: true,
+        filters: {},
+      },
+      configuration: {
+        semantic_ranker: "BAAI/bge-small-en-v1.5",
+        llm_ranker: "google/gemini-3.5-flash-lite",
+      },
+      decision: {
+        input_kind: "natural_language_intent",
+        strategy: "intent",
+      },
+      stages: [
+        {
+          name: "Scryfall intent candidates",
+          status: "ok",
+          duration_ms: 112.1,
+          output: {
+            count: 16,
+            top: [
+              {
+                rank: 1,
+                scryfall_id: solRing.scryfall_id,
+                name: solRing.name,
+              },
+            ],
+          },
+          details: {
+            provider_query: '(o:"add" OR o:"put a land card") id<=u game:paper',
+            provider_order: "edhrec",
+            provider_total_results: 86,
+          },
+        },
+        {
+          name: "Local semantic ranking",
+          status: "ok",
+          duration_ms: 308.7,
+          input: { count: 16, top: [] },
+          output: { count: 16, top: [] },
+          rank_changes: [
+            {
+              scryfall_id: solRing.scryfall_id,
+              name: solRing.name,
+              before_rank: 4,
+              after_rank: 1,
+              delta: 3,
+            },
+          ],
+          details: { model: "BAAI/bge-small-en-v1.5" },
+        },
+        {
+          name: "OpenRouter ranking",
+          status: "ok",
+          duration_ms: 497.6,
+          input: { count: 16, top: [] },
+          output: { count: 16, top: [] },
+          rank_changes: [
+            {
+              scryfall_id: solRing.scryfall_id,
+              name: solRing.name,
+              before_rank: 2,
+              after_rank: 1,
+              delta: 1,
+            },
+          ],
+          details: {
+            model: "google/gemini-3.5-flash-lite",
+            reasoning_effort: "minimal",
+            max_tokens: 900,
+            exchange: {
+              request: {
+                method: "POST",
+                path: "/chat/completions",
+                body: requestBody,
+                raw_body: JSON.stringify(requestBody),
+              },
+              response: {
+                status_code: 200,
+                body: responseBody,
+                raw_body: JSON.stringify(responseBody),
+              },
+            },
+          },
+        },
+      ],
+      result: { status: "ok", strategy: "intent" },
+    },
   };
 }

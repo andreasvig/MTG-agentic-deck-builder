@@ -1,7 +1,7 @@
 """Provider-neutral card search contracts."""
 
 from decimal import Decimal
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 from uuid import UUID
 
 from pydantic import (
@@ -150,6 +150,7 @@ class SearchDebugSummary(CardModel):
     log_written: bool
     total_duration_ms: Annotated[float, Field(ge=0)]
     stages: list[SearchDebugStage]
+    trace: dict[str, Any]
 
 
 class CardSearchPage(CardModel):

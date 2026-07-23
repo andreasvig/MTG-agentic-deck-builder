@@ -79,6 +79,9 @@ All notable changes to this project will be documented in this file.
   before/after rankings, rank deltas, warnings, and final results.
 - Added configurable OpenRouter provider, reasoning effort, and completion
   budget controls plus a repeatable four-model end-to-end reranker benchmark.
+- Added an in-search trace explorer with numbered layers, provider queries,
+  ranking changes, exact LLM prompts and responses, usage metadata, and
+  expandable raw JSON, including for zero-result searches.
 
 ### Repository
 
@@ -127,3 +130,6 @@ All notable changes to this project will be documented in this file.
 - Selected Gemini 3.5 Flash Lite at minimal reasoning as the default reranker
   after live comparison with Mercury 2, Cerebras Gemma 4 31B, and Cerebras
   GPT-OSS-120B.
+- Extended fuzzy card-name recovery with a cached Scryfall name-catalog
+  comparison when Scryfall's named-card endpoint cannot resolve a typo such as
+  `galta`.

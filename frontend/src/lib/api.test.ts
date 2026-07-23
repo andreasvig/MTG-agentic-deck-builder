@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 
-import { cardSearchPage } from "../test/fixtures";
+import { cardSearchPage, searchDebugSummary } from "../test/fixtures";
 import { ApiError, createApiClient } from "./api";
 
 describe("API client", () => {
@@ -87,21 +87,7 @@ describe("API client", () => {
 
   it("accepts typed search debug summaries", async () => {
     const page = cardSearchPage();
-    page.debug = {
-      trace_id: "f3c7af78-93ea-4d1b-8873-0eac5b4f6c5f",
-      log_path: "local-data/search-debug.jsonl",
-      log_written: true,
-      total_duration_ms: 18.4,
-      stages: [
-        {
-          name: "Exact name lookup",
-          status: "ok",
-          duration_ms: 17.9,
-          input_count: null,
-          output_count: 1,
-        },
-      ],
-    };
+    page.debug = searchDebugSummary();
     const fetcher = vi.fn<typeof fetch>().mockResolvedValue(Response.json(page));
 
     await expect(
@@ -109,7 +95,12 @@ describe("API client", () => {
     ).resolves.toMatchObject({
       debug: {
         log_written: true,
-        stages: [{ name: "Exact name lookup" }],
+        stages: expect.arrayContaining([
+          expect.objectContaining({ name: "Scryfall intent candidates" }),
+        ]),
+        trace: {
+          decision: { strategy: "intent" },
+        },
       },
     });
   });

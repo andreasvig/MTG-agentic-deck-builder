@@ -177,6 +177,30 @@ function isSearchDebugSummary(value: unknown): boolean {
           typeof stage.input_count === "number") &&
         (stage.output_count === null ||
           typeof stage.output_count === "number"),
-    )
+    ) &&
+    isSearchDebugTrace(value.trace)
+  );
+}
+
+function isSearchDebugTrace(value: unknown): boolean {
+  return (
+    isRecord(value) &&
+    typeof value.schema_version === "number" &&
+    typeof value.trace_id === "string" &&
+    typeof value.started_at === "string" &&
+    typeof value.completed_at === "string" &&
+    typeof value.total_duration_ms === "number" &&
+    isRecord(value.request) &&
+    isRecord(value.configuration) &&
+    isRecord(value.decision) &&
+    Array.isArray(value.stages) &&
+    value.stages.every(
+      (stage) =>
+        isRecord(stage) &&
+        typeof stage.name === "string" &&
+        ["ok", "skipped", "error"].includes(String(stage.status)) &&
+        typeof stage.duration_ms === "number",
+    ) &&
+    isRecord(value.result)
   );
 }

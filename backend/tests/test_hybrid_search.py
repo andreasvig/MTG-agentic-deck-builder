@@ -283,6 +283,7 @@ def test_debug_mode_returns_summary_and_writes_layer_ordering(
     lines = log_path.read_text(encoding="utf-8").splitlines()
     assert len(lines) == 1
     record = json.loads(lines[0])
+    assert result.debug.trace == record
     assert record["trace_id"] == str(result.debug.trace_id)
     assert record["request"]["query"] == "green ramp"
     assert record["decision"]["strategy"] == "intent"

@@ -132,6 +132,7 @@ class SearchDebugTrace:
                 )
                 for stage in self._stages
             ],
+            trace=self._record,
         )
 
     def _card_snapshot(self, cards: list[CardSearchResult]) -> dict[str, Any]:

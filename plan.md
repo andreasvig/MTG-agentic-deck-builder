@@ -196,6 +196,10 @@ Completed in the first usable slice:
 - Persistent in-app search-debug settings with timing summaries and append-only
   JSONL records of layer decisions, provider queries, complete LLM exchanges,
   rankings, rank deltas, warnings, and final results.
+- An expandable in-search trace explorer for provider queries, rank movement,
+  exact LLM messages, response metadata, and raw JSON.
+- Cached Scryfall card-name catalog fallback for typos that its named-card
+  endpoint does not resolve.
 - Search loading, empty, invalid-query, provider-error, and pagination states.
 - A single detailed in-context search drawer with inline quantities.
 - A persistent local deck library with creation, switching, renaming, commander

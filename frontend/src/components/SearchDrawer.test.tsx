@@ -3,7 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { ApiClient } from "../lib/api";
-import { cardSearchPage } from "../test/fixtures";
+import { cardSearchPage, searchDebugSummary } from "../test/fixtures";
 import { SearchDrawer } from "./SearchDrawer";
 
 const idleClient: ApiClient = {
@@ -137,28 +137,7 @@ describe("card search dialog", () => {
 
   it("shows the persisted layer trace when backend debug mode is enabled", async () => {
     const page = cardSearchPage();
-    page.debug = {
-      trace_id: "f3c7af78-93ea-4d1b-8873-0eac5b4f6c5f",
-      log_path: "local-data/search-debug.jsonl",
-      log_written: true,
-      total_duration_ms: 742.3,
-      stages: [
-        {
-          name: "Scryfall intent candidates",
-          status: "ok",
-          duration_ms: 110.2,
-          input_count: null,
-          output_count: 175,
-        },
-        {
-          name: "Local semantic ranking",
-          status: "ok",
-          duration_ms: 632.1,
-          input_count: 175,
-          output_count: 175,
-        },
-      ],
-    };
+    page.debug = searchDebugSummary();
     const searchCards = vi.fn<ApiClient["searchCards"]>().mockResolvedValue(page);
     render(
       <SearchDrawer
@@ -175,9 +154,42 @@ describe("card search dialog", () => {
     expect(screen.getByText("742.3ms")).toBeInTheDocument();
     await userEvent.click(screen.getByText("Search trace"));
     expect(screen.getByText("Local semantic ranking")).toBeInTheDocument();
-    expect(screen.getByText("175 → 175")).toBeInTheDocument();
+    expect(screen.getAllByText("175 → 175")).toHaveLength(2);
+    expect(screen.getByText('o:"add" game:paper')).toBeInTheDocument();
+    expect(screen.getByText("LLM request")).toBeInTheDocument();
+    expect(screen.getByText("LLM response")).toBeInTheDocument();
+    expect(
+      screen.getAllByText(
+        /Rank Magic cards for the user's deck-building intent/,
+      ),
+    ).toHaveLength(2);
+    expect(screen.getByText("Exact raw request JSON")).toBeInTheDocument();
+    expect(screen.getByText("Google AI Studio")).toBeInTheDocument();
     expect(
       screen.getByText("local-data/search-debug.jsonl"),
     ).toBeInTheDocument();
+  });
+
+  it("keeps the trace available when a search returns no cards", async () => {
+    const page = cardSearchPage([], "misspelled card");
+    page.debug = searchDebugSummary();
+    render(
+      <SearchDrawer
+        initialQuery="misspelled card"
+        entries={[]}
+        client={{
+          getHealth: vi.fn(),
+          searchCards: vi.fn().mockResolvedValue(page),
+        }}
+        onAdd={vi.fn()}
+        onSetQuantity={vi.fn()}
+        onClose={vi.fn()}
+      />,
+    );
+
+    expect(
+      await screen.findByRole("heading", { name: "No cards found" }),
+    ).toBeInTheDocument();
+    expect(screen.getByText("Search trace")).toBeInTheDocument();
   });
 });

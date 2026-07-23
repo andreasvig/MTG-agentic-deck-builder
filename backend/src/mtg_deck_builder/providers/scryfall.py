@@ -1,7 +1,9 @@
 """Live Scryfall implementation of the card search boundary."""
 
 import asyncio
+import re
 from decimal import Decimal
+from difflib import get_close_matches
 from time import monotonic
 from typing import Annotated, Literal
 from uuid import UUID
@@ -145,6 +147,12 @@ class _ScryfallList(_ScryfallModel):
     warnings: list[str] = Field(default_factory=list)
 
 
+class _ScryfallCatalog(_ScryfallModel):
+    object: Literal["catalog"]
+    total_values: Annotated[int, Field(ge=0)]
+    data: list[_NonEmptyString]
+
+
 class ScryfallCardSearchProvider:
     """Search Scryfall while keeping its wire format out of the application."""
 
@@ -160,6 +168,8 @@ class ScryfallCardSearchProvider:
         self._minimum_request_interval_seconds = minimum_request_interval_seconds
         self._request_lock = asyncio.Lock()
         self._last_request_started_at = 0.0
+        self._name_catalog_lock = asyncio.Lock()
+        self._name_aliases: dict[str, str] | None = None
 
     async def search(self, query: CardSearchQuery) -> CardSearchPage:
         await self._wait_for_request_slot()
@@ -209,14 +219,12 @@ class ScryfallCardSearchProvider:
     async def find_fuzzy(self, name: str) -> CardSearchResult | None:
         """Return Scryfall's closest named card match."""
 
-        await self._wait_for_request_slot()
-        try:
-            response = await self._client.get(
-                "/cards/named",
-                params={"fuzzy": name},
-            )
-        except httpx2.RequestError as exc:
-            raise CardSearchUnavailable from exc
+        response = await self._request_named({"fuzzy": name})
+        if response.status_code == 404:
+            catalog_name = await self._closest_catalog_name(name)
+            if catalog_name is None:
+                return None
+            response = await self._request_named({"exact": catalog_name})
 
         if response.status_code == 404:
             return None
@@ -230,6 +238,50 @@ class ScryfallCardSearchProvider:
         except (ValueError, ValidationError) as exc:
             raise CardSearchUnavailable from exc
 
+    async def _request_named(self, params: dict[str, str]) -> httpx2.Response:
+        await self._wait_for_request_slot()
+        try:
+            return await self._client.get("/cards/named", params=params)
+        except httpx2.RequestError as exc:
+            raise CardSearchUnavailable from exc
+
+    async def _closest_catalog_name(self, name: str) -> str | None:
+        normalized = _normalize_card_name(name)
+        if len(normalized) < 4:
+            return None
+        aliases = await self._get_name_aliases()
+        matches = get_close_matches(
+            normalized,
+            aliases,
+            n=1,
+            cutoff=0.72,
+        )
+        return aliases[matches[0]] if matches else None
+
+    async def _get_name_aliases(self) -> dict[str, str]:
+        async with self._name_catalog_lock:
+            if self._name_aliases is not None:
+                return self._name_aliases
+
+            await self._wait_for_request_slot()
+            try:
+                response = await self._client.get("/catalog/card-names")
+            except httpx2.RequestError as exc:
+                raise CardSearchUnavailable from exc
+            if response.is_error:
+                raise CardSearchUnavailable
+            try:
+                catalog = _ScryfallCatalog.model_validate(response.json())
+            except (ValueError, ValidationError) as exc:
+                raise CardSearchUnavailable from exc
+
+            aliases: dict[str, str] = {}
+            for card_name in catalog.data:
+                for alias in _card_name_aliases(card_name):
+                    aliases.setdefault(alias, card_name)
+            self._name_aliases = aliases
+            return aliases
+
     async def _wait_for_request_slot(self) -> None:
         async with self._request_lock:
             elapsed = monotonic() - self._last_request_started_at
@@ -237,3 +289,17 @@ class ScryfallCardSearchProvider:
             if remaining > 0:
                 await asyncio.sleep(remaining)
             self._last_request_started_at = monotonic()
+
+
+def _card_name_aliases(card_name: str) -> set[str]:
+    faces = card_name.split(" // ")
+    aliases = {_normalize_card_name(card_name)}
+    for face in faces:
+        aliases.add(_normalize_card_name(face))
+        if "," in face:
+            aliases.add(_normalize_card_name(face.split(",", 1)[0]))
+    return {alias for alias in aliases if alias}
+
+
+def _normalize_card_name(value: str) -> str:
+    return re.sub(r"[^a-z0-9]+", " ", value.casefold()).strip()

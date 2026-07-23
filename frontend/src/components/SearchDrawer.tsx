@@ -40,6 +40,7 @@ import {
 } from "../domain/deck";
 import { apiClient, type ApiClient } from "../lib/api";
 import { CardArt } from "./CardArt";
+import { SearchTracePanel } from "./SearchTracePanel";
 
 type SearchState =
   | { phase: "idle"; page: null }
@@ -582,6 +583,10 @@ export function SearchDrawer({
               </div>
             ) : null}
 
+            {state.page?.debug ? (
+              <SearchTracePanel debug={state.page.debug} />
+            ) : null}
+
             {state.phase === "success" && cards.length === 0 ? (
               <div className="search-state">
                 <Search aria-hidden="true" size={26} />
@@ -607,54 +612,6 @@ export function SearchDrawer({
                     <AlertCircle aria-hidden="true" size={14} />
                     {state.page.warnings[0]}
                   </p>
-                ) : null}
-                {state.page?.debug ? (
-                  <details className="search-debug">
-                    <summary>
-                      <Bug aria-hidden="true" size={14} />
-                      <span>Search trace</span>
-                      <strong>
-                        {state.page.debug.total_duration_ms.toLocaleString(
-                          undefined,
-                          { maximumFractionDigits: 1 },
-                        )}
-                        ms
-                      </strong>
-                    </summary>
-                    <div className="search-debug__body">
-                      <div className="search-debug__stages">
-                        {state.page.debug.stages.map((stage) => (
-                          <div
-                            className={`search-debug__stage search-debug__stage--${stage.status}`}
-                            key={`${stage.name}-${stage.duration_ms}`}
-                          >
-                            <span>{stage.name}</span>
-                            <span>
-                              {stage.input_count !== null &&
-                              stage.output_count !== null
-                                ? `${stage.input_count} → ${stage.output_count}`
-                                : (stage.output_count ?? "")}
-                            </span>
-                            <strong>
-                              {stage.duration_ms.toLocaleString(undefined, {
-                                maximumFractionDigits: 1,
-                              })}
-                              ms
-                            </strong>
-                          </div>
-                        ))}
-                      </div>
-                      <p>
-                        <span>
-                          {state.page.debug.log_written
-                            ? "Logged to"
-                            : "Log write failed"}
-                        </span>
-                        <code>{state.page.debug.log_path}</code>
-                      </p>
-                      <small>Trace {state.page.debug.trace_id}</small>
-                    </div>
-                  </details>
                 ) : null}
                 <div className="search-card-grid">
                   {cards.map((card) => {

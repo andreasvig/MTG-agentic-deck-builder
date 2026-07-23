@@ -1,4 +1,8 @@
-import type { CardSearchPage, CardSearchResult } from "../domain/card";
+import type {
+  CardSearchPage,
+  CardSearchResult,
+  SearchDebugSummary,
+} from "../domain/card";
 
 export const solRing: CardSearchResult = {
   oracle_id: "oracle-sol-ring",
@@ -105,5 +109,194 @@ export function cardSearchPage(
     interpretation: "Exact card name",
     reranked: false,
     debug: null,
+  };
+}
+
+export function searchDebugSummary(): SearchDebugSummary {
+  const systemPrompt = "Rank Magic cards for the user's deck-building intent.";
+  const userPrompt = JSON.stringify({
+    intent: "green ramp",
+    cards: [{ scryfall_id: "printing-sol-ring", name: "Sol Ring" }],
+  });
+  const assistantResponse = JSON.stringify({
+    ordered_scryfall_ids: ["printing-sol-ring"],
+  });
+  const requestBody = {
+    model: "google/gemini-3.5-flash-lite",
+    messages: [
+      { role: "system", content: systemPrompt },
+      { role: "user", content: userPrompt },
+    ],
+    reasoning: { effort: "minimal", exclude: true },
+    max_tokens: 900,
+  };
+  const responseBody = {
+    model: "google/gemini-3.5-flash-lite",
+    provider: "Google AI Studio",
+    choices: [
+      {
+        message: {
+          role: "assistant",
+          content: assistantResponse,
+        },
+      },
+    ],
+    usage: { total_tokens: 312, cost: 0.00042 },
+  };
+
+  return {
+    trace_id: "f3c7af78-93ea-4d1b-8873-0eac5b4f6c5f",
+    log_path: "local-data/search-debug.jsonl",
+    log_written: true,
+    total_duration_ms: 742.3,
+    stages: [
+      {
+        name: "Scryfall intent candidates",
+        status: "ok",
+        duration_ms: 110.2,
+        input_count: null,
+        output_count: 175,
+      },
+      {
+        name: "Local semantic ranking",
+        status: "ok",
+        duration_ms: 310.1,
+        input_count: 175,
+        output_count: 175,
+      },
+      {
+        name: "OpenRouter ranking",
+        status: "ok",
+        duration_ms: 322,
+        input_count: 175,
+        output_count: 175,
+      },
+    ],
+    trace: {
+      schema_version: 1,
+      trace_id: "f3c7af78-93ea-4d1b-8873-0eac5b4f6c5f",
+      started_at: "2026-07-23T18:00:00Z",
+      completed_at: "2026-07-23T18:00:00.742Z",
+      total_duration_ms: 742.3,
+      request: { query: "green ramp", page: 1, debug: true, filters: {} },
+      configuration: {
+        semantic_ranker: "BAAI/bge-small-en-v1.5",
+        llm_ranker: "google/gemini-3.5-flash-lite",
+      },
+      decision: {
+        input_kind: "natural_language_intent",
+        strategy: "intent",
+      },
+      stages: [
+        {
+          name: "Scryfall intent candidates",
+          status: "ok",
+          duration_ms: 110.2,
+          output: {
+            count: 175,
+            top: [
+              {
+                rank: 1,
+                scryfall_id: "printing-sol-ring",
+                name: "Sol Ring",
+              },
+            ],
+          },
+          details: {
+            provider_query: 'o:"add" game:paper',
+            provider_order: "edhrec",
+            provider_total_results: 175,
+          },
+        },
+        {
+          name: "Local semantic ranking",
+          status: "ok",
+          duration_ms: 310.1,
+          input: {
+            count: 175,
+            top: [
+              {
+                rank: 4,
+                scryfall_id: "printing-sol-ring",
+                name: "Sol Ring",
+              },
+            ],
+          },
+          output: {
+            count: 175,
+            top: [
+              {
+                rank: 1,
+                scryfall_id: "printing-sol-ring",
+                name: "Sol Ring",
+              },
+            ],
+          },
+          rank_changes: [
+            {
+              scryfall_id: "printing-sol-ring",
+              name: "Sol Ring",
+              before_rank: 4,
+              after_rank: 1,
+              delta: 3,
+            },
+          ],
+          details: { model: "BAAI/bge-small-en-v1.5" },
+        },
+        {
+          name: "OpenRouter ranking",
+          status: "ok",
+          duration_ms: 322,
+          input: {
+            count: 175,
+            top: [
+              {
+                rank: 1,
+                scryfall_id: "printing-sol-ring",
+                name: "Sol Ring",
+              },
+            ],
+          },
+          output: {
+            count: 175,
+            top: [
+              {
+                rank: 1,
+                scryfall_id: "printing-sol-ring",
+                name: "Sol Ring",
+              },
+            ],
+          },
+          rank_changes: [
+            {
+              scryfall_id: "printing-sol-ring",
+              name: "Sol Ring",
+              before_rank: 1,
+              after_rank: 1,
+              delta: 0,
+            },
+          ],
+          details: {
+            model: "google/gemini-3.5-flash-lite",
+            reasoning_effort: "minimal",
+            max_tokens: 900,
+            exchange: {
+              request: {
+                method: "POST",
+                path: "/chat/completions",
+                body: requestBody,
+                raw_body: JSON.stringify(requestBody),
+              },
+              response: {
+                status_code: 200,
+                body: responseBody,
+                raw_body: JSON.stringify(responseBody),
+              },
+            },
+          },
+        },
+      ],
+      result: { status: "ok", strategy: "intent" },
+    },
   };
 }

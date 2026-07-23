@@ -10,6 +10,7 @@ import {
   gamble,
   ghalta,
   llanowarElves,
+  searchDebugSummary,
   searchPage,
   solRing,
 } from "./fixtures/cards";
@@ -376,35 +377,7 @@ test("search filters shape requests without crowding the results", async ({
       [solRing],
     );
     if (requestedUrl.searchParams.get("debug") === "true") {
-      response.debug = {
-        trace_id: "f3c7af78-93ea-4d1b-8873-0eac5b4f6c5f",
-        log_path: "local-data/search-debug.jsonl",
-        log_written: true,
-        total_duration_ms: 918.4,
-        stages: [
-          {
-            name: "Scryfall intent candidates",
-            status: "ok",
-            duration_ms: 112.1,
-            input_count: null,
-            output_count: 16,
-          },
-          {
-            name: "Local semantic ranking",
-            status: "ok",
-            duration_ms: 308.7,
-            input_count: 16,
-            output_count: 16,
-          },
-          {
-            name: "OpenRouter ranking",
-            status: "ok",
-            duration_ms: 497.6,
-            input_count: 16,
-            output_count: 16,
-          },
-        ],
-      };
+      response.debug = searchDebugSummary();
     }
     await fulfillJson(
       route,
@@ -452,6 +425,11 @@ test("search filters shape requests without crowding the results", async ({
   await expect(page.getByText("Search trace")).toBeVisible();
   await page.getByText("Search trace").click();
   await expect(page.getByText("OpenRouter ranking")).toBeVisible();
+  await expect(page.getByText("LLM request")).toBeVisible();
+  await expect(page.getByText("LLM response")).toBeVisible();
+  await expect(
+    page.getByText("Google AI Studio", { exact: true }),
+  ).toBeVisible();
   await expect(
     page.getByText("local-data/search-debug.jsonl"),
   ).toBeVisible();
@@ -560,9 +538,13 @@ test("mobile keeps primary deck actions reachable and contained", async ({
 }, testInfo) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await page.route(SEARCH_ROUTE, async (route) => {
-    const query =
-      new URL(route.request().url()).searchParams.get("q") ?? "";
-    await fulfillJson(route, searchPage(query, [llanowarElves, solRing]));
+    const requestUrl = new URL(route.request().url());
+    const query = requestUrl.searchParams.get("q") ?? "";
+    const response = searchPage(query, [llanowarElves, solRing]);
+    if (requestUrl.searchParams.get("debug") === "true") {
+      response.debug = searchDebugSummary();
+    }
+    await fulfillJson(route, response);
   });
 
   await page.goto("/");
@@ -588,6 +570,9 @@ test("mobile keeps primary deck actions reachable and contained", async ({
     .click();
   const searchDialog = page.getByRole("dialog", { name: "Find cards" });
   await expect(searchDialog).toBeVisible();
+  await page.getByRole("button", { name: "Search settings" }).click();
+  await page.getByRole("switch", { name: "Search debug log" }).click();
+  await page.getByRole("button", { name: "Search settings" }).click();
   const searchInput = page.getByRole("textbox", {
     name: "Search cards",
   });
@@ -599,6 +584,20 @@ test("mobile keeps primary deck actions reachable and contained", async ({
     path: testInfo.outputPath("mobile-search-results.png"),
     fullPage: true,
   });
+  await page.getByText("Search trace").click();
+  await expect(page.getByText("LLM request")).toBeVisible();
+  await expect(page.getByText("LLM response")).toBeVisible();
+  const traceBounds = await page.locator(".search-debug").boundingBox();
+  expect(traceBounds).not.toBeNull();
+  expect(traceBounds?.x).toBeGreaterThanOrEqual(0);
+  expect(
+    (traceBounds?.x ?? 0) + (traceBounds?.width ?? 0),
+  ).toBeLessThanOrEqual(390);
+  await page.screenshot({
+    path: testInfo.outputPath("mobile-search-trace.png"),
+    fullPage: false,
+  });
+  await page.getByText("Search trace").click();
   await page
     .getByRole("button", { name: "Add Llanowar Elves to deck" })
     .click();

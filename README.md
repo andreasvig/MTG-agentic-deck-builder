@@ -92,12 +92,22 @@ MTG_SEARCH_DEBUG_RESULT_LIMIT=25
 ```
 
 Debug responses expose a compact stage and timing summary in the search
-drawer. The append-only JSONL file records the raw query and filters,
+drawer. Expanding **Search trace** shows each layer's provider query,
+before/after ranking, exact LLM messages, response metadata, assistant output,
+and expandable raw request/response JSON without leaving the search screen.
+The trace remains available when a search returns no cards.
+
+The append-only JSONL file records the raw query and filters,
 classification decision, generated Scryfall query, provider ordering and
 counts, per-layer timings, before/after rankings, rank deltas, warnings, and
 final results. For the LLM layer it also records the complete parsed and raw
 JSON request and response bodies, response status, model, provider, and
 reasoning effort. Credentials and authorization headers are never included.
+
+Name searches first use Scryfall's exact and fuzzy endpoints. If both miss, the
+backend compares against Scryfall's lightweight card-name catalog, cached for
+the process lifetime, before fetching the selected card. This covers omissions
+such as `galta` → `Ghalta, Primal Hunger` without invoking an LLM.
 
 Each line is an independent JSON object, so an interrupted write cannot corrupt
 earlier searches. Read the complete log as a JSON array with:
