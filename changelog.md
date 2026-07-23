@@ -61,6 +61,17 @@ All notable changes to this project will be documented in this file.
   between custom groups in visual and list views.
 - Added drop-to-create custom groups, with group creation and card movement
   saved as one undoable operation.
+- Added layered exact-name, fuzzy-name, natural-intent, and explicit Scryfall
+  search routing.
+- Added local semantic ranking with the public
+  `BAAI/bge-small-en-v1.5` Hugging Face model.
+- Added an optional OpenRouter reranker using `google/gemini-3.5-flash` with
+  minimal reasoning and a bounded card-metadata payload.
+- Added search filters for can-include or exact color identity, colorless
+  identity, minimum/maximum mana value, and minimum/maximum EUR estimate.
+- Added typed search-strategy metadata, user-visible intent interpretation,
+  reranker fallback warnings, and regression coverage across backend,
+  frontend, and browser request flows.
 
 ### Repository
 
@@ -102,3 +113,9 @@ All notable changes to this project will be documented in this file.
   workspace edge available for the later agent chat.
 - Removed the local "Filter this deck" control so the toolbar has one clear card
   search path.
+- Moved plain-query interpretation from the browser into the backend so every
+  search client gets the same exact, fuzzy, and intent behavior.
+- Ordered natural-intent candidate pools by EDHREC popularity and limited them
+  to paper cards before local semantic ranking.
+- Replaced the nonexistent Gemini 3.5 Flash-Lite candidate with the available
+  Gemini 3.5 Flash model configured for minimal reasoning.

@@ -92,7 +92,7 @@ export const gamble: CardSearchResult = {
 
 export function cardSearchPage(
   cards: CardSearchResult[] = [solRing],
-  query = 'name:"Sol Ring"',
+  query = "Sol Ring",
 ): CardSearchPage {
   return {
     query,
@@ -101,5 +101,8 @@ export function cardSearchPage(
     has_more: false,
     cards,
     warnings: [],
+    strategy: "exact",
+    interpretation: "Exact card name",
+    reranked: false,
   };
 }

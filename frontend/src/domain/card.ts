@@ -1,6 +1,28 @@
 export type MagicColor = "W" | "U" | "B" | "R" | "G";
 export type CardLegality = "legal" | "not_legal" | "restricted" | "banned";
 export type CardFinish = "nonfoil" | "foil" | "etched";
+export type ColorMatchMode = "subset" | "exact";
+export type SearchStrategy = "exact" | "fuzzy" | "intent" | "syntax";
+
+export interface CardSearchFilters {
+  colors: MagicColor[];
+  includeColorless: boolean;
+  colorMode: ColorMatchMode;
+  manaValueMin: number | null;
+  manaValueMax: number | null;
+  priceEurMin: number | null;
+  priceEurMax: number | null;
+}
+
+export const EMPTY_CARD_SEARCH_FILTERS: CardSearchFilters = {
+  colors: [],
+  includeColorless: false,
+  colorMode: "subset",
+  manaValueMin: null,
+  manaValueMax: null,
+  priceEurMin: null,
+  priceEurMax: null,
+};
 
 export interface CardImageUris {
   small: string | null;
@@ -60,6 +82,9 @@ export interface CardSearchPage {
   has_more: boolean;
   cards: CardSearchResult[];
   warnings: string[];
+  strategy: SearchStrategy;
+  interpretation: string | null;
+  reranked: boolean;
 }
 
 export function getCardImage(

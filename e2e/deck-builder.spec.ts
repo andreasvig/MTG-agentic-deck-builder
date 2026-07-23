@@ -127,12 +127,12 @@ test("desktop deck-building flow remains fast and reversible", async ({
 
   await openSearch(page);
   const searchInput = page.getByRole("textbox", {
-    name: "Search card name or Scryfall syntax",
+    name: "Search cards",
   });
   await searchInput.fill("Sol Ring");
 
   await expect(page.getByText("2 results", { exact: true })).toBeVisible();
-  expect(outgoingQuery).toBe('name:"Sol Ring"');
+  expect(outgoingQuery).toBe("Sol Ring");
   await waitForCardArt(page, "Sol Ring");
   await expect(page.getByText("Marvel Super Heroes Commander")).toBeVisible();
   const solRingResult = page
@@ -346,7 +346,7 @@ test("search communicates empty and provider-recovery states", async ({
   await openSearch(page);
 
   const searchInput = page.getByRole("textbox", {
-    name: "Search card name or Scryfall syntax",
+    name: "Search cards",
   });
   await searchInput.fill("Absolutely Not A Card");
   await expect(
@@ -362,6 +362,62 @@ test("search communicates empty and provider-recovery states", async ({
   await expect(
     page.getByRole("button", { name: "Add Sol Ring to deck" }),
   ).toBeVisible();
+});
+
+test("search filters shape requests without crowding the results", async ({
+  page,
+}, testInfo) => {
+  await page.setViewportSize({ width: 1280, height: 800 });
+  let requestedUrl: URL | null = null;
+  await page.route(SEARCH_ROUTE, async (route) => {
+    requestedUrl = new URL(route.request().url());
+    await fulfillJson(
+      route,
+      searchPage(requestedUrl.searchParams.get("q") ?? "", [solRing]),
+    );
+  });
+
+  await page.goto("/");
+  await openSearch(page);
+  await page.getByRole("radio", { name: "Exact" }).click();
+  await page.getByRole("checkbox", { name: "Blue" }).click();
+  await page.getByRole("checkbox", { name: "Colorless" }).click();
+  await page
+    .getByRole("spinbutton", { name: "Minimum mana value" })
+    .fill("2");
+  await page
+    .getByRole("spinbutton", { name: "Maximum mana value" })
+    .fill("5");
+  await page
+    .getByRole("spinbutton", { name: "Minimum price in euros" })
+    .fill("0.25");
+  await page
+    .getByRole("spinbutton", { name: "Maximum price in euros" })
+    .fill("12");
+  await page.getByRole("textbox", { name: "Search cards" }).fill("blue ramp");
+
+  await expect(page.getByText("1 results", { exact: true })).toBeVisible();
+  expect(requestedUrl).not.toBeNull();
+  expect(requestedUrl?.searchParams.getAll("color")).toEqual(["U"]);
+  expect(requestedUrl?.searchParams.get("include_colorless")).toBe("true");
+  expect(requestedUrl?.searchParams.get("color_mode")).toBe("exact");
+  expect(requestedUrl?.searchParams.get("mana_min")).toBe("2");
+  expect(requestedUrl?.searchParams.get("mana_max")).toBe("5");
+  expect(requestedUrl?.searchParams.get("price_min")).toBe("0.25");
+  expect(requestedUrl?.searchParams.get("price_max")).toBe("12");
+
+  const filters = page.getByLabel("Card search filters");
+  const filtersBounds = await filters.boundingBox();
+  const dialogBounds = await page
+    .getByRole("dialog", { name: "Find cards" })
+    .boundingBox();
+  expect(filtersBounds).not.toBeNull();
+  expect(dialogBounds).not.toBeNull();
+  expect(filtersBounds?.width).toBeLessThanOrEqual(dialogBounds?.width ?? 0);
+  await page.screenshot({
+    path: testInfo.outputPath("desktop-search-filters.png"),
+    fullPage: true,
+  });
 });
 
 test("commander colors warn before and after an illegal addition", async ({
@@ -383,7 +439,7 @@ test("commander colors warn before and after an illegal addition", async ({
   await page.goto("/");
   await page.getByRole("button", { name: "Add to command zone" }).click();
   const commanderSearch = page.getByRole("textbox", {
-    name: "Search card name or Scryfall syntax",
+    name: "Search cards",
   });
   await commanderSearch.fill("Ghalta");
   await expect(
@@ -422,7 +478,7 @@ test("commander colors warn before and after an illegal addition", async ({
 
   await openSearch(page);
   const cardSearch = page.getByRole("textbox", {
-    name: "Search card name or Scryfall syntax",
+    name: "Search cards",
   });
   await cardSearch.fill("Gamble");
   await expect(
@@ -483,12 +539,16 @@ test("mobile keeps primary deck actions reachable and contained", async ({
   const searchDialog = page.getByRole("dialog", { name: "Find cards" });
   await expect(searchDialog).toBeVisible();
   const searchInput = page.getByRole("textbox", {
-    name: "Search card name or Scryfall syntax",
+    name: "Search cards",
   });
   await searchInput.fill("Llanowar Elves");
   await expect(
     page.getByRole("button", { name: "Add Llanowar Elves to deck" }),
   ).toBeVisible();
+  await page.screenshot({
+    path: testInfo.outputPath("mobile-search-results.png"),
+    fullPage: true,
+  });
   await page
     .getByRole("button", { name: "Add Llanowar Elves to deck" })
     .click();

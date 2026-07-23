@@ -4,12 +4,23 @@ from decimal import Decimal
 from typing import Annotated, Literal
 from uuid import UUID
 
-from pydantic import AnyHttpUrl, BaseModel, ConfigDict, Field, StringConstraints
+from pydantic import (
+    AnyHttpUrl,
+    BaseModel,
+    ConfigDict,
+    Field,
+    StringConstraints,
+    field_validator,
+    model_validator,
+)
 
 NonEmptyString = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
 MagicColor = Literal["W", "U", "B", "R", "G"]
 CardLegality = Literal["legal", "not_legal", "restricted", "banned"]
 CardFinish = Literal["nonfoil", "foil", "etched"]
+ColorMatchMode = Literal["subset", "exact"]
+SearchStrategy = Literal["exact", "fuzzy", "intent", "syntax"]
+CardSearchOrder = Literal["name", "edhrec"]
 
 
 class CardModel(BaseModel):
@@ -77,11 +88,46 @@ class CardSearchResult(CardModel):
     cardmarket_url: AnyHttpUrl | None = None
 
 
+class CardSearchFilters(CardModel):
+    """Structured filters applied to every search strategy."""
+
+    colors: list[MagicColor] = Field(default_factory=list, max_length=5)
+    include_colorless: bool = False
+    color_mode: ColorMatchMode = "subset"
+    mana_value_min: Annotated[float | None, Field(default=None, ge=0, le=100)] = None
+    mana_value_max: Annotated[float | None, Field(default=None, ge=0, le=100)] = None
+    price_eur_min: Annotated[Decimal | None, Field(default=None, ge=0)] = None
+    price_eur_max: Annotated[Decimal | None, Field(default=None, ge=0)] = None
+
+    @field_validator("colors")
+    @classmethod
+    def colors_must_be_unique(cls, value: list[MagicColor]) -> list[MagicColor]:
+        return list(dict.fromkeys(value))
+
+    @model_validator(mode="after")
+    def ranges_must_be_ordered(self) -> "CardSearchFilters":
+        if (
+            self.mana_value_min is not None
+            and self.mana_value_max is not None
+            and self.mana_value_min > self.mana_value_max
+        ):
+            raise ValueError("mana_value_min must not exceed mana_value_max")
+        if (
+            self.price_eur_min is not None
+            and self.price_eur_max is not None
+            and self.price_eur_min > self.price_eur_max
+        ):
+            raise ValueError("price_eur_min must not exceed price_eur_max")
+        return self
+
+
 class CardSearchQuery(CardModel):
     """Validated search input shared by API and provider implementations."""
 
     q: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=500)]
     page: Annotated[int, Field(ge=1, le=1_000)] = 1
+    filters: CardSearchFilters = Field(default_factory=CardSearchFilters)
+    order: CardSearchOrder = "name"
 
 
 class CardSearchPage(CardModel):
@@ -93,3 +139,6 @@ class CardSearchPage(CardModel):
     has_more: bool
     cards: list[CardSearchResult]
     warnings: list[str] = Field(default_factory=list)
+    strategy: SearchStrategy = "syntax"
+    interpretation: str | None = None
+    reranked: bool = False

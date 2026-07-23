@@ -43,7 +43,12 @@ services, including their reload subprocesses.
 
 ## Current Workflow
 
-- Search Scryfall-backed card data by exact card name or Scryfall syntax.
+- Search Scryfall-backed card data by exact name, typo-tolerant name, natural
+  deck-building intent, or Scryfall syntax.
+- Narrow every search by allowed or exact color identity, mana value, and daily
+  Scryfall EUR estimate.
+- Rank intent candidates with the local `BAAI/bge-small-en-v1.5` embedding
+  model, then optionally rerank a bounded result set through OpenRouter.
 - Search and add cards through one detailed in-context workflow.
 - Edit quantities and sections, remove cards, and undo recent changes.
 - Switch between visual category stacks and a dense list.
@@ -55,8 +60,15 @@ services, including their reload subprocesses.
 
 The current provider returns one representative printing per gameplay card.
 Full printing and finish selection is tracked as the next search enhancement.
-The local SQLite catalog, complete Commander validation, deck management,
-imports, analytics, and chat agent remain planned phases.
+The semantic layer currently ranks a live Scryfall candidate page; the local
+SQLite catalog remains the planned path to broader semantic recall. Complete
+Commander validation, imports, analytics, and the chat agent also remain
+planned phases.
+
+The public embedding model runs locally and does not require a Hugging Face
+token. Set `OPENROUTER_API_KEY` to enable the optional
+`google/gemini-3.5-flash` reranker, which uses minimal reasoning. Exact, fuzzy,
+and explicit Scryfall searches do not call OpenRouter.
 
 ## Test And Build
 

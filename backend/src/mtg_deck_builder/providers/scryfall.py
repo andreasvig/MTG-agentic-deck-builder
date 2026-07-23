@@ -170,7 +170,7 @@ class ScryfallCardSearchProvider:
                     "q": query.q,
                     "page": query.page,
                     "unique": "cards",
-                    "order": "name",
+                    "order": query.order,
                     "include_extras": "false",
                     "include_multilingual": "false",
                 },
@@ -205,6 +205,30 @@ class ScryfallCardSearchProvider:
             cards=cards,
             warnings=payload.warnings,
         )
+
+    async def find_fuzzy(self, name: str) -> CardSearchResult | None:
+        """Return Scryfall's closest named card match."""
+
+        await self._wait_for_request_slot()
+        try:
+            response = await self._client.get(
+                "/cards/named",
+                params={"fuzzy": name},
+            )
+        except httpx2.RequestError as exc:
+            raise CardSearchUnavailable from exc
+
+        if response.status_code == 404:
+            return None
+        if response.status_code in {400, 422}:
+            raise CardSearchQueryError
+        if response.is_error:
+            raise CardSearchUnavailable
+
+        try:
+            return _ScryfallCard.model_validate(response.json()).to_domain()
+        except (ValueError, ValidationError) as exc:
+            raise CardSearchUnavailable from exc
 
     async def _wait_for_request_slot(self) -> None:
         async with self._request_lock:

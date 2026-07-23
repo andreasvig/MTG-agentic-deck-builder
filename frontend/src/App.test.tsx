@@ -57,7 +57,7 @@ describe("deck workspace", () => {
     await user.click(searchTrigger);
     const dialog = screen.getByRole("dialog", { name: "Find cards" });
     const input = screen.getByRole("textbox", {
-      name: "Search card name or Scryfall syntax",
+      name: "Search cards",
     });
     expect(input).toHaveFocus();
 
@@ -119,7 +119,7 @@ describe("deck workspace", () => {
     await user.click(screen.getByRole("button", { name: "Card search" }));
     await user.type(
       screen.getByRole("textbox", {
-        name: "Search card name or Scryfall syntax",
+        name: "Search cards",
       }),
       "Sol Ring",
     );
@@ -264,7 +264,7 @@ describe("deck workspace", () => {
     await user.click(screen.getByRole("button", { name: "Card search" }));
     await user.type(
       screen.getByRole("textbox", {
-        name: "Search card name or Scryfall syntax",
+        name: "Search cards",
       }),
       "Gamble",
     );

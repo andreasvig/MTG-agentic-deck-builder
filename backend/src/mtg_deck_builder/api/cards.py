@@ -1,11 +1,18 @@
 """Card discovery API."""
 
+from decimal import Decimal
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from pydantic import BaseModel, ConfigDict
 
-from mtg_deck_builder.domain import CardSearchPage, CardSearchQuery
+from mtg_deck_builder.domain import (
+    CardSearchFilters,
+    CardSearchPage,
+    CardSearchQuery,
+    ColorMatchMode,
+    MagicColor,
+)
 from mtg_deck_builder.providers import (
     CardSearchProvider,
     CardSearchQueryError,
@@ -60,14 +67,53 @@ async def search_cards(
             min_length=1,
             max_length=500,
             pattern=r".*\S.*",
-            description="A Scryfall full-text search expression.",
+            description="A card name, deck-building intent, or Scryfall expression.",
         ),
     ],
     page: Annotated[int, Query(ge=1, le=1_000)] = 1,
+    color: Annotated[
+        list[MagicColor] | None,
+        Query(description="Allowed or exact color identities. Repeat for multiple colors."),
+    ] = None,
+    include_colorless: Annotated[
+        bool,
+        Query(description="Include colorless identities in color-filtered results."),
+    ] = False,
+    color_mode: Annotated[
+        ColorMatchMode,
+        Query(description="Match identities within the colors or require an exact identity."),
+    ] = "subset",
+    mana_min: Annotated[float | None, Query(ge=0, le=100)] = None,
+    mana_max: Annotated[float | None, Query(ge=0, le=100)] = None,
+    price_min: Annotated[Decimal | None, Query(ge=0)] = None,
+    price_max: Annotated[Decimal | None, Query(ge=0)] = None,
 ) -> CardSearchPage:
-    """Return one representative printing per card matching an expression."""
+    """Search names, Scryfall syntax, or natural-language card intent."""
 
-    query = CardSearchQuery(q=q, page=page)
+    if mana_min is not None and mana_max is not None and mana_min > mana_max:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="Minimum mana value must not exceed the maximum.",
+        )
+    if price_min is not None and price_max is not None and price_min > price_max:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="Minimum EUR price must not exceed the maximum.",
+        )
+
+    query = CardSearchQuery(
+        q=q,
+        page=page,
+        filters=CardSearchFilters(
+            colors=color or [],
+            include_colorless=include_colorless,
+            color_mode=color_mode,
+            mana_value_min=mana_min,
+            mana_value_max=mana_max,
+            price_eur_min=price_min,
+            price_eur_max=price_max,
+        ),
+    )
     try:
         return await provider.search(query)
     except CardSearchQueryError:

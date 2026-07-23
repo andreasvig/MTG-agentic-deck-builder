@@ -207,5 +207,8 @@ export function searchPage(
     has_more: false,
     cards,
     warnings: [],
+    strategy: "exact",
+    interpretation: "Exact card name",
+    reranked: false,
   };
 }

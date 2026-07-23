@@ -1,7 +1,7 @@
 """FastAPI application entry point."""
 
 from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
+from contextlib import AsyncExitStack, asynccontextmanager
 
 import httpx2
 from fastapi import FastAPI
@@ -11,6 +11,11 @@ from mtg_deck_builder import __version__
 from mtg_deck_builder.api.router import router as api_router
 from mtg_deck_builder.config import Settings, get_settings
 from mtg_deck_builder.providers import ScryfallCardSearchProvider
+from mtg_deck_builder.search import (
+    FastEmbedCardRanker,
+    HybridCardSearchProvider,
+    OpenRouterCardReranker,
+)
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -20,16 +25,48 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @asynccontextmanager
     async def lifespan(application: FastAPI) -> AsyncIterator[None]:
-        timeout = httpx2.Timeout(runtime_settings.scryfall_timeout_seconds)
-        async with httpx2.AsyncClient(
-            base_url=runtime_settings.scryfall_base_url,
-            headers={
-                "Accept": "application/json;q=0.9,*/*;q=0.8",
-                "User-Agent": runtime_settings.scryfall_user_agent,
-            },
-            timeout=timeout,
-        ) as client:
-            application.state.card_search_provider = ScryfallCardSearchProvider(client)
+        async with AsyncExitStack() as stack:
+            scryfall_client = await stack.enter_async_context(
+                httpx2.AsyncClient(
+                    base_url=runtime_settings.scryfall_base_url,
+                    headers={
+                        "Accept": "application/json;q=0.9,*/*;q=0.8",
+                        "User-Agent": runtime_settings.scryfall_user_agent,
+                    },
+                    timeout=httpx2.Timeout(runtime_settings.scryfall_timeout_seconds),
+                )
+            )
+            scryfall = ScryfallCardSearchProvider(scryfall_client)
+            llm_ranker = None
+            if runtime_settings.openrouter_api_key is not None:
+                openrouter_client = await stack.enter_async_context(
+                    httpx2.AsyncClient(
+                        base_url=runtime_settings.openrouter_base_url,
+                        headers={
+                            "Accept": "application/json",
+                            "Authorization": (
+                                "Bearer "
+                                f"{runtime_settings.openrouter_api_key.get_secret_value()}"
+                            ),
+                            "HTTP-Referer": runtime_settings.frontend_origin,
+                            "X-Title": "MTG Agentic Deck Builder",
+                        },
+                        timeout=httpx2.Timeout(
+                            runtime_settings.openrouter_timeout_seconds
+                        ),
+                    )
+                )
+                llm_ranker = OpenRouterCardReranker(
+                    openrouter_client,
+                    model=runtime_settings.openrouter_model,
+                )
+            application.state.card_search_provider = HybridCardSearchProvider(
+                scryfall,
+                semantic_ranker=FastEmbedCardRanker(
+                    runtime_settings.embedding_model
+                ),
+                llm_ranker=llm_ranker,
+            )
             yield
 
     application = FastAPI(

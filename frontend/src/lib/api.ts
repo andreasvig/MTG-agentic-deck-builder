@@ -1,3 +1,8 @@
+import type {
+  CardSearchFilters,
+  CardSearchPage,
+} from "../domain/card";
+
 const DEFAULT_API_BASE_URL = "http://127.0.0.1:43127/api/v1";
 
 export interface HealthResponse {
@@ -22,6 +27,7 @@ export interface ApiClient {
     query: string,
     page?: number,
     signal?: AbortSignal,
+    filters?: CardSearchFilters,
   ): Promise<CardSearchPage>;
 }
 
@@ -58,10 +64,21 @@ export function createApiClient(
         version: body.version,
       };
     },
-    async searchCards(query, page = 1, signal) {
+    async searchCards(query, page = 1, signal, filters) {
       const url = new URL(`${normalizedBaseUrl}/cards/search`);
-      url.searchParams.set("q", toScryfallQuery(query));
+      url.searchParams.set("q", query.trim());
       url.searchParams.set("page", String(page));
+      filters?.colors.forEach((color) => url.searchParams.append("color", color));
+      if (filters?.includeColorless) {
+        url.searchParams.set("include_colorless", "true");
+      }
+      if (filters && (filters.colors.length > 0 || filters.includeColorless)) {
+        url.searchParams.set("color_mode", filters.colorMode);
+      }
+      setNumberParam(url, "mana_min", filters?.manaValueMin);
+      setNumberParam(url, "mana_max", filters?.manaValueMax);
+      setNumberParam(url, "price_min", filters?.priceEurMin);
+      setNumberParam(url, "price_max", filters?.priceEurMax);
       const response = await fetcher(url, {
         headers: { Accept: "application/json" },
         signal,
@@ -95,16 +112,14 @@ export function createApiClient(
 
 export const apiClient = createApiClient();
 
-export function toScryfallQuery(input: string): string {
-  const query = input.trim();
-  const hasScryfallSyntax =
-    /(?:^|\s)[a-z][a-z0-9_-]*:/i.test(query) ||
-    /(?:^|\s)(?:OR|AND|NOT)(?:\s|$)/.test(query) ||
-    /[<>=]/.test(query);
-  if (hasScryfallSyntax) {
-    return query;
+function setNumberParam(
+  url: URL,
+  name: string,
+  value: number | null | undefined,
+) {
+  if (value !== null && value !== undefined && Number.isFinite(value)) {
+    url.searchParams.set(name, String(value));
   }
-  return `name:"${query.replaceAll("\\", "\\\\").replaceAll('"', '\\"')}"`;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -131,7 +146,10 @@ function isCardSearchPage(value: unknown): value is CardSearchPage {
         typeof card.mana_value === "number" &&
         isRecord(card.prices),
     ) &&
-    Array.isArray(value.warnings)
+    Array.isArray(value.warnings) &&
+    ["exact", "fuzzy", "intent", "syntax"].includes(String(value.strategy)) &&
+    (value.interpretation === null ||
+      typeof value.interpretation === "string") &&
+    typeof value.reranked === "boolean"
   );
 }
-import type { CardSearchPage } from "../domain/card";

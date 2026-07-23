@@ -6,6 +6,8 @@ import {
   Plus,
   RotateCw,
   Search,
+  SlidersHorizontal,
+  Trash2,
   X,
 } from "lucide-react";
 import {
@@ -17,8 +19,17 @@ import {
   useState,
 } from "react";
 
-import type { CardSearchPage, CardSearchResult } from "../domain/card";
-import { formatEuro, getCardPrice } from "../domain/card";
+import type {
+  CardSearchFilters,
+  CardSearchPage,
+  CardSearchResult,
+  MagicColor,
+} from "../domain/card";
+import {
+  EMPTY_CARD_SEARCH_FILTERS,
+  formatEuro,
+  getCardPrice,
+} from "../domain/card";
 import type { DeckCardEntry } from "../domain/deck";
 import {
   COMMAND_ZONE_GROUP_ID,
@@ -33,6 +44,14 @@ type SearchState =
   | { phase: "loading"; page: CardSearchPage | null }
   | { phase: "success"; page: CardSearchPage }
   | { phase: "error"; page: CardSearchPage | null; message: string };
+
+const COLOR_FILTERS: Array<{ color: MagicColor; label: string }> = [
+  { color: "W", label: "White" },
+  { color: "U", label: "Blue" },
+  { color: "B", label: "Black" },
+  { color: "R", label: "Red" },
+  { color: "G", label: "Green" },
+];
 
 interface SearchDrawerProps {
   initialQuery?: string;
@@ -56,6 +75,11 @@ export function SearchDrawer({
   onClose,
 }: SearchDrawerProps) {
   const [query, setQuery] = useState(initialQuery);
+  const [filters, setFilters] = useState<CardSearchFilters>(() => ({
+    ...EMPTY_CARD_SEARCH_FILTERS,
+    colors: [],
+  }));
+  const [filtersOpen, setFiltersOpen] = useState(true);
   const [state, setState] = useState<SearchState>({
     phase: "idle",
     page: null,
@@ -65,6 +89,8 @@ export function SearchDrawer({
   const inputRef = useRef<HTMLInputElement>(null);
   const activeRequest = useRef<AbortController | null>(null);
   const debounceSkipped = useRef(false);
+  const filtersRef = useRef(filters);
+  filtersRef.current = filters;
   const commanderColorIdentity = useMemo(
     () => getCommanderColorIdentity(entries),
     [entries],
@@ -90,6 +116,7 @@ export function SearchDrawer({
           normalized,
           page,
           controller.signal,
+          filtersRef.current,
         );
         if (activeRequest.current !== controller) {
           return;
@@ -132,6 +159,7 @@ export function SearchDrawer({
     },
     [client],
   );
+  const filterSignature = JSON.stringify(filters);
 
   useEffect(() => {
     inputRef.current?.focus();
@@ -148,13 +176,15 @@ export function SearchDrawer({
       return;
     }
     if (!query.trim()) {
+      activeRequest.current?.abort();
+      activeRequest.current = null;
       setState({ phase: "idle", page: null });
       setSelected(null);
       return;
     }
     const timer = window.setTimeout(() => void runSearch(query), 420);
     return () => window.clearTimeout(timer);
-  }, [query, runSearch]);
+  }, [query, filterSignature, runSearch]);
 
   useEffect(() => {
     const previousOverflow = document.body.style.overflow;
@@ -197,11 +227,46 @@ export function SearchDrawer({
 
   const submit = (event: FormEvent) => {
     event.preventDefault();
-    debounceSkipped.current = true;
     void runSearch(query);
   };
 
   const cards = state.page?.cards ?? [];
+  const activeFilterCount =
+    filters.colors.length +
+    Number(filters.includeColorless) +
+    [
+      filters.manaValueMin,
+      filters.manaValueMax,
+      filters.priceEurMin,
+      filters.priceEurMax,
+    ].filter((value) => value !== null).length;
+
+  const toggleColor = (color: MagicColor) => {
+    setFilters((current) => ({
+      ...current,
+      colors: current.colors.includes(color)
+        ? current.colors.filter((candidate) => candidate !== color)
+        : [...current.colors, color],
+    }));
+  };
+
+  const setNumberFilter = (
+    key:
+      | "manaValueMin"
+      | "manaValueMax"
+      | "priceEurMin"
+      | "priceEurMax",
+    value: string,
+  ) => {
+    const parsed = value === "" ? null : Number(value);
+    setFilters((current) => ({
+      ...current,
+      [key]: parsed !== null && Number.isFinite(parsed) ? parsed : null,
+    }));
+  };
+
+  const resetFilters = () =>
+    setFilters({ ...EMPTY_CARD_SEARCH_FILTERS, colors: [] });
 
   return (
     <div className="drawer-layer">
@@ -243,8 +308,8 @@ export function SearchDrawer({
             ref={inputRef}
             value={query}
             onChange={(event) => setQuery(event.target.value)}
-            aria-label="Search card name or Scryfall syntax"
-            placeholder='Card name or Scryfall syntax, e.g. type:land color:g'
+            aria-label="Search cards"
+            placeholder="Card name, Scryfall query, or deck-building intent"
             autoComplete="off"
           />
           {query ? (
@@ -258,10 +323,179 @@ export function SearchDrawer({
               <X aria-hidden="true" size={17} />
             </button>
           ) : null}
+          <button
+            className={`icon-button filter-toggle ${filtersOpen ? "is-active" : ""}`}
+            type="button"
+            aria-label={`${filtersOpen ? "Hide" : "Show"} search filters`}
+            aria-expanded={filtersOpen}
+            title="Filters"
+            onClick={() => setFiltersOpen((open) => !open)}
+          >
+            <SlidersHorizontal aria-hidden="true" size={17} />
+            {activeFilterCount > 0 ? (
+              <span aria-label={`${activeFilterCount} active filters`}>
+                {activeFilterCount}
+              </span>
+            ) : null}
+          </button>
           <button className="primary-button search-submit" type="submit">
             Search
           </button>
         </form>
+
+        {filtersOpen ? (
+          <section className="search-filters" aria-label="Card search filters">
+            <fieldset className="filter-fieldset filter-fieldset--mode">
+              <legend>Color identity</legend>
+              <div className="filter-radio-group">
+                <label>
+                  <input
+                    type="radio"
+                    name="color-match-mode"
+                    value="subset"
+                    checked={filters.colorMode === "subset"}
+                    onChange={() =>
+                      setFilters((current) => ({
+                        ...current,
+                        colorMode: "subset",
+                      }))
+                    }
+                  />
+                  Can include
+                </label>
+                <label>
+                  <input
+                    type="radio"
+                    name="color-match-mode"
+                    value="exact"
+                    checked={filters.colorMode === "exact"}
+                    onChange={() =>
+                      setFilters((current) => ({
+                        ...current,
+                        colorMode: "exact",
+                      }))
+                    }
+                  />
+                  Exact
+                </label>
+              </div>
+            </fieldset>
+
+            <fieldset className="filter-fieldset filter-fieldset--colors">
+              <legend>Colors</legend>
+              <div className="color-filters">
+                {COLOR_FILTERS.map(({ color, label }) => (
+                  <label
+                    className={`color-filter color-filter--${color.toLowerCase()}`}
+                    key={color}
+                    title={label}
+                  >
+                    <input
+                      type="checkbox"
+                      aria-label={label}
+                      checked={filters.colors.includes(color)}
+                      onChange={() => toggleColor(color)}
+                    />
+                    <span aria-hidden="true">{color}</span>
+                  </label>
+                ))}
+                <label
+                  className="color-filter color-filter--c"
+                  title="Colorless"
+                >
+                  <input
+                    type="checkbox"
+                    aria-label="Colorless"
+                    checked={filters.includeColorless}
+                    onChange={(event) =>
+                      setFilters((current) => ({
+                        ...current,
+                        includeColorless: event.target.checked,
+                      }))
+                    }
+                  />
+                  <span aria-hidden="true">C</span>
+                </label>
+              </div>
+            </fieldset>
+
+            <fieldset className="filter-fieldset filter-fieldset--range">
+              <legend>Mana value</legend>
+              <label>
+                <span>Min</span>
+                <input
+                  type="number"
+                  aria-label="Minimum mana value"
+                  min="0"
+                  max={filters.manaValueMax ?? 100}
+                  step="1"
+                  value={filters.manaValueMin ?? ""}
+                  onChange={(event) =>
+                    setNumberFilter("manaValueMin", event.target.value)
+                  }
+                />
+              </label>
+              <span aria-hidden="true">to</span>
+              <label>
+                <span>Max</span>
+                <input
+                  type="number"
+                  aria-label="Maximum mana value"
+                  min={filters.manaValueMin ?? 0}
+                  max="100"
+                  step="1"
+                  value={filters.manaValueMax ?? ""}
+                  onChange={(event) =>
+                    setNumberFilter("manaValueMax", event.target.value)
+                  }
+                />
+              </label>
+            </fieldset>
+
+            <fieldset className="filter-fieldset filter-fieldset--range">
+              <legend>Price EUR</legend>
+              <label>
+                <span>Min</span>
+                <input
+                  type="number"
+                  aria-label="Minimum price in euros"
+                  min="0"
+                  max={filters.priceEurMax ?? undefined}
+                  step="0.01"
+                  value={filters.priceEurMin ?? ""}
+                  onChange={(event) =>
+                    setNumberFilter("priceEurMin", event.target.value)
+                  }
+                />
+              </label>
+              <span aria-hidden="true">to</span>
+              <label>
+                <span>Max</span>
+                <input
+                  type="number"
+                  aria-label="Maximum price in euros"
+                  min={filters.priceEurMin ?? 0}
+                  step="0.01"
+                  value={filters.priceEurMax ?? ""}
+                  onChange={(event) =>
+                    setNumberFilter("priceEurMax", event.target.value)
+                  }
+                />
+              </label>
+            </fieldset>
+
+            <button
+              className="icon-button filter-reset"
+              type="button"
+              aria-label="Reset search filters"
+              title="Reset filters"
+              disabled={activeFilterCount === 0}
+              onClick={resetFilters}
+            >
+              <Trash2 aria-hidden="true" size={16} />
+            </button>
+          </section>
+        ) : null}
 
         <div className="search-drawer__body">
           <div className="search-results" aria-live="polite" aria-busy={state.phase === "loading"}>
@@ -269,10 +503,6 @@ export function SearchDrawer({
               <div className="search-state">
                 <Search aria-hidden="true" size={26} />
                 <h3>Search Magic cards</h3>
-                <p>
-                  Use a card name or Scryfall filters. Adding a card keeps this
-                  drawer open.
-                </p>
               </div>
             ) : null}
 
@@ -312,8 +542,20 @@ export function SearchDrawer({
               <>
                 <div className="search-results__meta">
                   <span>{state.page?.total_results.toLocaleString()} results</span>
+                  {state.page?.interpretation ? (
+                    <span className="search-results__intent">
+                      {state.page.interpretation}
+                      {state.page.reranked ? " · semantic rank" : ""}
+                    </span>
+                  ) : null}
                   {state.phase === "loading" ? <span>Loading more…</span> : null}
                 </div>
+                {state.page?.warnings[0] ? (
+                  <p className="search-warning" role="status">
+                    <AlertCircle aria-hidden="true" size={14} />
+                    {state.page.warnings[0]}
+                  </p>
+                ) : null}
                 <div className="search-card-grid">
                   {cards.map((card) => {
                     const exactEntry = entries.find(

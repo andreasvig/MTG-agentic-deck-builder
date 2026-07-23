@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 
 import { cardSearchPage } from "../test/fixtures";
-import { ApiError, createApiClient, toScryfallQuery } from "./api";
+import { ApiError, createApiClient } from "./api";
 
 describe("API client", () => {
   it("requests and validates health from the configured API", async () => {
@@ -26,29 +26,33 @@ describe("API client", () => {
     );
   });
 
-  it("turns plain names into exact Scryfall name searches", async () => {
+  it("sends raw queries and structured card filters", async () => {
     const fetcher = vi
       .fn<typeof fetch>()
       .mockResolvedValue(Response.json(cardSearchPage()));
     const client = createApiClient("http://localhost:9999/api/v1", fetcher);
 
-    await client.searchCards("Sol Ring", 2);
+    await client.searchCards(" Sol Ring ", 2, undefined, {
+      colors: ["U", "R"],
+      includeColorless: true,
+      colorMode: "exact",
+      manaValueMin: 2,
+      manaValueMax: 5,
+      priceEurMin: 0.25,
+      priceEurMax: 12,
+    });
 
     const requestedUrl = new URL(String(fetcher.mock.calls[0]?.[0]));
     expect(requestedUrl.pathname).toBe("/api/v1/cards/search");
-    expect(requestedUrl.searchParams.get("q")).toBe('name:"Sol Ring"');
+    expect(requestedUrl.searchParams.get("q")).toBe("Sol Ring");
     expect(requestedUrl.searchParams.get("page")).toBe("2");
-  });
-
-  it("preserves explicit Scryfall syntax and escapes plain names", () => {
-    expect(toScryfallQuery("type:land color:g")).toBe("type:land color:g");
-    expect(toScryfallQuery("goblin OR elf")).toBe("goblin OR elf");
-    expect(toScryfallQuery("Sword of War and Peace")).toBe(
-      'name:"Sword of War and Peace"',
-    );
-    expect(toScryfallQuery('Sword "Prototype"')).toBe(
-      'name:"Sword \\"Prototype\\""',
-    );
+    expect(requestedUrl.searchParams.getAll("color")).toEqual(["U", "R"]);
+    expect(requestedUrl.searchParams.get("include_colorless")).toBe("true");
+    expect(requestedUrl.searchParams.get("color_mode")).toBe("exact");
+    expect(requestedUrl.searchParams.get("mana_min")).toBe("2");
+    expect(requestedUrl.searchParams.get("mana_max")).toBe("5");
+    expect(requestedUrl.searchParams.get("price_min")).toBe("0.25");
+    expect(requestedUrl.searchParams.get("price_max")).toBe("12");
   });
 
   it("surfaces a safe provider message and rejects malformed payloads", async () => {

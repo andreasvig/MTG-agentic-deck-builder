@@ -3,7 +3,14 @@
 from functools import lru_cache
 from typing import Annotated
 
-from pydantic import AnyHttpUrl, Field, TypeAdapter, field_validator
+from pydantic import (
+    AliasChoices,
+    AnyHttpUrl,
+    Field,
+    SecretStr,
+    TypeAdapter,
+    field_validator,
+)
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from mtg_deck_builder import __version__
@@ -29,12 +36,26 @@ class Settings(BaseSettings):
         "(+https://github.com/andreasvig/MTG-agentic-deck-builder)"
     )
     scryfall_timeout_seconds: Annotated[float, Field(gt=0, le=60)] = 10.0
+    embedding_model: str = "BAAI/bge-small-en-v1.5"
+    openrouter_api_key: SecretStr | None = Field(
+        default=None,
+        validation_alias=AliasChoices(
+            "OPENROUTER_API_KEY",
+            "MTG_OPENROUTER_API_KEY",
+        ),
+    )
+    openrouter_base_url: str = "https://openrouter.ai/api/v1"
+    openrouter_model: str = "google/gemini-3.5-flash"
+    openrouter_timeout_seconds: Annotated[float, Field(gt=0, le=60)] = 15.0
 
     @field_validator(
         "host",
         "frontend_origin",
         "scryfall_base_url",
         "scryfall_user_agent",
+        "embedding_model",
+        "openrouter_base_url",
+        "openrouter_model",
         mode="before",
     )
     @classmethod
@@ -77,11 +98,25 @@ class Settings(BaseSettings):
             raise ValueError("scryfall_base_url must not contain credentials, query, or fragment")
         return base_url
 
-    @field_validator("scryfall_user_agent")
+    @field_validator("openrouter_base_url")
     @classmethod
-    def scryfall_user_agent_must_not_be_empty(cls, value: str) -> str:
+    def validate_openrouter_base_url(cls, value: str) -> str:
+        base_url = value.rstrip("/")
+        url = _http_url_adapter.validate_python(base_url)
+        if (
+            url.username is not None
+            or url.password is not None
+            or url.query is not None
+            or url.fragment is not None
+        ):
+            raise ValueError("openrouter_base_url must not contain credentials, query, or fragment")
+        return base_url
+
+    @field_validator("scryfall_user_agent", "embedding_model", "openrouter_model")
+    @classmethod
+    def required_string_must_not_be_empty(cls, value: str) -> str:
         if not value:
-            raise ValueError("scryfall_user_agent must not be empty")
+            raise ValueError("value must not be empty")
         return value
 
 

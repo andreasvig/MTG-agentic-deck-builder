@@ -7,7 +7,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from mtg_deck_builder.api.cards import get_card_search_provider
-from mtg_deck_builder.domain import CardSearchPage, CardSearchQuery
+from mtg_deck_builder.domain import CardSearchFilters, CardSearchPage, CardSearchQuery
 from mtg_deck_builder.main import create_app
 from mtg_deck_builder.providers import (
     CardSearchQueryError,
@@ -337,6 +337,51 @@ def test_search_endpoint_returns_typed_page() -> None:
     assert provider.calls == [CardSearchQuery(q="delver", page=1)]
 
 
+def test_search_endpoint_passes_structured_filters_to_provider() -> None:
+    provider = StubProvider(
+        CardSearchPage(
+            query="red draw",
+            page=1,
+            total_results=0,
+            has_more=False,
+            cards=[],
+        )
+    )
+
+    with make_client(provider) as client:
+        response = client.get(
+            "/api/v1/cards/search",
+            params=[
+                ("q", "red draw"),
+                ("color", "R"),
+                ("color", "B"),
+                ("include_colorless", "true"),
+                ("color_mode", "exact"),
+                ("mana_min", "2"),
+                ("mana_max", "5"),
+                ("price_min", "0.25"),
+                ("price_max", "12"),
+            ],
+        )
+
+    assert response.status_code == 200
+    assert provider.calls == [
+        CardSearchQuery(
+            q="red draw",
+            page=1,
+            filters=CardSearchFilters(
+                colors=["R", "B"],
+                include_colorless=True,
+                color_mode="exact",
+                mana_value_min=2,
+                mana_value_max=5,
+                price_eur_min="0.25",
+                price_eur_max="12",
+            ),
+        )
+    ]
+
+
 @pytest.mark.parametrize(
     ("outcome", "expected_status", "expected_detail"),
     [
@@ -379,6 +424,8 @@ def test_search_endpoint_maps_provider_errors(
         {"q": "x" * 501},
         {"q": "sol ring", "page": 0},
         {"q": "sol ring", "page": 1001},
+        {"q": "sol ring", "mana_min": 4, "mana_max": 2},
+        {"q": "sol ring", "price_min": 4, "price_max": 2},
     ],
 )
 def test_search_endpoint_validates_query_and_page(params: dict[str, str | int]) -> None:

@@ -46,7 +46,16 @@ agent that can inspect a deck, explain suggestions, and propose safe edits.
 
 ### Card Discovery
 
-- Search by card name.
+- Search by exact card name, fuzzy card name, natural deck-building intent, or
+  explicit Scryfall syntax.
+- Compile common intents such as ramp, card draw, cheap creature types,
+  finishers, untap effects, and +1/+1 counter multiplication into broad
+  Scryfall candidate queries.
+- Rank intent candidates locally with a small Hugging Face embedding model.
+- Optionally apply a bounded OpenRouter rerank with
+  `google/gemini-3.5-flash` at minimal reasoning effort.
+- Filter every search by color identity using can-include or exact matching,
+  including colorless, plus minimum/maximum mana value and EUR estimate.
 - Support useful Scryfall-style filters.
 - Show card image, mana cost, type, rules text, color identity, and legality.
 - Filter results to the commander's color identity by default.
@@ -120,9 +129,9 @@ Add a deck-scoped chat assistant with tools that can:
 - Apply a confirmed patch through the same deck service used by the UI.
 - Preserve an undoable change history.
 
-The assistant will use Pydantic AI. Initial model candidates are
-`gemini-3.6-flash` and `gemini-3.5-flash-lite`; select between them using a
-small eval of latency, tool-call reliability, suggestion quality, and cost.
+The assistant will use Pydantic AI. Start with `google/gemini-3.5-flash`
+through OpenRouter at minimal reasoning effort, then change models only when
+hands-on use exposes a concrete latency, reliability, quality, or cost problem.
 
 Planned tools:
 
@@ -178,6 +187,11 @@ Completed in the first usable slice:
 
 - React and FastAPI scaffolds on ports `41737` and `43127`.
 - A typed, provider-neutral card-search boundary backed by live Scryfall search.
+- Layered exact, fuzzy, intent, and explicit-Scryfall search routing.
+- Local `BAAI/bge-small-en-v1.5` semantic ranking for intent candidates, with a
+  bounded optional Gemini 3.5 Flash rerank through OpenRouter.
+- Search filters for subset or exact color identity, colorless cards, mana
+  value, and Scryfall EUR estimates.
 - Search loading, empty, invalid-query, provider-error, and pagination states.
 - A single detailed in-context search drawer with inline quantities.
 - A persistent local deck library with creation, switching, renaming, commander
@@ -218,5 +232,4 @@ model without pretending to complete those broader contracts.
 - Whether to add MTGJSON Cardmarket trend prices and history after the MVP
 - Exact Sonar web-search provider and API
 - Permitted source for commander-specific recommendation data
-- Which Gemini candidate wins the agent eval
 - Desired power-level or Commander-bracket model for the later phase
