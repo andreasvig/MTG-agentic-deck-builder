@@ -28,3 +28,11 @@ All notable changes to this project will be documented in this file.
 ### Repository
 
 - Initialized as a private personal GitHub repository.
+
+### Changed
+
+- Replaced the credential-dependent direct Cardmarket integration with
+  Scryfall's daily EUR price estimates for the MVP.
+- Added Cardmarket product links for manual price verification.
+- Recorded MTGJSON's credential-free daily Cardmarket price data as a possible
+  later provider when exact trend semantics justify the extra mapping work.

@@ -23,7 +23,7 @@ agent that can inspect a deck, explain suggestions, and propose safe edits.
 - Backend: FastAPI and Python
 - Storage: SQLite
 - Card data: Scryfall API and/or Scryfall bulk data
-- Pricing: Cardmarket trend prices through a dedicated cached provider
+- Pricing: Scryfall daily EUR estimates, cached per printing
 - Development URLs:
   - Frontend: `http://127.0.0.1:41737`
   - Backend: `http://127.0.0.1:43127`
@@ -52,12 +52,16 @@ agent that can inspect a deck, explain suggestions, and propose safe edits.
 
 ### Pricing
 
-- Show the current Cardmarket trend price in EUR for the selected printing.
+- Show Scryfall's current daily EUR estimate for the selected printing.
+- Support non-foil and foil values through `prices.eur` and `prices.eur_foil`.
 - Show individual card prices and the estimated total deck price.
 - Cache daily price snapshots with their source and observation timestamp.
-- Map Scryfall printings to Cardmarket products through stable provider IDs.
-- Keep the provider replaceable because official Cardmarket price-guide access
-  requires approved credentials and may not be available in every environment.
+- Link to the matching Cardmarket product through Scryfall's `cardmarket_id` or
+  `purchase_uris.cardmarket` so the estimate can be verified before buying.
+- Label these values as estimates rather than guaranteed marketplace offers.
+- Keep the provider replaceable. MTGJSON's free daily `AllPricesToday` bulk file
+  is a later option when exact Cardmarket trend semantics or price history
+  justify the additional catalog-mapping work.
 - Defer collection ownership and budget enforcement until a later phase.
 
 ### Commander Validation
@@ -163,7 +167,7 @@ validation, history, and tests.
 
 - Whether deck pricing uses the selected printing or the cheapest eligible
   printing by default
-- Which approved Cardmarket data-access method and credentials are available
+- Whether to add MTGJSON Cardmarket trend prices and history after the MVP
 - Exact Sonar web-search provider and API
 - Permitted source for commander-specific recommendation data
 - Which Gemini candidate wins the agent eval
