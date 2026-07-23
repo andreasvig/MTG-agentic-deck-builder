@@ -57,6 +57,10 @@ All notable changes to this project will be documented in this file.
   renaming, and commander-art thumbnails in the navigation rail.
 - Added user-created custom groups with permanent Command zone and Not assigned
   groups plus an always-available new-group slot.
+- Added accessible pointer, touch, and keyboard drag handles for moving cards
+  between custom groups in visual and list views.
+- Added drop-to-create custom groups, with group creation and card movement
+  saved as one undoable operation.
 
 ### Repository
 
@@ -93,3 +97,8 @@ All notable changes to this project will be documented in this file.
   maybeboard and fixed-category cards migrate safely into Not assigned.
 - Capped sparse desktop group widths and hardened mobile group creation, card
   actions, deck-name editing, and touch targets against clipping.
+- Replaced the persistent right-side deck inspector with a centered card-detail
+  dialog on desktop and a contained full-screen dialog on mobile, leaving the
+  workspace edge available for the later agent chat.
+- Removed the local "Filter this deck" control so the toolbar has one clear card
+  search path.

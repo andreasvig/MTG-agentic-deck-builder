@@ -1,4 +1,10 @@
-import { expect, test, type Page, type Route } from "@playwright/test";
+import {
+  expect,
+  test,
+  type Locator,
+  type Page,
+  type Route,
+} from "@playwright/test";
 
 import {
   gamble,
@@ -59,6 +65,28 @@ async function waitForCardArt(page: Page, cardName: string) {
     .toBe(true);
 }
 
+async function dragTo(page: Page, source: Locator, target: Locator) {
+  const sourceBounds = await source.boundingBox();
+  const targetBounds = await target.boundingBox();
+  expect(sourceBounds).not.toBeNull();
+  expect(targetBounds).not.toBeNull();
+  if (!sourceBounds || !targetBounds) {
+    return;
+  }
+  await page.mouse.move(
+    sourceBounds.x + sourceBounds.width / 2,
+    sourceBounds.y + sourceBounds.height / 2,
+  );
+  await page.mouse.down();
+  await page.mouse.move(
+    targetBounds.x + targetBounds.width / 2,
+    targetBounds.y + Math.min(targetBounds.height / 2, 160),
+    { steps: 14 },
+  );
+  await page.waitForTimeout(100);
+  await page.mouse.up();
+}
+
 test.beforeEach(async ({ page }) => {
   await clearDeck(page);
 });
@@ -79,7 +107,11 @@ test("desktop deck-building flow remains fast and reversible", async ({
   });
 
   await page.goto("/");
-  await expect(page.getByText("Backend online", { exact: true })).toBeVisible();
+  await expect(
+    page.getByText("Card service online", { exact: true }),
+  ).toBeVisible();
+  await expect(page.getByPlaceholder("Filter this deck")).toHaveCount(0);
+  await expect(page.getByText("Deck inspector", { exact: true })).toHaveCount(0);
   await expect(
     page.getByRole("heading", { name: "Command zone" }),
   ).toBeVisible();
@@ -148,21 +180,67 @@ test("desktop deck-building flow remains fast and reversible", async ({
   await page.getByRole("button", { name: "Create custom group" }).click();
   await expect(page.getByRole("heading", { name: "Ramp" })).toBeVisible();
 
+  const notAssignedGroup = page.locator('[data-group-id="unassigned"]');
+  const rampGroup = page
+    .locator(".visual-group")
+    .filter({ has: page.getByRole("heading", { name: "Ramp" }) });
+  await dragTo(
+    page,
+    page.getByRole("button", { name: "Drag Sol Ring" }),
+    rampGroup,
+  );
+  await expect(
+    rampGroup.getByRole("button", { name: "Inspect Sol Ring" }),
+  ).toBeVisible();
+  await expect(
+    notAssignedGroup.getByRole("button", { name: "Inspect Sol Ring" }),
+  ).toHaveCount(0);
+
+  await dragTo(
+    page,
+    page.getByRole("button", { name: "Drag Llanowar Elves" }),
+    page.locator('[data-drop-target="new-group"]'),
+  );
+  const droppedGroupName = page.getByRole("textbox", { name: "Group name" });
+  await expect(droppedGroupName).toBeFocused();
+  await droppedGroupName.fill("Mana dorks");
+  await page.getByRole("button", { name: "Create custom group" }).click();
+  const manaDorksGroup = page
+    .locator(".visual-group")
+    .filter({ has: page.getByRole("heading", { name: "Mana dorks" }) });
+  await expect(
+    manaDorksGroup.getByRole("button", {
+      name: "Inspect Llanowar Elves",
+    }),
+  ).toBeVisible();
+
   await page.getByRole("button", { name: "Inspect Sol Ring" }).click();
+  const cardDialog = page.getByRole("dialog", { name: "Card details" });
+  await expect(cardDialog).toBeVisible();
+  await expect(page.locator("main")).toHaveAttribute("inert", "");
+  const modalBounds = await cardDialog.boundingBox();
+  expect(modalBounds).not.toBeNull();
+  expect(
+    Math.abs(
+      (modalBounds?.x ?? 0) +
+        (modalBounds?.width ?? 0) / 2 -
+        1440 / 2,
+    ),
+  ).toBeLessThan(3);
   const customGroupSelect = page.getByRole("combobox", {
     name: "Move Sol Ring to custom group",
   });
-  await expect(customGroupSelect).toHaveValue("unassigned");
-  await customGroupSelect.selectOption({ label: "Ramp" });
   await expect(customGroupSelect).toHaveValue(/group-/);
+  await cardDialog
+    .getByRole("button", { name: "Close card inspector" })
+    .click();
+
   await page.getByRole("combobox", { name: "Group cards" }).selectOption("type");
-  await expect(customGroupSelect).toHaveCount(0);
   await expect(page.getByRole("button", { name: "Add custom group" })).toHaveCount(
     0,
   );
   await expect(page.getByRole("heading", { name: "Artifact" })).toBeVisible();
   await page.getByRole("combobox", { name: "Group cards" }).selectOption("custom");
-  await page.getByRole("button", { name: "Close card inspector" }).click();
 
   await page.screenshot({
     path: testInfo.outputPath("desktop-populated-visual.png"),
@@ -186,20 +264,6 @@ test("desktop deck-building flow remains fast and reversible", async ({
   await page
     .getByRole("button", { name: "Undo last deck change" })
     .click();
-  await expect(
-    page.getByRole("spinbutton", { name: "Sol Ring quantity" }),
-  ).toBeVisible();
-
-  await page.getByRole("textbox", { name: "Filter cards in this deck" }).fill(
-    "elf",
-  );
-  await expect(
-    page.getByRole("spinbutton", { name: "Llanowar Elves quantity" }),
-  ).toBeVisible();
-  await expect(
-    page.getByRole("spinbutton", { name: "Sol Ring quantity" }),
-  ).toHaveCount(0);
-  await page.getByRole("button", { name: "Clear local filter" }).click();
   await expect(
     page.getByRole("spinbutton", { name: "Sol Ring quantity" }),
   ).toBeVisible();
@@ -233,6 +297,9 @@ test("desktop deck-building flow remains fast and reversible", async ({
   await expect(page.getByRole("heading", { name: "Ramp Lab" })).toBeVisible();
   await expect(
     page.getByRole("heading", { name: "Ramp", exact: true }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("heading", { name: "Mana dorks", exact: true }),
   ).toBeVisible();
   await expect(
     page.getByRole("button", { name: "Inspect Sol Ring" }),
@@ -273,7 +340,9 @@ test("search communicates empty and provider-recovery states", async ({
   });
 
   await page.goto("/");
-  await expect(page.getByText("Backend online", { exact: true })).toBeVisible();
+  await expect(
+    page.getByText("Card service online", { exact: true }),
+  ).toBeVisible();
   await openSearch(page);
 
   const searchInput = page.getByRole("textbox", {
@@ -467,7 +536,7 @@ test("mobile keeps primary deck actions reachable and contained", async ({
   await mobileDeckName.press("Escape");
 
   const cardOptions = page.getByRole("button", {
-    name: "Inspect and move Llanowar Elves",
+    name: "Drag Llanowar Elves",
   });
   await expect(cardOptions).toBeVisible();
   const cardOptionsBounds = await cardOptions.boundingBox();
@@ -499,7 +568,7 @@ test("mobile keeps primary deck actions reachable and contained", async ({
   await page
     .getByRole("button", { name: "Inspect Llanowar Elves" })
     .click();
-  const inspector = page.getByRole("dialog", { name: "Card inspector" });
+  const inspector = page.getByRole("dialog", { name: "Card details" });
   await expect(inspector).toBeVisible();
   await expect(
     inspector.getByRole("heading", { name: "Llanowar Elves" }),

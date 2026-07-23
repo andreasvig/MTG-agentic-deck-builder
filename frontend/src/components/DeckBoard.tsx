@@ -2,15 +2,29 @@ import {
   AlertTriangle,
   Check,
   CirclePlus,
+  GripVertical,
   Minus,
   MoreHorizontal,
   Plus,
-  Search,
   Trash2,
   X,
 } from "lucide-react";
 import {
+  closestCenter,
+  DndContext,
+  DragOverlay,
+  KeyboardSensor,
+  PointerSensor,
+  type DragEndEvent,
+  type DragStartEvent,
+  useDraggable,
+  useDroppable,
+  useSensor,
+  useSensors,
+} from "@dnd-kit/core";
+import {
   type FormEvent,
+  type ReactNode,
   useEffect,
   useMemo,
   useRef,
@@ -42,13 +56,13 @@ interface DeckBoardProps {
   view: ViewMode;
   group: GroupMode;
   sort: SortMode;
-  filter: string;
   singletonWarnings: Set<string>;
   colorIdentityWarnings: Set<string>;
   onSearch: (targetGroupId?: string, targetLabel?: string) => void;
-  onAddCustomGroup: (name: string) => void;
+  onAddCustomGroup: (name: string, moveScryfallId?: string) => void;
   onSelect: (card: CardSearchResult) => void;
   onSetQuantity: (scryfallId: string, quantity: number) => void;
+  onMove: (scryfallId: string, groupId: string) => void;
   onRemove: (scryfallId: string) => void;
 }
 
@@ -66,33 +80,64 @@ export function DeckBoard({
   view,
   group,
   sort,
-  filter,
   singletonWarnings,
   colorIdentityWarnings,
   onSearch,
   onAddCustomGroup,
   onSelect,
   onSetQuantity,
+  onMove,
   onRemove,
 }: DeckBoardProps) {
-  const groups = useMemo(
-    () => makeGroups(entries, customGroups, group, sort, filter),
-    [customGroups, entries, filter, group, sort],
+  const dragEnabled = group === "custom";
+  const sensors = useSensors(
+    useSensor(PointerSensor, {
+      activationConstraint: { distance: 6 },
+    }),
+    useSensor(KeyboardSensor),
   );
-  const visibleEntries = groups.flatMap((cardGroup) => cardGroup.entries);
+  const [activeCardId, setActiveCardId] = useState<string | null>(null);
+  const [pendingNewGroupCardId, setPendingNewGroupCardId] = useState<
+    string | null
+  >(null);
+  const groups = useMemo(
+    () => makeGroups(entries, customGroups, group, sort),
+    [customGroups, entries, group, sort],
+  );
+  const activeCard = activeCardId
+    ? entries.find((entry) => entry.card.scryfall_id === activeCardId)?.card
+        .details
+    : null;
 
-  if (entries.length > 0 && visibleEntries.length === 0) {
-    return (
-      <div className="deck-empty deck-empty--filter">
-        <Search aria-hidden="true" size={23} />
-        <h2>No cards match “{filter}”</h2>
-        <p>Clear the local filter to see the complete deck.</p>
-      </div>
-    );
-  }
+  const handleDragStart = (event: DragStartEvent) => {
+    const scryfallId = event.active.data.current?.scryfallId;
+    setActiveCardId(typeof scryfallId === "string" ? scryfallId : null);
+  };
 
-  if (view === "list") {
-    return (
+  const handleDragEnd = (event: DragEndEvent) => {
+    setActiveCardId(null);
+    const scryfallId = event.active.data.current?.scryfallId;
+    if (typeof scryfallId !== "string" || !event.over) {
+      return;
+    }
+    const targetType = event.over.data.current?.type;
+    if (targetType === "new-group") {
+      setPendingNewGroupCardId(scryfallId);
+      return;
+    }
+    const targetGroupId = event.over.data.current?.groupId;
+    const currentGroupId = event.active.data.current?.groupId;
+    if (
+      targetType === "group" &&
+      typeof targetGroupId === "string" &&
+      targetGroupId !== currentGroupId
+    ) {
+      onMove(scryfallId, targetGroupId);
+    }
+  };
+
+  const board =
+    view === "list" ? (
       <div className="deck-list" aria-label="Deck card list">
         <div className="deck-list__head" aria-hidden="true">
           <span>Qty</span>
@@ -104,134 +149,270 @@ export function DeckBoard({
           <span>Actions</span>
         </div>
         {groups.map((cardGroup) =>
-          cardGroup.entries.length > 0 ? (
-            <section className="deck-list__group" key={cardGroup.id}>
+          cardGroup.entries.length > 0 || dragEnabled ? (
+            <DroppableListGroup
+              group={cardGroup}
+              enabled={dragEnabled}
+              key={cardGroup.id}
+            >
               <GroupHeader group={cardGroup} onSearch={onSearch} />
-              {cardGroup.entries.map((entry) => (
-                <ListRow
-                  entry={entry}
-                  customGroups={customGroups}
-                  warning={warningCopy(
-                    singletonWarnings.has(entry.card.oracle_id),
-                    colorIdentityWarnings.has(entry.card.oracle_id),
-                  )}
-                  key={entry.card.scryfall_id}
-                  onSelect={onSelect}
-                  onSetQuantity={onSetQuantity}
-                  onRemove={onRemove}
-                />
-              ))}
-            </section>
+              {cardGroup.entries.length > 0 ? (
+                cardGroup.entries.map((entry) => (
+                  <ListRow
+                    entry={entry}
+                    groupId={cardGroup.id}
+                    customGroups={customGroups}
+                    dragEnabled={dragEnabled}
+                    warning={warningCopy(
+                      singletonWarnings.has(entry.card.oracle_id),
+                      colorIdentityWarnings.has(entry.card.oracle_id),
+                    )}
+                    key={entry.card.scryfall_id}
+                    onSelect={onSelect}
+                    onSetQuantity={onSetQuantity}
+                    onRemove={onRemove}
+                  />
+                ))
+              ) : (
+                <div className="deck-list__empty-group">Drop cards here</div>
+              )}
+            </DroppableListGroup>
           ) : null,
         )}
-        {group === "custom" ? (
-          <AddGroupSlot compact onAdd={onAddCustomGroup} />
+        {dragEnabled ? (
+          <AddGroupSlot
+            compact
+            dropEnabled
+            pendingCardId={pendingNewGroupCardId}
+            onAdd={onAddCustomGroup}
+            onPendingHandled={() => setPendingNewGroupCardId(null)}
+          />
+        ) : null}
+      </div>
+    ) : (
+      <div className="visual-groups" aria-label="Deck visual groups">
+        {groups.map((cardGroup) => (
+          <DroppableVisualGroup
+            group={cardGroup}
+            enabled={dragEnabled}
+            key={cardGroup.id}
+          >
+            <GroupHeader group={cardGroup} onSearch={onSearch} />
+            {cardGroup.entries.length > 0 ? (
+              <div className="visual-card-grid">
+                {cardGroup.entries.map((entry) => (
+                  <VisualCard
+                    entry={entry}
+                    groupId={cardGroup.id}
+                    dragEnabled={dragEnabled}
+                    warning={warningCopy(
+                      singletonWarnings.has(entry.card.oracle_id),
+                      colorIdentityWarnings.has(entry.card.oracle_id),
+                    )}
+                    key={entry.card.scryfall_id}
+                    onSelect={onSelect}
+                    onSetQuantity={onSetQuantity}
+                  />
+                ))}
+              </div>
+            ) : (
+              <button
+                className="visual-group__empty"
+                type="button"
+                onClick={() =>
+                  onSearch(cardGroup.targetGroupId, cardGroup.label)
+                }
+              >
+                <CirclePlus aria-hidden="true" size={18} />
+                Add to {cardGroup.label.toLowerCase()}
+              </button>
+            )}
+          </DroppableVisualGroup>
+        ))}
+        {dragEnabled ? (
+          <AddGroupSlot
+            dropEnabled
+            pendingCardId={pendingNewGroupCardId}
+            onAdd={onAddCustomGroup}
+            onPendingHandled={() => setPendingNewGroupCardId(null)}
+          />
         ) : null}
       </div>
     );
-  }
 
   return (
-    <div className="visual-groups" aria-label="Deck visual groups">
-      {groups.map((cardGroup) => (
-        <section className="visual-group" key={cardGroup.id}>
-          <GroupHeader group={cardGroup} onSearch={onSearch} />
-          {cardGroup.entries.length > 0 ? (
-            <div className="visual-card-grid">
-              {cardGroup.entries.map((entry) => {
-                const card = entry.card.details;
-                if (!card) {
-                  return null;
-                }
-                const warning = warningCopy(
-                  singletonWarnings.has(entry.card.oracle_id),
-                  colorIdentityWarnings.has(entry.card.oracle_id),
-                );
-                return (
-                  <article className="deck-card" key={entry.card.scryfall_id}>
-                    <button
-                      className="deck-card__art"
-                      type="button"
-                      onClick={() => onSelect(card)}
-                      aria-label={`Inspect ${card.name}`}
-                    >
-                      <CardArt card={card} />
-                      {entry.quantity > 1 ? (
-                        <span className="deck-card__quantity">
-                          {entry.quantity}×
-                        </span>
-                      ) : null}
-                      {warning ? (
-                        <span
-                          className="deck-card__warning"
-                          title={warning.title}
-                        >
-                          <AlertTriangle
-                            aria-label={warning.label}
-                            size={15}
-                          />
-                        </span>
-                      ) : null}
-                    </button>
-                    <div className="deck-card__meta">
-                      <button type="button" onClick={() => onSelect(card)}>
-                        {card.name}
-                      </button>
-                      <span>{formatEuro(getCardPrice(card), "—")}</span>
-                    </div>
-                    <div className="deck-card__actions">
-                      <button
-                        type="button"
-                        aria-label={`Decrease ${card.name} quantity`}
-                        onClick={() =>
-                          onSetQuantity(card.scryfall_id, entry.quantity - 1)
-                        }
-                      >
-                        <Minus aria-hidden="true" size={14} />
-                      </button>
-                      <output aria-label={`${entry.quantity} ${card.name} in deck`}>
-                        {entry.quantity}
-                      </output>
-                      <button
-                        type="button"
-                        aria-label={`Increase ${card.name} quantity`}
-                        onClick={() =>
-                          onSetQuantity(card.scryfall_id, entry.quantity + 1)
-                        }
-                      >
-                        <Plus aria-hidden="true" size={14} />
-                      </button>
-                      <button
-                        type="button"
-                        aria-label={`Inspect and move ${card.name}`}
-                        title="Card options"
-                        onClick={() => onSelect(card)}
-                      >
-                        <MoreHorizontal aria-hidden="true" size={15} />
-                      </button>
-                    </div>
-                  </article>
-                );
-              })}
-            </div>
-          ) : (
-            <button
-              className="visual-group__empty"
-              type="button"
-              onClick={() =>
-                onSearch(cardGroup.targetGroupId, cardGroup.label)
-              }
-            >
-              <CirclePlus aria-hidden="true" size={18} />
-              Add to {cardGroup.label.toLowerCase()}
-            </button>
-          )}
-        </section>
-      ))}
-      {group === "custom" ? (
-        <AddGroupSlot onAdd={onAddCustomGroup} />
-      ) : null}
-    </div>
+    <DndContext
+      sensors={sensors}
+      collisionDetection={closestCenter}
+      onDragStart={handleDragStart}
+      onDragCancel={() => setActiveCardId(null)}
+      onDragEnd={handleDragEnd}
+    >
+      {board}
+      <DragOverlay dropAnimation={null}>
+        {activeCard ? (
+          <div className="drag-card-preview">
+            <CardArt card={activeCard} size="small" />
+            <strong>{activeCard.name}</strong>
+          </div>
+        ) : null}
+      </DragOverlay>
+    </DndContext>
+  );
+}
+
+function DroppableVisualGroup({
+  group,
+  enabled,
+  children,
+}: {
+  group: CardGroup;
+  enabled: boolean;
+  children: ReactNode;
+}) {
+  const { isOver, setNodeRef } = useDroppable({
+    id: `group:${group.id}`,
+    disabled: !enabled,
+    data: { type: "group", groupId: group.id },
+  });
+  return (
+    <section
+      ref={setNodeRef}
+      className={`visual-group ${isOver ? "visual-group--over" : ""}`}
+      data-group-id={group.id}
+    >
+      {children}
+    </section>
+  );
+}
+
+function DroppableListGroup({
+  group,
+  enabled,
+  children,
+}: {
+  group: CardGroup;
+  enabled: boolean;
+  children: ReactNode;
+}) {
+  const { isOver, setNodeRef } = useDroppable({
+    id: `group:${group.id}`,
+    disabled: !enabled,
+    data: { type: "group", groupId: group.id },
+  });
+  return (
+    <section
+      ref={setNodeRef}
+      className={`deck-list__group ${
+        isOver ? "deck-list__group--over" : ""
+      }`}
+      data-group-id={group.id}
+    >
+      {children}
+    </section>
+  );
+}
+
+function VisualCard({
+  entry,
+  groupId,
+  dragEnabled,
+  warning,
+  onSelect,
+  onSetQuantity,
+}: {
+  entry: DeckCardEntry;
+  groupId: string;
+  dragEnabled: boolean;
+  warning: ValidationWarning | null;
+  onSelect: (card: CardSearchResult) => void;
+  onSetQuantity: (scryfallId: string, quantity: number) => void;
+}) {
+  const card = entry.card.details;
+  const { attributes, isDragging, listeners, setNodeRef } = useDraggable({
+    id: `card:${entry.card.scryfall_id}`,
+    disabled: !dragEnabled,
+    data: {
+      type: "card",
+      scryfallId: entry.card.scryfall_id,
+      groupId,
+    },
+  });
+  if (!card) {
+    return null;
+  }
+  return (
+    <article
+      ref={setNodeRef}
+      className={`deck-card ${isDragging ? "deck-card--dragging" : ""}`}
+    >
+      <button
+        className="deck-card__art"
+        type="button"
+        onClick={() => onSelect(card)}
+        aria-label={`Inspect ${card.name}`}
+      >
+        <CardArt card={card} />
+        {entry.quantity > 1 ? (
+          <span className="deck-card__quantity">{entry.quantity}×</span>
+        ) : null}
+        {warning ? (
+          <span className="deck-card__warning" title={warning.title}>
+            <AlertTriangle aria-label={warning.label} size={15} />
+          </span>
+        ) : null}
+      </button>
+      <div className="deck-card__meta">
+        <button type="button" onClick={() => onSelect(card)}>
+          {card.name}
+        </button>
+        <span>{formatEuro(getCardPrice(card), "—")}</span>
+      </div>
+      <div className="deck-card__actions">
+        <button
+          type="button"
+          aria-label={`Decrease ${card.name} quantity`}
+          onClick={() =>
+            onSetQuantity(card.scryfall_id, entry.quantity - 1)
+          }
+        >
+          <Minus aria-hidden="true" size={14} />
+        </button>
+        <output aria-label={`${entry.quantity} ${card.name} in deck`}>
+          {entry.quantity}
+        </output>
+        <button
+          type="button"
+          aria-label={`Increase ${card.name} quantity`}
+          onClick={() =>
+            onSetQuantity(card.scryfall_id, entry.quantity + 1)
+          }
+        >
+          <Plus aria-hidden="true" size={14} />
+        </button>
+        {dragEnabled ? (
+          <button
+            className="card-drag-handle"
+            type="button"
+            aria-label={`Drag ${card.name}`}
+            title="Move card"
+            {...attributes}
+            {...listeners}
+          >
+            <GripVertical aria-hidden="true" size={15} />
+          </button>
+        ) : (
+          <button
+            type="button"
+            aria-label={`Inspect ${card.name} details`}
+            title="Card details"
+            onClick={() => onSelect(card)}
+          >
+            <MoreHorizontal aria-hidden="true" size={15} />
+          </button>
+        )}
+      </div>
+    </article>
   );
 }
 
@@ -272,17 +453,34 @@ function GroupHeader({
 
 function AddGroupSlot({
   compact = false,
+  dropEnabled,
+  pendingCardId,
   onAdd,
+  onPendingHandled,
 }: {
   compact?: boolean;
-  onAdd: (name: string) => void;
+  dropEnabled: boolean;
+  pendingCardId: string | null;
+  onAdd: (name: string, moveScryfallId?: string) => void;
+  onPendingHandled: () => void;
 }) {
   const [editing, setEditing] = useState(false);
   const [name, setName] = useState("");
   const editorRef = useRef<HTMLFormElement>(null);
+  const { isOver, setNodeRef } = useDroppable({
+    id: "new-custom-group",
+    disabled: !dropEnabled,
+    data: { type: "new-group" },
+  });
 
   useEffect(() => {
-    if (!editing || compact) {
+    if (pendingCardId) {
+      setEditing(true);
+    }
+  }, [pendingCardId]);
+
+  useEffect(() => {
+    if (!editing) {
       return;
     }
     const frame = window.requestAnimationFrame(() => {
@@ -300,21 +498,26 @@ function AddGroupSlot({
   const cancel = () => {
     setEditing(false);
     setName("");
+    onPendingHandled();
   };
   const submit = (event: FormEvent) => {
     event.preventDefault();
     if (!name.trim()) {
       return;
     }
-    onAdd(name);
+    onAdd(name, pendingCardId ?? undefined);
     cancel();
   };
 
   if (!editing) {
     return (
       <button
-        className={`add-group-slot ${compact ? "add-group-slot--compact" : ""}`}
+        ref={setNodeRef}
+        className={`add-group-slot ${
+          compact ? "add-group-slot--compact" : ""
+        } ${isOver ? "add-group-slot--over" : ""}`}
         type="button"
+        data-drop-target="new-group"
         onClick={() => setEditing(true)}
       >
         <CirclePlus aria-hidden="true" size={19} />
@@ -325,10 +528,14 @@ function AddGroupSlot({
 
   return (
     <form
-      ref={editorRef}
+      ref={(node) => {
+        editorRef.current = node;
+        setNodeRef(node);
+      }}
       className={`add-group-slot add-group-slot--editing ${
         compact ? "add-group-slot--compact" : ""
-      }`}
+      } ${isOver ? "add-group-slot--over" : ""}`}
+      data-drop-target="new-group"
       onSubmit={submit}
     >
       <label>
@@ -372,25 +579,43 @@ function AddGroupSlot({
 
 function ListRow({
   entry,
+  groupId,
   customGroups,
+  dragEnabled,
   warning,
   onSelect,
   onSetQuantity,
   onRemove,
 }: {
   entry: DeckCardEntry;
+  groupId: string;
   customGroups: DeckCustomGroup[];
+  dragEnabled: boolean;
   warning: ValidationWarning | null;
   onSelect: (card: CardSearchResult) => void;
   onSetQuantity: (scryfallId: string, quantity: number) => void;
   onRemove: (scryfallId: string) => void;
 }) {
   const card = entry.card.details;
+  const { attributes, isDragging, listeners, setNodeRef } = useDraggable({
+    id: `card:${entry.card.scryfall_id}`,
+    disabled: !dragEnabled,
+    data: {
+      type: "card",
+      scryfallId: entry.card.scryfall_id,
+      groupId,
+    },
+  });
   if (!card) {
     return null;
   }
   return (
-    <div className="deck-list__row">
+    <div
+      ref={setNodeRef}
+      className={`deck-list__row ${
+        isDragging ? "deck-list__row--dragging" : ""
+      }`}
+    >
       <label className="list-quantity">
         <span className="sr-only">{card.name} quantity</span>
         <input
@@ -429,15 +654,28 @@ function ListRow({
       <span className="mana-line">{card.mana_cost || "—"}</span>
       <span>{formatEuro(getCardPrice(card) * entry.quantity, "—")}</span>
       <div className="list-actions">
-        <button
-          className="icon-button icon-button--compact"
-          type="button"
-          aria-label={`Inspect and move ${card.name}`}
-          title="Card options"
-          onClick={() => onSelect(card)}
-        >
-          <MoreHorizontal aria-hidden="true" size={16} />
-        </button>
+        {dragEnabled ? (
+          <button
+            className="icon-button icon-button--compact card-drag-handle"
+            type="button"
+            aria-label={`Drag ${card.name}`}
+            title="Move card"
+            {...attributes}
+            {...listeners}
+          >
+            <GripVertical aria-hidden="true" size={16} />
+          </button>
+        ) : (
+          <button
+            className="icon-button icon-button--compact"
+            type="button"
+            aria-label={`Inspect ${card.name} details`}
+            title="Card details"
+            onClick={() => onSelect(card)}
+          >
+            <MoreHorizontal aria-hidden="true" size={16} />
+          </button>
+        )}
         <button
           className="icon-button icon-button--compact icon-button--danger"
           type="button"
@@ -457,19 +695,7 @@ function makeGroups(
   customGroups: DeckCustomGroup[],
   groupMode: GroupMode,
   sortMode: SortMode,
-  filter: string,
 ): CardGroup[] {
-  const normalizedFilter = filter.trim().toLocaleLowerCase();
-  const filtered = entries.filter((entry) => {
-    const card = entry.card.details;
-    return (
-      !normalizedFilter ||
-      entry.card.name.toLocaleLowerCase().includes(normalizedFilter) ||
-      card?.type_line.toLocaleLowerCase().includes(normalizedFilter) ||
-      card?.oracle_text?.toLocaleLowerCase().includes(normalizedFilter) ||
-      card?.set_name.toLocaleLowerCase().includes(normalizedFilter)
-    );
-  });
   const sortEntries = (cards: DeckCardEntry[]) =>
     [...cards].sort((left, right) => compareEntries(left, right, sortMode));
 
@@ -495,7 +721,7 @@ function makeGroups(
       ...definition,
       targetGroupId: definition.id,
       entries: sortEntries(
-        filtered.filter(
+        entries.filter(
           (entry) =>
             groupIdForEntry(entry, customGroups) === definition.id,
         ),
@@ -503,7 +729,7 @@ function makeGroups(
     }));
   }
 
-  const mainboard = filtered.filter((entry) => entry.section === "mainboard");
+  const mainboard = entries.filter((entry) => entry.section === "mainboard");
   const presentTypes = [
     "Land",
     "Creature",
@@ -524,7 +750,7 @@ function makeGroups(
       marker: "command_zone",
       targetGroupId: COMMAND_ZONE_GROUP_ID,
       entries: sortEntries(
-        filtered.filter((entry) => entry.section === "command_zone"),
+        entries.filter((entry) => entry.section === "command_zone"),
       ),
     },
     ...presentTypes.map((type) => ({

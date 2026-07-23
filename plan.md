@@ -167,7 +167,7 @@ validation, history, and tests.
    plaintext import/export.
 6. Add validation, categories, statistics, and the visual/list editing views.
 7. Add focused backend and frontend tests for deck operations.
-8. Add drag-and-drop categories and additional import formats.
+8. Add additional import formats.
 9. Design Pydantic AI tools and a preview/confirm/undo workflow.
 10. Add the chat assistant and permitted recommendation providers.
 11. Add power-level guidance and an opening-hand/playtest view.
@@ -184,8 +184,11 @@ Completed in the first usable slice:
   thumbnails, add, remove, custom-group move, quantity, and 30-step undo.
 - Command zone, Not assigned, user-created custom groups, and singleton warnings.
 - Visual custom-group stacks, derived card-type grouping, dense list mode,
-  sorting, and local filtering.
-- Card inspection, selected-printing EUR estimates, and deck/custom-group totals.
+  sorting, and drag-and-drop placement between custom groups.
+- Drop-to-create custom groups that move the dropped card in the same undoable
+  deck change.
+- Centered card-detail dialogs, selected-printing EUR estimates, and
+  deck/custom-group totals.
 - Command-zone color-identity validation in search, deck cards, and inspection.
 - Purpose-built desktop and mobile layouts with keyboard-contained drawers.
 - Backend, frontend, process-runner, production-build, and browser workflow
@@ -203,7 +206,6 @@ model without pretending to complete those broader contracts.
 - Card collection and inventory management
 - Buying cards or marketplace integration
 - Full game simulation or rules engine
-- Drag-and-drop category editing
 - Power-level or Commander-bracket scoring
 - Opening-hand and playtest views
 - Archidekt, Moxfield, file, and URL imports

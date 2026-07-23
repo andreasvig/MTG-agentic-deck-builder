@@ -8,7 +8,6 @@ import {
 } from "lucide-react";
 import { useEffect, useRef } from "react";
 
-import type { BackendHealthState } from "../hooks/useBackendHealth";
 import type { CardSearchResult, MagicColor } from "../domain/card";
 import { formatEuro, getCardPrice } from "../domain/card";
 import type { DeckCustomGroup } from "../domain/deck";
@@ -17,7 +16,6 @@ import {
   UNASSIGNED_GROUP_ID,
 } from "../domain/deck";
 import { CardArt } from "./CardArt";
-import { ConnectionStatus } from "./ConnectionStatus";
 
 interface CardInspectorProps {
   card: CardSearchResult | null;
@@ -28,9 +26,6 @@ interface CardInspectorProps {
   singletonWarning: boolean;
   colorIdentityWarning: boolean;
   commanderColorIdentity: ReadonlySet<MagicColor> | null;
-  isMobile: boolean;
-  health: BackendHealthState;
-  onCheckHealth: () => void;
   onAdd: (card: CardSearchResult) => void;
   onSetQuantity: (scryfallId: string, quantity: number) => void;
   onMove: (scryfallId: string, groupId: string) => void;
@@ -47,20 +42,17 @@ export function CardInspector({
   singletonWarning,
   colorIdentityWarning,
   commanderColorIdentity,
-  isMobile,
-  health,
-  onCheckHealth,
   onAdd,
   onSetQuantity,
   onMove,
   onRemove,
   onClose,
 }: CardInspectorProps) {
-  const inspectorRef = useRef<HTMLElement>(null);
+  const dialogRef = useRef<HTMLElement>(null);
   const closeButtonRef = useRef<HTMLButtonElement>(null);
 
   useEffect(() => {
-    if (!isMobile || !card) {
+    if (!card) {
       return;
     }
     const previousFocus =
@@ -70,6 +62,7 @@ export function CardInspector({
     const previousOverflow = document.body.style.overflow;
     document.body.style.overflow = "hidden";
     closeButtonRef.current?.focus();
+
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
         event.preventDefault();
@@ -79,7 +72,7 @@ export function CardInspector({
       if (event.key !== "Tab") {
         return;
       }
-      const focusable = inspectorRef.current?.querySelectorAll<HTMLElement>(
+      const focusable = dialogRef.current?.querySelectorAll<HTMLElement>(
         'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])',
       );
       if (!focusable?.length) {
@@ -95,52 +88,53 @@ export function CardInspector({
         first.focus();
       }
     };
+
     document.addEventListener("keydown", handleKeyDown);
     return () => {
       document.body.style.overflow = previousOverflow;
       document.removeEventListener("keydown", handleKeyDown);
       window.setTimeout(() => previousFocus?.focus(), 0);
     };
-  }, [card, isMobile, onClose]);
+  }, [card, onClose]);
+
+  if (!card) {
+    return null;
+  }
 
   return (
-    <>
-      {isMobile && card ? (
-        <button
-          className="inspector-backdrop"
-          type="button"
-          aria-label="Close card inspector"
-          onClick={onClose}
-        />
-      ) : null}
-      <aside
-        ref={inspectorRef}
-        className={`inspector ${isMobile && card ? "inspector--open" : ""}`}
-        aria-label="Card inspector"
-        role={isMobile && card ? "dialog" : undefined}
-        aria-modal={isMobile && card ? true : undefined}
-        aria-hidden={isMobile && !card ? true : undefined}
-        inert={isMobile && !card ? true : undefined}
+    <div className="card-modal-layer">
+      <button
+        className="card-modal-backdrop"
+        type="button"
+        aria-label="Close card inspector"
+        onClick={onClose}
+      />
+      <section
+        ref={dialogRef}
+        className="card-modal"
+        role="dialog"
+        aria-modal="true"
+        aria-label="Card details"
       >
         <div className="inspector-heading">
-          <span>{card ? "Card details" : "Deck inspector"}</span>
-          {card ? (
-            <button
-              ref={closeButtonRef}
-              className="icon-button icon-button--compact"
-              type="button"
-              aria-label="Close card inspector"
-              title="Close"
-              onClick={onClose}
-            >
-              <X aria-hidden="true" size={18} />
-            </button>
-          ) : null}
+          <span>Card details</span>
+          <button
+            ref={closeButtonRef}
+            className="icon-button icon-button--compact"
+            type="button"
+            aria-label="Close card inspector"
+            title="Close"
+            onClick={onClose}
+          >
+            <X aria-hidden="true" size={18} />
+          </button>
         </div>
 
-        {card ? (
-          <div className="card-inspector-content">
+        <div className="card-inspector-content">
+          <div className="card-modal__art">
             <CardArt card={card} size="normal" loading="eager" />
+          </div>
+          <div className="card-modal__details">
             <div className="card-inspector-title">
               <div>
                 <h2>{card.name}</h2>
@@ -291,19 +285,9 @@ export function CardInspector({
               </button>
             )}
           </div>
-        ) : (
-          <div className="inspector-empty">
-            <h2>Select a card</h2>
-            <p>
-              Card text, printing details, price, quantity and custom group
-              controls appear here.
-            </p>
-          </div>
-        )}
-
-        <ConnectionStatus health={health} onRefresh={onCheckHealth} />
-      </aside>
-    </>
+        </div>
+      </section>
+    </div>
   );
 }
 

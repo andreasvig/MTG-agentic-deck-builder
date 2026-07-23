@@ -577,7 +577,6 @@ select {
 }
 
 .quick-add input::placeholder,
-.local-filter input::placeholder,
 .search-form input::placeholder {
   color: #929a94;
 }
@@ -649,50 +648,8 @@ select {
   outline: 0;
 }
 
-.local-filter {
-  display: flex;
-  width: clamp(128px, 14vw, 190px);
-  min-width: 110px;
-  height: 32px;
-  align-items: center;
-  gap: 6px;
-  margin-left: auto;
-  padding: 0 7px;
-  color: var(--muted);
-  background: var(--surface);
-  border: 1px solid var(--line);
-  border-radius: 5px;
-}
-
-.local-filter:focus-within {
-  border-color: #83ad91;
-}
-
-.local-filter input {
-  width: 100%;
-  min-width: 0;
-  color: var(--ink);
-  font-size: 9px;
-  background: transparent;
-  border: 0;
-  outline: 0;
-}
-
-.local-filter button {
-  display: grid;
-  width: 22px;
-  height: 28px;
-  flex: 0 0 auto;
-  place-items: center;
-  padding: 0;
-  color: var(--muted);
-  background: transparent;
-  border: 0;
-}
-
 .workspace-body {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) 286px;
+  display: block;
   min-width: 0;
   min-height: 0;
   flex: 1;
@@ -766,6 +723,13 @@ select {
   background: rgba(255, 255, 255, 0.58);
   border: 1px solid var(--line);
   border-radius: 5px;
+}
+
+.visual-group--over,
+.deck-list__group--over {
+  background: #edf6ef;
+  border-color: #78a789;
+  box-shadow: inset 0 0 0 1px #78a789;
 }
 
 .group-header {
@@ -850,6 +814,13 @@ select {
   border-color: #8fac98;
 }
 
+.add-group-slot--over {
+  color: var(--accent-dark);
+  background: #e5f2e8;
+  border-color: #67a079;
+  box-shadow: inset 0 0 0 2px rgba(53, 126, 79, 0.16);
+}
+
 .add-group-slot--editing {
   justify-content: flex-start;
   color: var(--ink);
@@ -916,6 +887,44 @@ select {
   display: grid;
   min-width: 0;
   gap: 5px;
+}
+
+.deck-card--dragging,
+.deck-list__row--dragging {
+  opacity: 0.28;
+}
+
+.card-drag-handle {
+  cursor: grab;
+  touch-action: none;
+}
+
+.card-drag-handle:active {
+  cursor: grabbing;
+}
+
+.drag-card-preview {
+  display: grid;
+  width: 142px;
+  gap: 6px;
+  padding: 7px;
+  color: var(--ink);
+  background: var(--surface);
+  border: 1px solid #9fa8a1;
+  border-radius: 5px;
+  box-shadow: 0 14px 34px rgba(19, 25, 21, 0.26);
+}
+
+.drag-card-preview .card-art {
+  aspect-ratio: 488 / 680;
+  border-radius: 4px;
+}
+
+.drag-card-preview strong {
+  overflow: hidden;
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .deck-card__art {
@@ -1164,6 +1173,15 @@ select {
   min-width: 760px;
 }
 
+.deck-list__empty-group {
+  display: grid;
+  min-height: 44px;
+  place-items: center;
+  color: var(--muted);
+  font-size: 9px;
+  border-top: 1px dashed var(--line);
+}
+
 .deck-list__group > .group-header {
   grid-template-columns: 7px minmax(0, 1fr) auto auto 28px;
   min-width: 0;
@@ -1262,19 +1280,37 @@ select {
   scrollbar-width: thin;
 }
 
-.inspector {
+.card-modal-layer {
+  position: fixed;
+  z-index: 120;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 20px;
+}
+
+.card-modal-backdrop {
+  position: absolute;
+  z-index: 0;
+  inset: 0;
+  padding: 0;
+  background: rgba(18, 22, 19, 0.62);
+  border: 0;
+}
+
+.card-modal {
   position: relative;
-  z-index: 10;
-  display: flex;
+  z-index: 1;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  width: min(820px, calc(100vw - 40px));
+  max-height: min(720px, calc(100dvh - 40px));
   min-width: 0;
-  max-height: calc(100vh - 107px);
-  flex-direction: column;
-  padding: 13px 14px 16px;
-  overflow-y: auto;
+  overflow: hidden;
   background: var(--surface);
-  border-left: 1px solid var(--line);
-  scrollbar-color: #c4cbc5 transparent;
-  scrollbar-width: thin;
+  border: 1px solid #aeb5af;
+  border-radius: 6px;
+  box-shadow: var(--shadow-panel);
 }
 
 .inspector-heading {
@@ -1286,20 +1322,40 @@ select {
   font-size: 8px;
   font-weight: 820;
   text-transform: uppercase;
+  padding: 7px 9px 7px 16px;
+  border-bottom: 1px solid var(--line);
 }
 
 .card-inspector-content {
   display: grid;
-  gap: 10px;
+  grid-template-columns: minmax(230px, 290px) minmax(0, 1fr);
+  min-height: 0;
+  gap: 18px;
+  padding: 16px;
+  overflow-y: auto;
+  scrollbar-color: #c4cbc5 transparent;
+  scrollbar-width: thin;
 }
 
-.card-inspector-content > .card-art {
-  width: min(100%, 220px);
+.card-modal__art {
+  position: sticky;
+  top: 0;
+  align-self: start;
+}
+
+.card-modal__art .card-art {
+  width: 100%;
   aspect-ratio: 488 / 680;
-  justify-self: center;
   object-fit: cover;
   border-radius: 6px;
   box-shadow: 0 2px 8px rgba(23, 29, 25, 0.22);
+}
+
+.card-modal__details {
+  display: grid;
+  min-width: 0;
+  align-content: start;
+  gap: 10px;
 }
 
 .card-inspector-title {
@@ -1484,33 +1540,6 @@ select {
   width: 100%;
 }
 
-.inspector-empty {
-  display: grid;
-  min-height: 190px;
-  place-content: center;
-  gap: 5px;
-  padding: 18px;
-  color: var(--muted);
-  text-align: center;
-  border: 1px dashed var(--line-strong);
-  border-radius: 4px;
-}
-
-.inspector-empty h2,
-.inspector-empty p {
-  margin: 0;
-}
-
-.inspector-empty h2 {
-  color: var(--ink-soft);
-  font-size: 13px;
-}
-
-.inspector-empty p {
-  font-size: 9px;
-  line-height: 1.45;
-}
-
 .connection-status {
   display: grid;
   grid-template-columns: 20px minmax(0, 1fr) 34px;
@@ -1523,11 +1552,6 @@ select {
   background: var(--surface-subtle);
   border: 1px solid var(--line);
   border-radius: 4px;
-}
-
-.card-inspector-content + .connection-status,
-.inspector-empty + .connection-status {
-  margin-top: 14px;
 }
 
 .connection-status--checking > svg {
@@ -1575,7 +1599,6 @@ select {
 }
 
 .drawer-backdrop,
-.inspector-backdrop,
 .sidebar-backdrop {
   position: fixed;
   inset: 0;
@@ -1897,8 +1920,7 @@ select {
 }
 
 .mobile-toolbar,
-.sidebar-backdrop,
-.inspector-backdrop {
+.sidebar-backdrop {
   display: none;
 }
 
@@ -1927,10 +1949,6 @@ select {
 @media (max-width: 1180px) {
   .app-shell {
     grid-template-columns: 180px minmax(0, 1fr);
-  }
-
-  .workspace-body {
-    grid-template-columns: minmax(0, 1fr) 264px;
   }
 
   .deck-metrics small {
@@ -1963,14 +1981,6 @@ select {
     flex: 1 1 180px;
   }
 
-  .local-filter {
-    flex: 1 1 150px;
-    margin-left: 0;
-  }
-
-  .workspace-body {
-    grid-template-columns: minmax(0, 1fr) 248px;
-  }
 }
 
 @media (max-width: 860px) {
@@ -2066,7 +2076,6 @@ select {
 
   .segmented-control button,
   .select-control,
-  .local-filter,
   .undo-button {
     min-height: 40px;
   }
@@ -2085,13 +2094,6 @@ select {
     height: 38px;
     padding-right: 26px;
     font-size: 10px;
-  }
-
-  .local-filter {
-    width: 174px;
-    min-width: 174px;
-    height: 40px;
-    flex: 0 0 174px;
   }
 
   .undo-button {
@@ -2129,39 +2131,16 @@ select {
     min-height: 42px;
   }
 
-  .inspector {
-    position: fixed;
-    z-index: 120;
-    inset: 0 0 0 auto;
-    display: flex;
-    width: min(390px, calc(100vw - 28px));
-    max-height: none;
-    padding: 14px 16px calc(20px + env(safe-area-inset-bottom));
-    border-left: 1px solid var(--line-strong);
-    transform: translateX(102%);
-    transition: transform 180ms ease;
-    box-shadow: -12px 0 40px rgba(17, 22, 18, 0.24);
-  }
-
-  .inspector--open {
-    transform: translateX(0);
-  }
-
-  .inspector-backdrop {
-    z-index: 110;
-    display: block;
-  }
-
   .inspector-heading,
-  .inspector .icon-button,
-  .inspector .primary-button,
-  .inspector .remove-button,
-  .inspector select,
-  .inspector .quantity-control {
+  .card-modal .icon-button,
+  .card-modal .primary-button,
+  .card-modal .remove-button,
+  .card-modal select,
+  .card-modal .quantity-control {
     min-height: 40px;
   }
 
-  .inspector .icon-button {
+  .card-modal .icon-button {
     width: 40px;
     height: 40px;
   }
@@ -2418,12 +2397,31 @@ select {
     min-height: 42px;
   }
 
-  .inspector {
-    width: calc(100vw - 18px);
+  .card-modal-layer {
+    padding: 0;
   }
 
-  .card-inspector-content > .card-art {
+  .card-modal {
+    width: 100vw;
+    height: 100dvh;
+    max-height: 100dvh;
+    border: 0;
+    border-radius: 0;
+  }
+
+  .card-inspector-content {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 14px;
+    padding: 12px 16px calc(24px + env(safe-area-inset-bottom));
+  }
+
+  .card-modal__art {
+    position: static;
+  }
+
+  .card-modal__art .card-art {
     width: min(57vw, 220px);
+    margin: 0 auto;
   }
 
   .search-drawer__header h2 {

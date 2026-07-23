@@ -35,7 +35,7 @@ afterEach(() => {
 });
 
 describe("deck workspace", () => {
-  it("builds, validates, filters, persists, and undoes a local deck", async () => {
+  it("builds, validates, persists, and undoes a local deck", async () => {
     const user = userEvent.setup();
     render(<App />);
 
@@ -48,7 +48,10 @@ describe("deck workspace", () => {
     expect(
       screen.getByRole("button", { name: "Add custom group" }),
     ).toBeInTheDocument();
-    expect(await screen.findByText("Backend online")).toBeInTheDocument();
+    expect(await screen.findByText("Card service online")).toBeInTheDocument();
+    expect(
+      screen.queryByPlaceholderText("Filter this deck"),
+    ).not.toBeInTheDocument();
 
     const searchTrigger = screen.getByRole("button", { name: "Card search" });
     await user.click(searchTrigger);
@@ -86,15 +89,6 @@ describe("deck workspace", () => {
     );
     expect(screen.getByText("Needs review")).toBeInTheDocument();
     expect(screen.getByLabelText("Singleton warning")).toBeInTheDocument();
-
-    await user.type(
-      screen.getByRole("textbox", { name: "Filter cards in this deck" }),
-      "forest",
-    );
-    expect(
-      screen.getByRole("heading", { name: "No cards match “forest”" }),
-    ).toBeInTheDocument();
-    await user.click(screen.getByRole("button", { name: "Clear local filter" }));
 
     await user.click(
       screen.getByRole("button", { name: "Undo last deck change" }),
@@ -134,6 +128,11 @@ describe("deck workspace", () => {
     );
     await user.keyboard("{Escape}");
     await user.click(screen.getByRole("button", { name: "Inspect Sol Ring" }));
+    expect(
+      screen.getByRole("dialog", { name: "Card details" }),
+    ).toBeInTheDocument();
+    expect(document.querySelector("main")).toHaveAttribute("inert");
+    expect(screen.queryByText("Deck inspector")).not.toBeInTheDocument();
 
     const customGroupSelect = screen.getByRole("combobox", {
       name: "Move Sol Ring to custom group",
@@ -149,19 +148,36 @@ describe("deck workspace", () => {
       }),
     ).toHaveDisplayValue("Ramp");
 
+    await user.click(
+      screen.getAllByRole("button", { name: "Close card inspector" })[1],
+    );
+    expect(
+      screen.queryByRole("dialog", { name: "Card details" }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Drag Sol Ring" }),
+    ).toHaveAttribute("aria-roledescription", "draggable");
+
     await user.selectOptions(
       screen.getByRole("combobox", { name: "Group cards" }),
       "type",
     );
+    expect(screen.getByRole("heading", { name: "Artifact" })).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Add custom group" }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Drag Sol Ring" }),
+    ).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Inspect Sol Ring" }));
     expect(
       screen.queryByRole("combobox", {
         name: "Move Sol Ring to custom group",
       }),
     ).not.toBeInTheDocument();
-    expect(
-      screen.queryByRole("button", { name: "Add custom group" }),
-    ).not.toBeInTheDocument();
-    expect(screen.getByRole("heading", { name: "Artifact" })).toBeInTheDocument();
+    await user.click(
+      screen.getAllByRole("button", { name: "Close card inspector" })[1],
+    );
 
     await user.click(screen.getByRole("button", { name: "Rename deck" }));
     const deckName = screen.getByRole("textbox", { name: "Deck name" });

@@ -58,12 +58,11 @@ function App() {
     selectDeck,
     undo,
   } = useDeck();
-  const { health, check } = useBackendHealth();
+  const { health } = useBackendHealth();
   const isMobile = useMediaQuery("(max-width: 860px)");
   const [view, setView] = useState<ViewMode>("visual");
   const [group, setGroup] = useState<GroupMode>("custom");
   const [sort, setSort] = useState<SortMode>("alphabet");
-  const [filter, setFilter] = useState("");
   const [navigationOpen, setNavigationOpen] = useState(false);
   const [searchRequest, setSearchRequest] = useState<SearchRequest | null>(null);
   const [selectedCard, setSelectedCard] = useState<CardSearchResult | null>(null);
@@ -152,7 +151,6 @@ function App() {
     setRenamingDeck(false);
     setDeckNameDraft(deck.name);
     setSelectedCard(null);
-    setFilter("");
   }, [deck.id, deck.name]);
 
   const submitToolbarSearch = (event: FormEvent) => {
@@ -201,10 +199,14 @@ function App() {
         ref={sidebarRef}
         className={`sidebar ${navigationOpen ? "sidebar--open" : ""}`}
         aria-hidden={
-          searchRequest || (isMobile && !navigationOpen) ? true : undefined
+          searchRequest || selectedCard || (isMobile && !navigationOpen)
+            ? true
+            : undefined
         }
         inert={
-          searchRequest || (isMobile && !navigationOpen) ? true : undefined
+          searchRequest || selectedCard || (isMobile && !navigationOpen)
+            ? true
+            : undefined
         }
         role={isMobile && navigationOpen ? "dialog" : undefined}
         aria-modal={isMobile && navigationOpen ? true : undefined}
@@ -333,7 +335,14 @@ function App() {
         className="workspace"
         id="deck"
         inert={
-          searchRequest || (isMobile && navigationOpen) ? true : undefined
+          searchRequest || selectedCard || (isMobile && navigationOpen)
+            ? true
+            : undefined
+        }
+        aria-hidden={
+          searchRequest || selectedCard || (isMobile && navigationOpen)
+            ? true
+            : undefined
         }
       >
         <header className="topbar">
@@ -480,24 +489,6 @@ function App() {
               <option value="price">Price high-low</option>
             </select>
           </label>
-          <label className="local-filter">
-            <Search aria-hidden="true" size={15} />
-            <span className="sr-only">Filter cards in this deck</span>
-            <input
-              value={filter}
-              onChange={(event) => setFilter(event.target.value)}
-              placeholder="Filter this deck"
-            />
-            {filter ? (
-              <button
-                type="button"
-                aria-label="Clear local filter"
-                onClick={() => setFilter("")}
-              >
-                <X aria-hidden="true" size={14} />
-              </button>
-            ) : null}
-          </label>
           <button
             className="icon-button undo-button"
             type="button"
@@ -525,47 +516,16 @@ function App() {
               view={view}
               group={group}
               sort={sort}
-              filter={filter}
               singletonWarnings={statistics.singletonWarnings}
               colorIdentityWarnings={statistics.colorIdentityWarnings}
               onSearch={openSearch}
               onAddCustomGroup={addCustomGroup}
               onSelect={setSelectedCard}
               onSetQuantity={setQuantity}
+              onMove={moveCard}
               onRemove={removeCard}
             />
           </section>
-
-          <CardInspector
-            card={selectedCard}
-            quantity={selectedEntry?.quantity ?? 0}
-            groupId={
-              selectedEntry
-                ? groupIdForEntry(selectedEntry, deck.custom_groups)
-                : undefined
-            }
-            customGroups={deck.custom_groups}
-            showCustomGroupControl={group === "custom"}
-            singletonWarning={
-              selectedCard
-                ? statistics.singletonWarnings.has(selectedCard.oracle_id)
-                : false
-            }
-            colorIdentityWarning={
-              selectedCard
-                ? statistics.colorIdentityWarnings.has(selectedCard.oracle_id)
-                : false
-            }
-            commanderColorIdentity={statistics.commanderColorIdentity}
-            isMobile={isMobile}
-            health={health}
-            onCheckHealth={() => void check()}
-            onAdd={addCard}
-            onSetQuantity={setQuantity}
-            onMove={moveCard}
-            onRemove={removeCard}
-            onClose={() => setSelectedCard(null)}
-          />
         </div>
       </main>
 
@@ -573,7 +533,9 @@ function App() {
         className="mobile-toolbar"
         aria-label="Deck actions"
         inert={
-          searchRequest || (isMobile && navigationOpen) ? true : undefined
+          searchRequest || selectedCard || (isMobile && navigationOpen)
+            ? true
+            : undefined
         }
       >
         <button type="button" onClick={() => openSearch()}>
@@ -600,6 +562,34 @@ function App() {
           <span>More</span>
         </button>
       </nav>
+
+      <CardInspector
+        card={selectedCard}
+        quantity={selectedEntry?.quantity ?? 0}
+        groupId={
+          selectedEntry
+            ? groupIdForEntry(selectedEntry, deck.custom_groups)
+            : undefined
+        }
+        customGroups={deck.custom_groups}
+        showCustomGroupControl={group === "custom"}
+        singletonWarning={
+          selectedCard
+            ? statistics.singletonWarnings.has(selectedCard.oracle_id)
+            : false
+        }
+        colorIdentityWarning={
+          selectedCard
+            ? statistics.colorIdentityWarnings.has(selectedCard.oracle_id)
+            : false
+        }
+        commanderColorIdentity={statistics.commanderColorIdentity}
+        onAdd={addCard}
+        onSetQuantity={setQuantity}
+        onMove={moveCard}
+        onRemove={removeCard}
+        onClose={() => setSelectedCard(null)}
+      />
 
       {searchRequest ? (
         <SearchDrawer

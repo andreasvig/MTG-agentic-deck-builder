@@ -182,7 +182,7 @@ export function useDeck() {
   );
 
   const addCustomGroup = useCallback(
-    (name: string) => {
+    (name: string, moveScryfallId?: string) => {
       const normalizedName = name.trim();
       if (!normalizedName) {
         return;
@@ -198,6 +198,11 @@ export function useDeck() {
         ) {
           return null;
         }
+        const entryToMove = moveScryfallId
+          ? current.cards.find(
+              (entry) => entry.card.scryfall_id === moveScryfallId,
+            )
+          : undefined;
         return {
           deck: {
             ...current,
@@ -205,8 +210,17 @@ export function useDeck() {
               ...current.custom_groups,
               { id: groupId, name: normalizedName },
             ],
+            cards: entryToMove
+              ? current.cards.map((entry) =>
+                  entry.card.scryfall_id === moveScryfallId
+                    ? { ...entry, ...placementForGroup(groupId) }
+                    : entry,
+                )
+              : current.cards,
           },
-          announcement: `${normalizedName} group created.`,
+          announcement: entryToMove
+            ? `${normalizedName} group created and ${entryToMove.card.name} moved to it.`
+            : `${normalizedName} group created.`,
         };
       });
     },
