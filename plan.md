@@ -22,7 +22,7 @@ agent that can inspect a deck, explain suggestions, and propose safe edits.
 - Frontend: React, TypeScript, and Vite
 - Backend: FastAPI and Python
 - Storage: SQLite
-- Card data: Scryfall API and/or Scryfall bulk data
+- Card data: local SQLite catalog synchronized from Scryfall `default_cards`
 - Pricing: Scryfall daily EUR estimates, cached per printing
 - Development URLs:
   - Frontend: `http://127.0.0.1:41737`
@@ -50,12 +50,30 @@ agent that can inspect a deck, explain suggestions, and propose safe edits.
 - Filter results to the commander's color identity by default.
 - Preserve the selected printing so its image and price are deterministic.
 
+### Local Card Catalog
+
+- Treat Scryfall as the authoritative source and SQLite as a derived read model.
+- Stream the compressed `default_cards` dataset into SQLite during initial
+  setup without loading the entire export into memory.
+- Store card metadata and remote image URLs; do not download the complete image
+  library.
+- Use `oracle_id` for card identity and `scryfall_id` for a selected printing.
+- Index names, rules text, type lines, colors, color identity, legality, mana
+  value, keywords, sets, and finishes for local search.
+- Refresh gameplay metadata weekly and after set releases.
+- Perform imports atomically so an interrupted refresh keeps the prior catalog.
+- Use live Scryfall calls for new cards, advanced queries not supported locally,
+  and fallback when a local lookup misses.
+- Keep Scryfall-specific access behind a provider so the UI, rules service, and
+  agent do not depend on transport details.
+
 ### Pricing
 
 - Show Scryfall's current daily EUR estimate for the selected printing.
 - Support non-foil and foil values through `prices.eur` and `prices.eur_foil`.
 - Show individual card prices and the estimated total deck price.
-- Cache daily price snapshots with their source and observation timestamp.
+- Refresh active-deck prices through the live Scryfall API once daily.
+- Cache price snapshots with their source and observation timestamp.
 - Link to the matching Cardmarket product through Scryfall's `cardmarket_id` or
   `purchase_uris.cardmarket` so the estimate can be verified before buying.
 - Label these values as estimates rather than guaranteed marketplace offers.
@@ -140,16 +158,17 @@ validation, history, and tests.
 ## Milestones
 
 1. Scaffold React and FastAPI applications with the uncommon development ports.
-2. Add the card-data provider, local cache, and card search.
-3. Implement Cardmarket trend-price synchronization and deck price totals.
-4. Implement decks, all command-zone configurations, persistence, and
+2. Add the Scryfall provider and atomic `default_cards` SQLite synchronization.
+3. Add indexed local card search with live Scryfall fallback.
+4. Implement daily EUR price refreshes and deck price totals.
+5. Implement decks, all command-zone configurations, persistence, and
    plaintext import/export.
-5. Add validation, categories, statistics, and the visual/list editing views.
-6. Add focused backend and frontend tests for deck operations.
-7. Add drag-and-drop categories and additional import formats.
-8. Design Pydantic AI tools and a preview/confirm/undo workflow.
-9. Add the chat assistant and permitted recommendation providers.
-10. Add power-level guidance and an opening-hand/playtest view.
+6. Add validation, categories, statistics, and the visual/list editing views.
+7. Add focused backend and frontend tests for deck operations.
+8. Add drag-and-drop categories and additional import formats.
+9. Design Pydantic AI tools and a preview/confirm/undo workflow.
+10. Add the chat assistant and permitted recommendation providers.
+11. Add power-level guidance and an opening-hand/playtest view.
 
 ## Out of Scope for MVP
 

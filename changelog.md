@@ -17,7 +17,7 @@ All notable changes to this project will be documented in this file.
   available.
 - Expanded the deck model to cover all legal Commander configurations.
 - Selected visual category columns with an optional compact list view.
-- Added Cardmarket trend prices and deck price totals to the MVP.
+- Added daily EUR price estimates and deck price totals to the MVP.
 - Confirmed warning-preserving Rule Zero overrides.
 - Deferred drag-and-drop, advanced imports, power scoring, and playtesting.
 - Selected Pydantic AI for the later agent, with Gemini 3.6 Flash and Gemini
@@ -36,3 +36,7 @@ All notable changes to this project will be documented in this file.
 - Added Cardmarket product links for manual price verification.
 - Recorded MTGJSON's credential-free daily Cardmarket price data as a possible
   later provider when exact trend semantics justify the extra mapping work.
+- Selected a hybrid card-data architecture: a local SQLite catalog synchronized
+  from Scryfall `default_cards`, with Scryfall remaining authoritative.
+- Set weekly gameplay-data synchronization, daily active-deck price refreshes,
+  remote card images, and live Scryfall fallback behavior.
