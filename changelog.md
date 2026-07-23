@@ -88,6 +88,15 @@ All notable changes to this project will be documented in this file.
 - Added normalized name-match values to result cards and complete fuzzy
   candidate tables to debug traces, including matched aliases, cutoff
   acceptance, filter outcome, and configurable candidate/cutoff settings.
+- Added a repository-level agent guide with product invariants, architecture
+  boundaries, persistence and search traps, test expectations, and definition
+  of done.
+- Added current architecture, development, search, and implementation-status
+  guides plus package-level backend and frontend handoffs.
+- Added six architecture decision records covering the local runtime, Scryfall
+  ownership, layered search, transitional browser persistence, editor
+  information architecture, and proposed typed agent patches.
+- Added a documentation index and explicit shipped/partial/planned vocabulary.
 
 ### Repository
 
@@ -139,3 +148,9 @@ All notable changes to this project will be documented in this file.
 - Extended fuzzy card-name recovery with a cached Scryfall name-catalog
   comparison when Scryfall's named-card endpoint cannot resolve a typo such as
   `galta`.
+- Separated current implementation facts from target architecture throughout
+  the README and plan so SQLite, backend deck services, full validation, and
+  agent tooling are no longer implied to be shipped.
+- Corrected the Archidekt UX benchmark to reflect the unified search flow,
+  custom/type grouping, removed maybeboard and deck filter, modal inspection,
+  and right-side reservation for agent chat.

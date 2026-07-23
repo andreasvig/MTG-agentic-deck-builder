@@ -29,23 +29,26 @@ were also inspected with Playwright at desktop and mobile viewport sizes.
 
 ### Fast And Detailed Add Paths
 
-- Keep Search and Quick Add visible on desktop.
+- Keep one Card search action visible on desktop and mobile.
 - Open a focused search surface without navigating away from the deck.
 - Show card art, key metadata, price, and current deck membership in results.
 - Allow repeated add and remove actions without closing search.
+- Let the same search handle exact names, misspellings, filters, intent, and
+  explicit Scryfall syntax.
 - Make loading, no-results, invalid-query, and provider-error states explicit.
 
 ### Power Without Clutter
 
-- Keep view, grouping, sorting, and local filtering next to the deck.
+- Keep view, grouping, and sorting next to the deck.
 - Provide visual category and dense list modes.
-- Use a stable inspector for card details and common printing/category actions.
+- Use a centered detail dialog for card inspection and custom-group actions.
 - Keep high-frequency controls visible; place secondary actions in menus.
 - Preserve keyboard and non-drag alternatives for repeated work.
+- Reserve the right workspace edge for the later deck agent.
 
 ### Purpose-Built Mobile
 
-- Use a persistent bottom toolbar for Search, Quick Add, Layout, Undo, and More.
+- Use a persistent bottom toolbar for Search, Layout, Undo, and More.
 - Use drawers for search, layout controls, and card inspection.
 - Avoid shrinking the complete desktop control surface into a narrow viewport.
 - Keep touch targets at least 40 pixels and prevent hidden navigation from
@@ -54,23 +57,27 @@ were also inspected with Playwright at desktop and mobile viewport sizes.
 ## Current Acceptance Slice
 
 - Live Scryfall-backed card search through the FastAPI provider boundary.
-- Full search state handling and inline deck membership.
+- Exact, fuzzy, intent, and syntax routing with structured filters and inline
+  deck membership.
 - Persistent local deck state with add, remove, quantity, move, and undo.
-- Command zone, main categories, and maybeboard.
+- Permanent Command zone and Not assigned groups plus user-created custom
+  groups.
 - Visual and dense list views with actual card images.
 - Category and deck EUR estimates for the selected printing.
-- Group, sort, and local-filter controls.
-- Selected-card inspector with rules and printing details.
+- Custom and derived Card types grouping with sort controls.
+- Centered selected-card dialog with rules and printing details.
+- Drag, touch, keyboard movement, and drop-to-create custom groups.
+- Commander color-identity warnings before and after illegal additions.
+- Multi-deck rail with commander art, inline naming, and deck creation.
 - Compact desktop controls and a mobile bottom toolbar.
 - Responsive, accessible search/navigation/drawer behavior.
 - Unit, integration, production-build, and browser-driven workflow tests.
 
 ## Useful Next
 
-- Full Scryfall syntax and advanced search filters.
 - Printing and finish selection with an all-printings endpoint.
-- Drag-and-drop plus multi-select and bulk editing.
-- Multiple categories with primary and secondary semantics.
+- Multi-select and bulk editing.
+- Optional secondary tags without weakening one-primary-group placement.
 - Category templates, pinned categories, and customizable columns.
 - Printing optimizer with a previewed diff.
 - Mana curve, color production, probability, and category charts.
@@ -87,7 +94,7 @@ were also inspected with Playwright at desktop and mobile viewport sizes.
 
 ## Product Lesson
 
-The target is not Archidekt's decoration. The target is short distance between
-intent and card action: a fast add path, a detailed search path, continuous
-deck context, visible power-user controls, and a mobile layout designed around
-the same repeated actions.
+The target is not Archidekt's decoration or a literal copy of every feature.
+The target is short distance between intent and card action: one capable search
+path, continuous deck context, visible power-user controls, functional custom
+groups, and a mobile layout designed around the same repeated actions.

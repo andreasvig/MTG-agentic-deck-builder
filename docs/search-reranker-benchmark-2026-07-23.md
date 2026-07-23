@@ -2,6 +2,11 @@
 
 Date: 2026-07-23
 
+This is a dated benchmark record, not a guarantee of current model or provider
+availability. For the active routing contract and runtime configuration, read
+[`search.md`](search.md) and
+[`ADR 0003`](decisions/0003-layered-observable-search.md).
+
 ## Method
 
 The benchmark ran the complete natural-language search pipeline for:

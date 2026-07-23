@@ -6,6 +6,11 @@ Build a local-first Commander deck builder inspired by Archidekt. The first
 version should be a useful manual deck editor. A later version will add a chat
 agent that can inspect a deck, explain suggestions, and propose safe edits.
 
+This file defines product scope and sequence. It is not the implementation
+ledger. Read [`docs/implementation-status.md`](docs/implementation-status.md)
+for shipped, partial, and planned behavior and
+[`docs/decisions/README.md`](docs/decisions/README.md) for durable decisions.
+
 ## Product Principles
 
 - Local and single-user; no accounts or cloud sync.
@@ -13,17 +18,20 @@ agent that can inspect a deck, explain suggestions, and propose safe edits.
 - Fast visual editing with card images, search, filters, and deck statistics.
 - Support every legal Commander configuration rather than assuming one
   commander.
-- Deck rules and mutations live in the backend so the UI and agent share them.
+- Target state: deck rules and mutations live in the backend so the UI and
+  agent share them. The current manual slice is browser-local.
 - Agent edits are proposed as a visible diff and require confirmation.
 - External data access is cached and isolated behind provider interfaces.
 
-## Proposed Stack
+## Target Stack
 
-- Frontend: React, TypeScript, and Vite
-- Backend: FastAPI and Python
-- Storage: SQLite
-- Card data: local SQLite catalog synchronized from Scryfall `default_cards`
-- Pricing: Scryfall daily EUR estimates, cached per printing
+- Frontend: React, TypeScript, and Vite. Shipped.
+- Backend: FastAPI and Python. Search API shipped; deck API planned.
+- Storage: SQLite. Planned.
+- Card data: Scryfall authority with a derived local SQLite catalog. Live
+  provider shipped; local catalog planned.
+- Pricing: Scryfall daily EUR estimates, cached per printing. Current display
+  shipped; persistent cache/history planned.
 - Development URLs:
   - Frontend: `http://127.0.0.1:41737`
   - Backend: `http://127.0.0.1:43127`
@@ -148,7 +156,7 @@ The recommendation layer should use provider interfaces. Scryfall is the first
 supported card-data provider. Direct EDHREC scraping is not acceptable because
 the site restricts automated queries.
 
-## Initial Architecture
+## Target Architecture
 
 ```text
 React UI
@@ -167,62 +175,76 @@ The agent must not write directly to SQLite. All deck mutations should pass
 through typed domain actions so manual and agent changes have identical
 validation, history, and tests.
 
-## Milestones
+## Delivery Phases
 
-1. Scaffold React and FastAPI applications with the uncommon development ports.
-2. Add the Scryfall provider and atomic `default_cards` SQLite synchronization.
-3. Add indexed local card search with live Scryfall fallback.
-4. Implement daily EUR price refreshes and deck price totals.
-5. Implement decks, all command-zone configurations, persistence, and
-   plaintext import/export.
-6. Add validation, categories, statistics, and the visual/list editing views.
-7. Add focused backend and frontend tests for deck operations.
-8. Add additional import formats.
-9. Design Pydantic AI tools and a preview/confirm/undo workflow.
-10. Add the chat assistant and permitted recommendation providers.
-11. Add power-level guidance and an opening-hand/playtest view.
+### Phase 1: Manual Editor Foundation - Shipped
+
+- React/FastAPI runtime on uncommon ports.
+- Live provider-neutral Scryfall search.
+- Exact, fuzzy, intent, and syntax routing with filters and score traces.
+- Local embeddings and optional OpenRouter intent reranking.
+- Browser-local multi-deck library, custom groups, quantities, and undo.
+- Visual/list layouts, derived card types, card dialog, desktop/mobile shells.
+- Singleton and color-identity warnings.
+- Backend, frontend, smoke, build, and Playwright verification.
+
+### Phase 2: Backend Deck Foundation - Next
+
+- Define SQLite deck repository and migrations.
+- Define typed deck commands and mutation service.
+- Import `manabase.deck-library.v2` safely.
+- Preserve current UI behavior through the service migration.
+- Persist atomic mutation history and deck snapshots.
+
+### Phase 3: Complete Commander Rules
+
+- Model command-zone eligibility and supported multi-commander configurations.
+- Validate size, singleton exceptions, legality, color identity, and
+  partner/background/companion compatibility.
+- Separate errors, warnings, and explicit Rule Zero overrides.
+- Use the same validation from UI and future agent tools.
+
+### Phase 4: Local Card Catalog And Search Recall
+
+- Stream Scryfall `default_cards` into a derived SQLite read model.
+- Import atomically and refresh weekly.
+- Add indexed lexical search and complete-corpus semantic embeddings.
+- Retain live Scryfall syntax and new-card fallback.
+- Build a name/intent routing evaluation corpus.
+
+### Phase 5: Portability, Printing, Pricing, And Insight
+
+- Add plaintext import/export with preview and unmatched-line reporting.
+- Add complete printing and finish selection.
+- Persist daily price observations and optional Cardmarket trend history.
+- Add mana curve, color production, type, category, and completion analysis.
+
+### Phase 6: Safe Agent
+
+- Finalize typed deck-patch schemas.
+- Add inspect, validate, Scryfall, Sonar, and fetch-page tools.
+- Show agent proposals as confirmable diffs.
+- Apply confirmed patches atomically through the deck service.
+- Make each applied patch undoable as one operation.
+- Add permitted EDHREC data only through a stable provider boundary.
+
+### Phase 7: Later Experiments
+
+- Power/bracket guidance after a product model is selected.
+- Opening-hand and limited playtest views.
+- Additional import formats.
 
 ## Current Implementation
 
-Completed in the first usable slice:
+The full current ledger lives in
+[`docs/implementation-status.md`](docs/implementation-status.md). The critical
+boundary is:
 
-- React and FastAPI scaffolds on ports `41737` and `43127`.
-- A typed, provider-neutral card-search boundary backed by live Scryfall search.
-- Layered exact, fuzzy, intent, and explicit-Scryfall search routing.
-- Multi-result exact and fuzzy name layers with normalized per-card scores,
-  configurable fuzzy candidate count and cutoff, and full cutoff traces.
-- Local `BAAI/bge-small-en-v1.5` semantic ranking for intent candidates, with a
-  bounded optional Gemini 3.5 Flash Lite rerank through OpenRouter.
-- Search filters for subset or exact color identity, colorless cards, mana
-  value, and Scryfall EUR estimates.
-- Persistent in-app search-debug settings with timing summaries and append-only
-  JSONL records of layer decisions, provider queries, complete LLM exchanges,
-  rankings, rank deltas, warnings, and final results.
-- An expandable in-search trace explorer for provider queries, rank movement,
-  exact LLM messages, response metadata, and raw JSON.
-- Cached Scryfall card-name catalog ranking for typo recovery and cutoff
-  tuning.
-- Search loading, empty, invalid-query, provider-error, and pagination states.
-- A single detailed in-context search drawer with inline quantities.
-- A persistent local deck library with creation, switching, renaming, commander
-  thumbnails, add, remove, custom-group move, quantity, and 30-step undo.
-- Command zone, Not assigned, user-created custom groups, and singleton warnings.
-- Visual custom-group stacks, derived card-type grouping, dense list mode,
-  sorting, and drag-and-drop placement between custom groups.
-- Drop-to-create custom groups that move the dropped card in the same undoable
-  deck change.
-- Centered card-detail dialogs, selected-printing EUR estimates, and
-  deck/custom-group totals.
-- Command-zone color-identity validation in search, deck cards, and inspection.
-- Purpose-built desktop and mobile layouts with keyboard-contained drawers.
-- Backend, frontend, process-runner, production-build, and browser workflow
-  verification.
-
-The current live search is the provider foundation for milestones 2 and 3, not
-their completion. The atomic local Scryfall catalog importer and indexed SQLite
-search still come next. Full deck management and Commander validation also
-remain milestone work; the current local deck proves the editor interaction
-model without pretending to complete those broader contracts.
+```text
+Shipped: live card discovery and browser-local manual editing
+Planned: backend deck persistence, local full card catalog, complete rules,
+         import/export, analytics, and agent chat
+```
 
 ## Out of Scope for MVP
 
@@ -243,3 +265,7 @@ model without pretending to complete those broader contracts.
 - Exact Sonar web-search provider and API
 - Permitted source for commander-specific recommendation data
 - Desired power-level or Commander-bracket model for the later phase
+- Fuzzy confidence threshold that should hand unsupported queries to the
+  general intent planner
+- Conflict semantics when an agent patch is applied to a deck that changed
+  after the proposal
