@@ -177,11 +177,12 @@ Completed in the first usable slice:
 - React and FastAPI scaffolds on ports `41737` and `43127`.
 - A typed, provider-neutral card-search boundary backed by live Scryfall search.
 - Search loading, empty, invalid-query, provider-error, and pagination states.
-- Quick add plus a detailed in-context search drawer with inline quantities.
+- A single detailed in-context search drawer with inline quantities.
 - A persistent local deck with add, remove, move, quantity, and 30-step undo.
 - Command zone, core functional categories, maybeboard, and singleton warnings.
 - Visual category stacks, dense list mode, grouping, sorting, and local filtering.
 - Card inspection, selected-printing EUR estimates, and deck/category totals.
+- Command-zone color-identity validation in search, deck cards, and inspection.
 - Purpose-built desktop and mobile layouts with keyboard-contained drawers.
 - Backend, frontend, process-runner, production-build, and browser workflow
   verification.

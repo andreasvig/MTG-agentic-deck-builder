@@ -1,4 +1,4 @@
-import type { CardSearchResult } from "./card";
+import type { CardSearchResult, MagicColor } from "./card";
 
 export interface CardReference {
   oracle_id: string;
@@ -84,6 +84,57 @@ export function placementForCategory(category: DeckCategory): {
     return { section: "maybeboard", categories: ["maybeboard"] };
   }
   return { section: "mainboard", categories: [category] };
+}
+
+export function getCommanderColorIdentity(
+  entries: DeckCardEntry[],
+): Set<MagicColor> | null {
+  const commanders = entries.filter(
+    (entry) => entry.section === "command_zone",
+  );
+  if (
+    commanders.length === 0 ||
+    commanders.some((entry) => !entry.card.details)
+  ) {
+    return null;
+  }
+
+  return new Set(
+    commanders.flatMap((entry) => entry.card.details?.color_identity ?? []),
+  );
+}
+
+export function isWithinCommanderColorIdentity(
+  card: CardSearchResult,
+  commanderIdentity: ReadonlySet<MagicColor> | null,
+): boolean {
+  return (
+    commanderIdentity === null ||
+    card.color_identity.every((color) => commanderIdentity.has(color))
+  );
+}
+
+export function getColorIdentityWarnings(
+  entries: DeckCardEntry[],
+): Set<string> {
+  const commanderIdentity = getCommanderColorIdentity(entries);
+  if (commanderIdentity === null) {
+    return new Set();
+  }
+
+  return new Set(
+    entries
+      .filter(
+        (entry) =>
+          entry.section !== "command_zone" &&
+          entry.card.details &&
+          !isWithinCommanderColorIdentity(
+            entry.card.details,
+            commanderIdentity,
+          ),
+      )
+      .map((entry) => entry.card.oracle_id),
+  );
 }
 
 export function createEmptyDeck(now = new Date()): Deck {

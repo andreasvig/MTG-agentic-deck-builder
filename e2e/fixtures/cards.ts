@@ -146,6 +146,38 @@ export const llanowarElves: CardSearchResult = {
     "https://www.cardmarket.com/en/Magic/Products?idProduct=795132",
 };
 
+export const ghalta: CardSearchResult = {
+  ...llanowarElves,
+  oracle_id: "2a2cd8d6-06f3-4e95-a658-4bf4bc09211b",
+  scryfall_id: "16ce06fb-1bb7-4c93-b7f2-59a86e4979f6",
+  name: "Ghalta, Primal Hunger",
+  mana_cost: "{10}{G}{G}",
+  mana_value: 12,
+  type_line: "Legendary Creature — Elder Dinosaur",
+  oracle_text:
+    "This spell costs {X} less to cast, where X is the total power of creatures you control.\nTrample",
+  set_code: "rix",
+  set_name: "Rivals of Ixalan",
+  collector_number: "130",
+  rarity: "rare",
+};
+
+export const counterspell: CardSearchResult = {
+  ...solRing,
+  oracle_id: "de65d6ad-0405-4f73-85bb-3f57d6f1c9c1",
+  scryfall_id: "f3f7a6f9-bc72-4d14-969d-d89d0e702d24",
+  name: "Counterspell",
+  mana_cost: "{U}{U}",
+  mana_value: 2,
+  type_line: "Instant",
+  oracle_text: "Counter target spell.",
+  colors: ["U"],
+  color_identity: ["U"],
+  set_code: "mh2",
+  set_name: "Modern Horizons 2",
+  collector_number: "267",
+};
+
 export function searchPage(
   query: string,
   cards: CardSearchResult[] = [solRing, llanowarElves],

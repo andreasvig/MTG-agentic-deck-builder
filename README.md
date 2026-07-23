@@ -44,12 +44,13 @@ services, including their reload subprocesses.
 ## Current Workflow
 
 - Search Scryfall-backed card data by exact card name or Scryfall syntax.
-- Add cards through full search or quick add without leaving the deck.
+- Search and add cards through one detailed in-context workflow.
 - Edit quantities and sections, remove cards, and undo recent changes.
 - Switch between visual category stacks and a dense list.
 - Group, sort, and locally filter the current deck.
 - Inspect card text, printing details, Commander legality, and daily EUR
   estimates.
+- Warn before and after adding cards outside the command-zone color identity.
 - Keep one local Commander deck across browser sessions.
 
 The current provider returns one representative printing per gameplay card.

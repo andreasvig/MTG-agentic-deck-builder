@@ -3,8 +3,8 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import App from "./App";
-import { DECK_STORAGE_KEY } from "./domain/deck";
-import { cardSearchPage } from "./test/fixtures";
+import { createEmptyDeck, DECK_STORAGE_KEY } from "./domain/deck";
+import { cardSearchPage, counterspell, ghalta } from "./test/fixtures";
 
 const healthResponse = {
   status: "ok",
@@ -38,9 +38,7 @@ describe("deck workspace", () => {
     ).toBeInTheDocument();
     expect(await screen.findByText("Backend online")).toBeInTheDocument();
 
-    const searchTrigger = screen.getByRole("button", {
-      name: "Search cards",
-    });
+    const searchTrigger = screen.getByRole("button", { name: "Card search" });
     await user.click(searchTrigger);
     const dialog = screen.getByRole("dialog", { name: "Find cards" });
     const input = screen.getByRole("textbox", {
@@ -62,6 +60,13 @@ describe("deck workspace", () => {
     expect(
       screen.getByRole("button", { name: "Inspect Sol Ring" }),
     ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("heading", { name: "Maybeboard" }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.getByRole("combobox", { name: "Group cards" }),
+    ).toHaveValue("custom");
+    expect(screen.getByRole("option", { name: "Custom" })).toBeInTheDocument();
     expect(screen.getByText("1 / 100")).toBeInTheDocument();
 
     await user.click(
@@ -92,24 +97,13 @@ describe("deck workspace", () => {
     });
   });
 
-  it("opens full search when quick add returns no card", async () => {
-    vi.mocked(globalThis.fetch).mockImplementation((input) => {
-      const url = String(input);
-      if (url.includes("/cards/search")) {
-        return Promise.resolve(
-          Response.json(cardSearchPage([], 'name:"Unknown"'), {
-            status: 200,
-          }),
-        );
-      }
-      return Promise.resolve(Response.json(healthResponse, { status: 200 }));
-    });
+  it("opens full search from the toolbar instead of auto-adding", async () => {
     const user = userEvent.setup();
     render(<App />);
 
     await user.type(
-      screen.getByRole("textbox", { name: "Quick add card" }),
-      "Unknown",
+      screen.getByRole("textbox", { name: "Search cards from toolbar" }),
+      "Sol Ring",
     );
     await user.keyboard("{Enter}");
 
@@ -117,7 +111,69 @@ describe("deck workspace", () => {
       await screen.findByRole("dialog", { name: "Find cards" }),
     ).toBeInTheDocument();
     expect(
-      screen.getByRole("heading", { name: "No cards found" }),
+      await screen.findByRole("button", { name: "Add Sol Ring to deck" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Inspect Sol Ring" }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("warns before and after adding a card outside commander colors", async () => {
+    const deck = createEmptyDeck(new Date("2026-01-01T00:00:00Z"));
+    deck.cards = [
+      {
+        card: {
+          oracle_id: ghalta.oracle_id,
+          scryfall_id: ghalta.scryfall_id,
+          name: ghalta.name,
+          details: ghalta,
+        },
+        quantity: 1,
+        section: "command_zone",
+        categories: ["command_zone"],
+      },
+    ];
+    window.localStorage.setItem(DECK_STORAGE_KEY, JSON.stringify(deck));
+    vi.mocked(globalThis.fetch).mockImplementation((input) => {
+      const url = String(input);
+      if (url.includes("/cards/search")) {
+        return Promise.resolve(
+          Response.json(cardSearchPage([counterspell]), { status: 200 }),
+        );
+      }
+      return Promise.resolve(Response.json(healthResponse, { status: 200 }));
+    });
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.click(screen.getByRole("button", { name: "Card search" }));
+    await user.type(
+      screen.getByRole("textbox", {
+        name: "Search card name or Scryfall syntax",
+      }),
+      "Counterspell",
+    );
+    expect(
+      await screen.findByText("Outside commander color identity"),
+    ).toBeInTheDocument();
+    await user.click(
+      screen.getByRole("button", { name: "Add Counterspell to deck" }),
+    );
+    await user.keyboard("{Escape}");
+
+    expect(screen.getByText("Needs review")).toBeInTheDocument();
+    expect(screen.getByLabelText("Color identity warning")).toBeInTheDocument();
+    expect(
+      screen.queryByRole("heading", { name: "Maybeboard" }),
+    ).not.toBeInTheDocument();
+
+    await user.click(
+      screen.getByRole("button", { name: "Inspect Counterspell" }),
+    );
+    expect(
+      screen.getByText(
+        "U is outside this deck's G commander color identity.",
+      ),
     ).toBeInTheDocument();
   });
 });

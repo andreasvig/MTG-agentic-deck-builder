@@ -43,8 +43,9 @@ All notable changes to this project will be documented in this file.
 - Added a live card-search drawer with Scryfall syntax, debounced results,
   loading, empty, retry, pagination, card preview, pricing, and inline deck
   quantity controls.
-- Added a persistent local Commander deck with quick add, category placement,
-  move, remove, quantity editing, singleton warnings, and 30-step undo.
+- Added a persistent local Commander deck with search-based add, category
+  placement, move, remove, quantity editing, singleton warnings, and 30-step
+  undo.
 - Added visual category stacks and a dense list with grouping, sorting, local
   filtering, category totals, deck totals, card art, and a detailed inspector.
 - Added an intentionally compact desktop workspace and a purpose-built mobile
@@ -74,3 +75,9 @@ All notable changes to this project will be documented in this file.
 - Clarified that the current card search returns a representative printing per
   gameplay card; full printing and finish selection remains a planned
   enhancement.
+- Added color-identity warnings based on the union of known command-zone cards,
+  shown in search results, deck cards, list rows, and the card inspector.
+- Consolidated quick add into the regular search workflow and removed the
+  redundant top-right Search and Add actions.
+- Renamed the grouping choices to Custom and Card types, and hid the maybeboard
+  group until it contains cards.

@@ -12,6 +12,7 @@ import {
   type FormEvent,
   useCallback,
   useEffect,
+  useMemo,
   useRef,
   useState,
 } from "react";
@@ -19,7 +20,11 @@ import {
 import type { CardSearchPage, CardSearchResult } from "../domain/card";
 import { formatEuro, getCardPrice } from "../domain/card";
 import type { DeckCardEntry, DeckCategory } from "../domain/deck";
-import { categoryLabels } from "../domain/deck";
+import {
+  categoryLabels,
+  getCommanderColorIdentity,
+  isWithinCommanderColorIdentity,
+} from "../domain/deck";
 import { apiClient, type ApiClient } from "../lib/api";
 import { CardArt } from "./CardArt";
 
@@ -58,6 +63,10 @@ export function SearchDrawer({
   const inputRef = useRef<HTMLInputElement>(null);
   const activeRequest = useRef<AbortController | null>(null);
   const debounceSkipped = useRef(false);
+  const commanderColorIdentity = useMemo(
+    () => getCommanderColorIdentity(entries),
+    [entries],
+  );
 
   const runSearch = useCallback(
     async (searchQuery: string, page = 1, append = false) => {
@@ -314,6 +323,12 @@ export function SearchDrawer({
                         entry.card.scryfall_id !== card.scryfall_id,
                     );
                     const quantity = exactEntry?.quantity ?? 0;
+                    const colorIdentityWarning =
+                      target !== "command_zone" &&
+                      !isWithinCommanderColorIdentity(
+                        card,
+                        commanderColorIdentity,
+                      );
                     return (
                       <article
                         className={`search-card ${selected?.scryfall_id === card.scryfall_id ? "is-selected" : ""}`}
@@ -387,6 +402,11 @@ export function SearchDrawer({
                           {differentPrinting ? (
                             <span className="printing-notice">
                               Different printing already in deck
+                            </span>
+                          ) : null}
+                          {colorIdentityWarning ? (
+                            <span className="printing-notice">
+                              Outside commander color identity
                             </span>
                           ) : null}
                         </div>

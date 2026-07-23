@@ -38,6 +38,40 @@ export const solRing: CardSearchResult = {
   cardmarket_url: "https://www.cardmarket.com/sol-ring",
 };
 
+export const ghalta: CardSearchResult = {
+  ...solRing,
+  oracle_id: "oracle-ghalta",
+  scryfall_id: "printing-ghalta",
+  name: "Ghalta, Primal Hunger",
+  mana_cost: "{10}{G}{G}",
+  mana_value: 12,
+  type_line: "Legendary Creature — Elder Dinosaur",
+  oracle_text: "Trample",
+  colors: ["G"],
+  color_identity: ["G"],
+  set_code: "rix",
+  set_name: "Rivals of Ixalan",
+  collector_number: "130",
+  rarity: "rare",
+};
+
+export const counterspell: CardSearchResult = {
+  ...solRing,
+  oracle_id: "oracle-counterspell",
+  scryfall_id: "printing-counterspell",
+  name: "Counterspell",
+  mana_cost: "{U}{U}",
+  mana_value: 2,
+  type_line: "Instant",
+  oracle_text: "Counter target spell.",
+  colors: ["U"],
+  color_identity: ["U"],
+  set_code: "mh2",
+  set_name: "Modern Horizons 2",
+  collector_number: "267",
+  rarity: "uncommon",
+};
+
 export function cardSearchPage(
   cards: CardSearchResult[] = [solRing],
   query = 'name:"Sol Ring"',

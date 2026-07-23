@@ -1,7 +1,6 @@
 import {
   BookOpen,
   Boxes,
-  CirclePlus,
   Columns3,
   Command,
   LayoutGrid,
@@ -30,7 +29,6 @@ import { categoryForEntry } from "./domain/deck";
 import { useBackendHealth } from "./hooks/useBackendHealth";
 import { useDeck } from "./hooks/useDeck";
 import { useMediaQuery } from "./hooks/useMediaQuery";
-import { apiClient } from "./lib/api";
 
 import "./styles.css";
 
@@ -54,16 +52,13 @@ function App() {
   const { health, check } = useBackendHealth();
   const isMobile = useMediaQuery("(max-width: 860px)");
   const [view, setView] = useState<ViewMode>("visual");
-  const [group, setGroup] = useState<GroupMode>("category");
+  const [group, setGroup] = useState<GroupMode>("custom");
   const [sort, setSort] = useState<SortMode>("alphabet");
   const [filter, setFilter] = useState("");
   const [navigationOpen, setNavigationOpen] = useState(false);
   const [searchRequest, setSearchRequest] = useState<SearchRequest | null>(null);
   const [selectedCard, setSelectedCard] = useState<CardSearchResult | null>(null);
-  const [quickQuery, setQuickQuery] = useState("");
-  const [quickState, setQuickState] = useState<"idle" | "loading" | "error">(
-    "idle",
-  );
+  const [toolbarQuery, setToolbarQuery] = useState("");
   const returnFocus = useRef<HTMLElement | null>(null);
   const menuTrigger = useRef<HTMLButtonElement>(null);
   const sidebarRef = useRef<HTMLElement>(null);
@@ -138,29 +133,14 @@ function App() {
     };
   }, [closeNavigation, navigationOpen]);
 
-  const submitQuickAdd = async (event: FormEvent) => {
+  const submitToolbarSearch = (event: FormEvent) => {
     event.preventDefault();
-    const query = quickQuery.trim();
-    if (!query || quickState === "loading") {
+    const query = toolbarQuery.trim();
+    if (!query) {
       return;
     }
-    setQuickState("loading");
-    try {
-      const result = await apiClient.searchCards(query);
-      const card = result.cards[0];
-      if (!card) {
-        setQuickState("error");
-        openSearch(undefined, query);
-        return;
-      }
-      addCard(card);
-      setSelectedCard(card);
-      setQuickQuery("");
-      setQuickState("idle");
-    } catch {
-      setQuickState("error");
-      openSearch(undefined, query);
-    }
+    setToolbarQuery("");
+    openSearch(undefined, query);
   };
 
   const legalityCopy = {
@@ -294,24 +274,6 @@ function App() {
             <strong>{formatEuro(statistics.price, "€0.00")}</strong>
             <small>daily estimate</small>
           </div>
-          <div className="topbar-actions">
-            <button
-              className="secondary-button top-search"
-              type="button"
-              onClick={() => openSearch()}
-            >
-              <Search aria-hidden="true" size={17} />
-              Search cards
-            </button>
-            <button
-              className="primary-button top-add"
-              type="button"
-              onClick={() => openSearch()}
-            >
-              <CirclePlus aria-hidden="true" size={17} />
-              Add
-            </button>
-          </div>
         </header>
 
         <div className="editor-toolbar" aria-label="Deck controls">
@@ -323,23 +285,20 @@ function App() {
             <Search aria-hidden="true" size={16} />
             Search
           </button>
-          <form className="quick-add" onSubmit={(event) => void submitQuickAdd(event)}>
-            <CirclePlus aria-hidden="true" size={16} />
+          <form className="quick-add" onSubmit={submitToolbarSearch}>
+            <Search aria-hidden="true" size={16} />
             <input
-              value={quickQuery}
-              onChange={(event) => {
-                setQuickQuery(event.target.value);
-                setQuickState("idle");
-              }}
-              aria-label="Quick add card"
-              placeholder="Quick add by name"
+              value={toolbarQuery}
+              onChange={(event) => setToolbarQuery(event.target.value)}
+              aria-label="Search cards from toolbar"
+              placeholder="Search cards"
               autoComplete="off"
             />
             <button
               type="submit"
-              disabled={!quickQuery.trim() || quickState === "loading"}
+              disabled={!toolbarQuery.trim()}
             >
-              {quickState === "loading" ? "Adding…" : "Add"}
+              Search
             </button>
           </form>
           <div className="segmented-control view-control" aria-label="Deck view">
@@ -369,8 +328,8 @@ function App() {
               value={group}
               onChange={(event) => setGroup(event.target.value as GroupMode)}
             >
-              <option value="category">Category</option>
-              <option value="type">Card type</option>
+              <option value="custom">Custom</option>
+              <option value="type">Card types</option>
             </select>
           </label>
           <label className="select-control">
@@ -431,6 +390,7 @@ function App() {
               sort={sort}
               filter={filter}
               singletonWarnings={statistics.singletonWarnings}
+              colorIdentityWarnings={statistics.colorIdentityWarnings}
               onSearch={openSearch}
               onSelect={setSelectedCard}
               onSetQuantity={setQuantity}
@@ -449,6 +409,12 @@ function App() {
                 ? statistics.singletonWarnings.has(selectedCard.oracle_id)
                 : false
             }
+            colorIdentityWarning={
+              selectedCard
+                ? statistics.colorIdentityWarnings.has(selectedCard.oracle_id)
+                : false
+            }
+            commanderColorIdentity={statistics.commanderColorIdentity}
             isMobile={isMobile}
             health={health}
             onCheckHealth={() => void check()}
@@ -471,13 +437,6 @@ function App() {
         <button type="button" onClick={() => openSearch()}>
           <Search aria-hidden="true" size={20} />
           <span>Search</span>
-        </button>
-        <button
-          type="button"
-          onClick={() => openSearch(undefined, quickQuery)}
-        >
-          <CirclePlus aria-hidden="true" size={20} />
-          <span>Quick add</span>
         </button>
         <button
           type="button"
@@ -513,9 +472,6 @@ function App() {
 
       <div className="sr-only" role="status" aria-live="polite">
         {announcement}
-        {quickState === "error"
-          ? " Quick add opened full card search."
-          : ""}
       </div>
     </div>
   );

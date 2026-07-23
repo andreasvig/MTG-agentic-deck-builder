@@ -24,7 +24,7 @@ import {
 import { CardArt } from "./CardArt";
 
 export type ViewMode = "visual" | "list";
-export type GroupMode = "category" | "type";
+export type GroupMode = "custom" | "type";
 export type SortMode = "alphabet" | "mana" | "price";
 
 interface DeckBoardProps {
@@ -34,6 +34,7 @@ interface DeckBoardProps {
   sort: SortMode;
   filter: string;
   singletonWarnings: Set<string>;
+  colorIdentityWarnings: Set<string>;
   onSearch: (target?: DeckCategory) => void;
   onSelect: (card: CardSearchResult) => void;
   onSetQuantity: (scryfallId: string, quantity: number) => void;
@@ -54,6 +55,7 @@ export function DeckBoard({
   sort,
   filter,
   singletonWarnings,
+  colorIdentityWarnings,
   onSearch,
   onSelect,
   onSetQuantity,
@@ -127,7 +129,10 @@ export function DeckBoard({
               {cardGroup.entries.map((entry) => (
                 <ListRow
                   entry={entry}
-                  warning={singletonWarnings.has(entry.card.oracle_id)}
+                  warning={warningCopy(
+                    singletonWarnings.has(entry.card.oracle_id),
+                    colorIdentityWarnings.has(entry.card.oracle_id),
+                  )}
                   key={entry.card.scryfall_id}
                   onSelect={onSelect}
                   onSetQuantity={onSetQuantity}
@@ -153,7 +158,10 @@ export function DeckBoard({
                 if (!card) {
                   return null;
                 }
-                const warning = singletonWarnings.has(entry.card.oracle_id);
+                const warning = warningCopy(
+                  singletonWarnings.has(entry.card.oracle_id),
+                  colorIdentityWarnings.has(entry.card.oracle_id),
+                );
                 return (
                   <article className="deck-card" key={entry.card.scryfall_id}>
                     <button
@@ -171,9 +179,12 @@ export function DeckBoard({
                       {warning ? (
                         <span
                           className="deck-card__warning"
-                          title="Commander is a singleton format"
+                          title={warning.title}
                         >
-                          <AlertTriangle aria-label="Singleton warning" size={15} />
+                          <AlertTriangle
+                            aria-label={warning.label}
+                            size={15}
+                          />
                         </span>
                       ) : null}
                     </button>
@@ -277,7 +288,7 @@ function ListRow({
   onRemove,
 }: {
   entry: DeckCardEntry;
-  warning: boolean;
+  warning: ValidationWarning | null;
   onSelect: (card: CardSearchResult) => void;
   onSetQuantity: (scryfallId: string, quantity: number) => void;
   onRemove: (scryfallId: string) => void;
@@ -316,7 +327,7 @@ function ListRow({
         {warning ? (
           <AlertTriangle
             className="list-warning"
-            aria-label="Singleton warning"
+            aria-label={warning.label}
             size={15}
           />
         ) : null}
@@ -369,15 +380,21 @@ function makeGroups(
   const sortEntries = (cards: DeckCardEntry[]) =>
     [...cards].sort((left, right) => compareEntries(left, right, sortMode));
 
-  if (groupMode === "category") {
-    return categoryOrder.map((category) => ({
+  const hasMaybeboard = entries.some(
+    (entry) => entry.section === "maybeboard",
+  );
+
+  if (groupMode === "custom") {
+    return categoryOrder
+      .filter((category) => category !== "maybeboard" || hasMaybeboard)
+      .map((category) => ({
       id: category,
       label: categoryLabels[category],
       target: category,
       entries: sortEntries(
         filtered.filter((entry) => categoryForEntry(entry) === category),
       ),
-    }));
+      }));
   }
 
   const mainboard = filtered.filter((entry) => entry.section === "mainboard");
@@ -394,6 +411,14 @@ function makeGroups(
   ].filter((type) =>
     mainboard.some((entry) => primaryCardType(entry.card.details) === type),
   );
+  const maybeboardGroup: CardGroup = {
+    id: "maybeboard",
+    label: "Maybeboard",
+    target: "maybeboard",
+    entries: sortEntries(
+      filtered.filter((entry) => entry.section === "maybeboard"),
+    ),
+  };
   return [
     {
       id: "command_zone",
@@ -412,15 +437,39 @@ function makeGroups(
         ),
       ),
     })),
-    {
-      id: "maybeboard",
-      label: "Maybeboard",
-      target: "maybeboard",
-      entries: sortEntries(
-        filtered.filter((entry) => entry.section === "maybeboard"),
-      ),
-    },
+    ...(hasMaybeboard ? [maybeboardGroup] : []),
   ];
+}
+
+interface ValidationWarning {
+  label: string;
+  title: string;
+}
+
+function warningCopy(
+  singletonWarning: boolean,
+  colorIdentityWarning: boolean,
+): ValidationWarning | null {
+  if (singletonWarning && colorIdentityWarning) {
+    return {
+      label: "Singleton and color identity warning",
+      title:
+        "This card breaks the singleton rule and is outside the commander color identity.",
+    };
+  }
+  if (colorIdentityWarning) {
+    return {
+      label: "Color identity warning",
+      title: "This card is outside the commander color identity.",
+    };
+  }
+  if (singletonWarning) {
+    return {
+      label: "Singleton warning",
+      title: "Commander is a singleton format.",
+    };
+  }
+  return null;
 }
 
 function compareEntries(

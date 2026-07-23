@@ -1,6 +1,12 @@
 import { expect, test, type Page, type Route } from "@playwright/test";
 
-import { llanowarElves, searchPage, solRing } from "./fixtures/cards";
+import {
+  counterspell,
+  ghalta,
+  llanowarElves,
+  searchPage,
+  solRing,
+} from "./fixtures/cards";
 
 const SEARCH_ROUTE = "**/api/v1/cards/search**";
 
@@ -24,7 +30,7 @@ async function fulfillJson(
 }
 
 async function openSearch(page: Page) {
-  const trigger = page.getByRole("button", { name: "Search cards" });
+  const trigger = page.getByRole("button", { name: "Card search" });
   await expect(trigger).toBeVisible();
   await trigger.click();
   await expect(
@@ -112,7 +118,7 @@ test("desktop deck-building flow remains fast and reversible", async ({
     page.getByRole("dialog", { name: "Find cards" }),
   ).toBeHidden();
   await expect(
-    page.getByRole("button", { name: "Search cards" }),
+    page.getByRole("button", { name: "Card search" }),
   ).toBeFocused();
   await expect(
     page.getByRole("button", { name: "Inspect Sol Ring" }),
@@ -226,6 +232,71 @@ test("search communicates empty and provider-recovery states", async ({
   ).toBeVisible();
 });
 
+test("commander colors warn before and after an illegal addition", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.route(SEARCH_ROUTE, async (route) => {
+    const query =
+      new URL(route.request().url()).searchParams.get("q") ?? "";
+    await fulfillJson(
+      route,
+      searchPage(
+        query,
+        query.includes("Ghalta") ? [ghalta] : [counterspell],
+      ),
+    );
+  });
+
+  await page.goto("/");
+  await page.getByRole("button", { name: "Choose commander" }).click();
+  const commanderSearch = page.getByRole("textbox", {
+    name: "Search card name or Scryfall syntax",
+  });
+  await commanderSearch.fill("Ghalta");
+  await expect(
+    page.getByRole("button", { name: "Add Ghalta, Primal Hunger to deck" }),
+  ).toBeVisible();
+  await expect(
+    page.getByText("Outside commander color identity"),
+  ).toHaveCount(0);
+  await page
+    .getByRole("button", { name: "Add Ghalta, Primal Hunger to deck" })
+    .click();
+  await commanderSearch.press("Escape");
+
+  await expect(
+    page.getByRole("heading", { name: "Maybeboard" }),
+  ).toHaveCount(0);
+  await expect(
+    page.getByRole("combobox", { name: "Group cards" }),
+  ).toHaveValue("custom");
+
+  await openSearch(page);
+  const cardSearch = page.getByRole("textbox", {
+    name: "Search card name or Scryfall syntax",
+  });
+  await cardSearch.fill("Counterspell");
+  await expect(
+    page.getByText("Outside commander color identity"),
+  ).toBeVisible();
+  await page
+    .getByRole("button", { name: "Add Counterspell to deck" })
+    .click();
+  await cardSearch.press("Escape");
+
+  await expect(
+    page.getByText("Needs review", { exact: true }),
+  ).toBeVisible();
+  await expect(page.getByLabel("Color identity warning")).toBeVisible();
+  await page.getByRole("button", { name: "Inspect Counterspell" }).click();
+  await expect(
+    page.getByText(
+      "U is outside this deck's G commander color identity.",
+    ),
+  ).toBeVisible();
+});
+
 test("mobile keeps primary deck actions reachable and contained", async ({
   page,
 }, testInfo) => {
@@ -248,7 +319,7 @@ test("mobile keeps primary deck actions reachable and contained", async ({
     name: "Deck actions",
   });
   await expect(mobileToolbar).toBeVisible();
-  for (const action of ["Search", "Quick add", "Layout", "Undo", "More"]) {
+  for (const action of ["Search", "Layout", "Undo", "More"]) {
     await expect(
       mobileToolbar.getByRole("button", { name: action, exact: true }),
     ).toBeVisible();

@@ -5,6 +5,8 @@ import { getCardPrice, isBasicLand } from "../domain/card";
 import type { Deck, DeckCategory, DeckCardEntry } from "../domain/deck";
 import {
   DECK_STORAGE_KEY,
+  getColorIdentityWarnings,
+  getCommanderColorIdentity,
   parseStoredDeck,
   placementForCategory,
 } from "../domain/deck";
@@ -201,14 +203,18 @@ export function useDeck() {
       .filter((entry) => entry.section === "command_zone")
       .reduce((total, entry) => total + entry.quantity, 0);
     const singletonWarnings = getSingletonWarnings(activeEntries);
+    const colorIdentityWarnings = getColorIdentityWarnings(deck.cards);
+    const commanderColorIdentity = getCommanderColorIdentity(deck.cards);
     return {
       cardCount,
       price,
       averageMana: manaQuantity > 0 ? manaTotal / manaQuantity : 0,
       commanderCount,
       singletonWarnings,
+      colorIdentityWarnings,
+      commanderColorIdentity,
       legality:
-        singletonWarnings.size > 0
+        singletonWarnings.size > 0 || colorIdentityWarnings.size > 0
           ? ("warning" as const)
           : commanderCount === 0 || cardCount !== 100
             ? ("building" as const)

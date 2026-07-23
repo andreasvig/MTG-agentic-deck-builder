@@ -9,7 +9,7 @@ import {
 import { useEffect, useRef } from "react";
 
 import type { BackendHealthState } from "../hooks/useBackendHealth";
-import type { CardSearchResult } from "../domain/card";
+import type { CardSearchResult, MagicColor } from "../domain/card";
 import { formatEuro, getCardPrice } from "../domain/card";
 import type { DeckCategory } from "../domain/deck";
 import { categoryLabels, categoryOrder } from "../domain/deck";
@@ -21,6 +21,8 @@ interface CardInspectorProps {
   quantity: number;
   category?: DeckCategory;
   singletonWarning: boolean;
+  colorIdentityWarning: boolean;
+  commanderColorIdentity: ReadonlySet<MagicColor> | null;
   isMobile: boolean;
   health: BackendHealthState;
   onCheckHealth: () => void;
@@ -36,6 +38,8 @@ export function CardInspector({
   quantity,
   category,
   singletonWarning,
+  colorIdentityWarning,
+  commanderColorIdentity,
   isMobile,
   health,
   onCheckHealth,
@@ -164,6 +168,15 @@ export function CardInspector({
               </div>
             ) : null}
 
+            {colorIdentityWarning ? (
+              <div className="singleton-warning" role="status">
+                <AlertTriangle aria-hidden="true" size={16} />
+                {formatColorIdentity(card.color_identity)} is outside this
+                deck's {formatColorIdentity(commanderColorIdentity)} commander
+                color identity.
+              </div>
+            ) : null}
+
             <dl className="printing-details printing-details--inspector">
               <div>
                 <dt>Set</dt>
@@ -289,4 +302,14 @@ function formatLegality(value: string | undefined): string {
   return value.replaceAll("_", " ").replace(/^./, (letter) =>
     letter.toUpperCase(),
   );
+}
+
+function formatColorIdentity(
+  colors: Iterable<MagicColor> | null,
+): string {
+  if (colors === null) {
+    return "unknown";
+  }
+  const formatted = [...colors].join("");
+  return formatted || "colorless";
 }

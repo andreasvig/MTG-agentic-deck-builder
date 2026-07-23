@@ -391,13 +391,6 @@ select {
   background: var(--surface-subtle);
 }
 
-.topbar-actions {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  margin-left: auto;
-}
-
 .icon-button {
   display: inline-grid;
   width: 34px;
@@ -1819,10 +1812,6 @@ select {
 }
 
 @media (max-width: 960px) {
-  .top-search {
-    display: none;
-  }
-
   .editor-toolbar {
     flex-wrap: wrap;
   }
@@ -1907,10 +1896,6 @@ select {
     gap: 5px;
     margin-left: 0;
     padding-left: 8px;
-  }
-
-  .top-add {
-    display: none;
   }
 
   .editor-toolbar {
@@ -2030,7 +2015,7 @@ select {
     z-index: 70;
     inset: auto 0 0;
     display: grid;
-    grid-template-columns: repeat(5, minmax(0, 1fr));
+    grid-template-columns: repeat(4, minmax(0, 1fr));
     height: calc(58px + env(safe-area-inset-bottom));
     padding: 4px 5px env(safe-area-inset-bottom);
     background: rgba(255, 255, 255, 0.97);
@@ -2172,10 +2157,6 @@ select {
 
   .legality {
     padding: 0 6px;
-  }
-
-  .topbar-actions {
-    display: none;
   }
 
   .editor-toolbar {
