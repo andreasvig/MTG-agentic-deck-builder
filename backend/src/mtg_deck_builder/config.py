@@ -1,7 +1,8 @@
 """Application configuration."""
 
 from functools import lru_cache
-from typing import Annotated
+from pathlib import Path
+from typing import Annotated, Literal
 
 from pydantic import (
     AliasChoices,
@@ -45,8 +46,22 @@ class Settings(BaseSettings):
         ),
     )
     openrouter_base_url: str = "https://openrouter.ai/api/v1"
-    openrouter_model: str = "google/gemini-3.5-flash"
+    openrouter_model: str = "google/gemini-3.5-flash-lite"
+    openrouter_provider: str | None = None
+    openrouter_reasoning_effort: Literal[
+        "none",
+        "minimal",
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max",
+    ] = "minimal"
+    openrouter_max_tokens: Annotated[int, Field(ge=100, le=8_000)] = 900
     openrouter_timeout_seconds: Annotated[float, Field(gt=0, le=60)] = 15.0
+    search_debug_enabled: bool = False
+    search_debug_log_path: Path = Path("local-data/search-debug.jsonl")
+    search_debug_result_limit: Annotated[int, Field(ge=1, le=100)] = 25
 
     @field_validator(
         "host",
@@ -56,11 +71,20 @@ class Settings(BaseSettings):
         "embedding_model",
         "openrouter_base_url",
         "openrouter_model",
+        "search_debug_log_path",
         mode="before",
     )
     @classmethod
     def strip_surrounding_whitespace(cls, value: object) -> object:
         return value.strip() if isinstance(value, str) else value
+
+    @field_validator("openrouter_provider", mode="before")
+    @classmethod
+    def empty_optional_string_is_none(cls, value: object) -> object:
+        if isinstance(value, str):
+            stripped = value.strip()
+            return stripped or None
+        return value
 
     @field_validator("host")
     @classmethod

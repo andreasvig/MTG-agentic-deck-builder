@@ -44,9 +44,21 @@ def test_settings_load_prefixed_environment_variables(monkeypatch: MonkeyPatch) 
     monkeypatch.setenv("MTG_HOST", "0.0.0.0")
     monkeypatch.setenv("MTG_PORT", "54321")
     monkeypatch.setenv("MTG_FRONTEND_ORIGIN", "https://deck-builder.test/")
+    monkeypatch.setenv("MTG_SEARCH_DEBUG_ENABLED", "true")
+    monkeypatch.setenv("MTG_SEARCH_DEBUG_LOG_PATH", "tmp/search-debug.jsonl")
+    monkeypatch.setenv("MTG_SEARCH_DEBUG_RESULT_LIMIT", "12")
+    monkeypatch.setenv("MTG_OPENROUTER_PROVIDER", " Cerebras ")
+    monkeypatch.setenv("MTG_OPENROUTER_REASONING_EFFORT", "low")
+    monkeypatch.setenv("MTG_OPENROUTER_MAX_TOKENS", "1800")
 
     settings = Settings()
 
     assert settings.host == "0.0.0.0"
     assert settings.port == 54_321
     assert settings.frontend_origin == "https://deck-builder.test"
+    assert settings.search_debug_enabled is True
+    assert str(settings.search_debug_log_path) == "tmp/search-debug.jsonl"
+    assert settings.search_debug_result_limit == 12
+    assert settings.openrouter_provider == "Cerebras"
+    assert settings.openrouter_reasoning_effort == "low"
+    assert settings.openrouter_max_tokens == 1_800

@@ -21,6 +21,7 @@ CardFinish = Literal["nonfoil", "foil", "etched"]
 ColorMatchMode = Literal["subset", "exact"]
 SearchStrategy = Literal["exact", "fuzzy", "intent", "syntax"]
 CardSearchOrder = Literal["name", "edhrec"]
+SearchDebugStageStatus = Literal["ok", "skipped", "error"]
 
 
 class CardModel(BaseModel):
@@ -128,6 +129,27 @@ class CardSearchQuery(CardModel):
     page: Annotated[int, Field(ge=1, le=1_000)] = 1
     filters: CardSearchFilters = Field(default_factory=CardSearchFilters)
     order: CardSearchOrder = "name"
+    debug: bool = False
+
+
+class SearchDebugStage(CardModel):
+    """Compact timing and cardinality summary for one search layer."""
+
+    name: NonEmptyString
+    status: SearchDebugStageStatus
+    duration_ms: Annotated[float, Field(ge=0)]
+    input_count: Annotated[int | None, Field(default=None, ge=0)] = None
+    output_count: Annotated[int | None, Field(default=None, ge=0)] = None
+
+
+class SearchDebugSummary(CardModel):
+    """Debug trace metadata returned only while search debugging is enabled."""
+
+    trace_id: UUID
+    log_path: NonEmptyString
+    log_written: bool
+    total_duration_ms: Annotated[float, Field(ge=0)]
+    stages: list[SearchDebugStage]
 
 
 class CardSearchPage(CardModel):
@@ -142,3 +164,4 @@ class CardSearchPage(CardModel):
     strategy: SearchStrategy = "syntax"
     interpretation: str | None = None
     reranked: bool = False
+    debug: SearchDebugSummary | None = None

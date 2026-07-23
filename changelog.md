@@ -65,13 +65,20 @@ All notable changes to this project will be documented in this file.
   search routing.
 - Added local semantic ranking with the public
   `BAAI/bge-small-en-v1.5` Hugging Face model.
-- Added an optional OpenRouter reranker using `google/gemini-3.5-flash` with
-  minimal reasoning and a bounded card-metadata payload.
+- Added an optional OpenRouter reranker using
+  `google/gemini-3.5-flash-lite` with minimal reasoning and a bounded
+  card-metadata payload.
 - Added search filters for can-include or exact color identity, colorless
   identity, minimum/maximum mana value, and minimum/maximum EUR estimate.
 - Added typed search-strategy metadata, user-visible intent interpretation,
   reranker fallback warnings, and regression coverage across backend,
   frontend, and browser request flows.
+- Added persistent in-app search debugging plus an environment default, with
+  compact stage summaries and append-only JSONL traces containing provider
+  queries, timings, complete raw and parsed LLM request/response bodies,
+  before/after rankings, rank deltas, warnings, and final results.
+- Added configurable OpenRouter provider, reasoning effort, and completion
+  budget controls plus a repeatable four-model end-to-end reranker benchmark.
 
 ### Repository
 
@@ -117,5 +124,6 @@ All notable changes to this project will be documented in this file.
   search client gets the same exact, fuzzy, and intent behavior.
 - Ordered natural-intent candidate pools by EDHREC popularity and limited them
   to paper cards before local semantic ranking.
-- Replaced the nonexistent Gemini 3.5 Flash-Lite candidate with the available
-  Gemini 3.5 Flash model configured for minimal reasoning.
+- Selected Gemini 3.5 Flash Lite at minimal reasoning as the default reranker
+  after live comparison with Mercury 2, Cerebras Gemma 4 31B, and Cerebras
+  GPT-OSS-120B.

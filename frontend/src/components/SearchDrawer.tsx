@@ -1,11 +1,13 @@
 import {
   AlertCircle,
+  Bug,
   ChevronRight,
   CirclePlus,
   Minus,
   Plus,
   RotateCw,
   Search,
+  Settings2,
   SlidersHorizontal,
   Trash2,
   X,
@@ -52,6 +54,7 @@ const COLOR_FILTERS: Array<{ color: MagicColor; label: string }> = [
   { color: "R", label: "Red" },
   { color: "G", label: "Green" },
 ];
+const SEARCH_DEBUG_STORAGE_KEY = "manabase.search-debug";
 
 interface SearchDrawerProps {
   initialQuery?: string;
@@ -80,6 +83,10 @@ export function SearchDrawer({
     colors: [],
   }));
   const [filtersOpen, setFiltersOpen] = useState(true);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [debugEnabled, setDebugEnabled] = useState(
+    () => window.localStorage.getItem(SEARCH_DEBUG_STORAGE_KEY) === "true",
+  );
   const [state, setState] = useState<SearchState>({
     phase: "idle",
     page: null,
@@ -91,6 +98,8 @@ export function SearchDrawer({
   const debounceSkipped = useRef(false);
   const filtersRef = useRef(filters);
   filtersRef.current = filters;
+  const debugEnabledRef = useRef(debugEnabled);
+  debugEnabledRef.current = debugEnabled;
   const commanderColorIdentity = useMemo(
     () => getCommanderColorIdentity(entries),
     [entries],
@@ -117,6 +126,7 @@ export function SearchDrawer({
           page,
           controller.signal,
           filtersRef.current,
+          debugEnabledRef.current,
         );
         if (activeRequest.current !== controller) {
           return;
@@ -193,6 +203,10 @@ export function SearchDrawer({
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
         event.preventDefault();
+        if (settingsOpen) {
+          setSettingsOpen(false);
+          return;
+        }
         onClose();
         return;
       }
@@ -223,7 +237,7 @@ export function SearchDrawer({
       document.body.style.overflow = previousOverflow;
       document.removeEventListener("keydown", handleKeyDown);
     };
-  }, [onClose]);
+  }, [onClose, settingsOpen]);
 
   const submit = (event: FormEvent) => {
     event.preventDefault();
@@ -268,6 +282,15 @@ export function SearchDrawer({
   const resetFilters = () =>
     setFilters({ ...EMPTY_CARD_SEARCH_FILTERS, colors: [] });
 
+  const toggleDebug = (enabled: boolean) => {
+    debugEnabledRef.current = enabled;
+    setDebugEnabled(enabled);
+    window.localStorage.setItem(SEARCH_DEBUG_STORAGE_KEY, String(enabled));
+    if (query.trim()) {
+      void runSearch(query);
+    }
+  };
+
   return (
     <div className="drawer-layer">
       <button
@@ -291,15 +314,44 @@ export function SearchDrawer({
             </p>
             <h2 id="search-title">Find cards</h2>
           </div>
-          <button
-            className="icon-button"
-            type="button"
-            aria-label="Close card search"
-            title="Close"
-            onClick={onClose}
-          >
-            <X aria-hidden="true" size={20} />
-          </button>
+          <div className="search-drawer__header-actions">
+            <button
+              className={`icon-button ${settingsOpen ? "is-active" : ""}`}
+              type="button"
+              aria-label="Search settings"
+              aria-expanded={settingsOpen}
+              title="Search settings"
+              onClick={() => setSettingsOpen((open) => !open)}
+            >
+              <Settings2 aria-hidden="true" size={18} />
+            </button>
+            <button
+              className="icon-button"
+              type="button"
+              aria-label="Close card search"
+              title="Close"
+              onClick={onClose}
+            >
+              <X aria-hidden="true" size={20} />
+            </button>
+            {settingsOpen ? (
+              <div className="search-settings" aria-label="Search settings">
+                <label>
+                  <span>
+                    <Bug aria-hidden="true" size={15} />
+                    Search debug log
+                  </span>
+                  <input
+                    type="checkbox"
+                    role="switch"
+                    aria-label="Search debug log"
+                    checked={debugEnabled}
+                    onChange={(event) => toggleDebug(event.target.checked)}
+                  />
+                </label>
+              </div>
+            ) : null}
+          </div>
         </header>
 
         <form className="search-form" role="search" onSubmit={submit}>
@@ -555,6 +607,54 @@ export function SearchDrawer({
                     <AlertCircle aria-hidden="true" size={14} />
                     {state.page.warnings[0]}
                   </p>
+                ) : null}
+                {state.page?.debug ? (
+                  <details className="search-debug">
+                    <summary>
+                      <Bug aria-hidden="true" size={14} />
+                      <span>Search trace</span>
+                      <strong>
+                        {state.page.debug.total_duration_ms.toLocaleString(
+                          undefined,
+                          { maximumFractionDigits: 1 },
+                        )}
+                        ms
+                      </strong>
+                    </summary>
+                    <div className="search-debug__body">
+                      <div className="search-debug__stages">
+                        {state.page.debug.stages.map((stage) => (
+                          <div
+                            className={`search-debug__stage search-debug__stage--${stage.status}`}
+                            key={`${stage.name}-${stage.duration_ms}`}
+                          >
+                            <span>{stage.name}</span>
+                            <span>
+                              {stage.input_count !== null &&
+                              stage.output_count !== null
+                                ? `${stage.input_count} → ${stage.output_count}`
+                                : (stage.output_count ?? "")}
+                            </span>
+                            <strong>
+                              {stage.duration_ms.toLocaleString(undefined, {
+                                maximumFractionDigits: 1,
+                              })}
+                              ms
+                            </strong>
+                          </div>
+                        ))}
+                      </div>
+                      <p>
+                        <span>
+                          {state.page.debug.log_written
+                            ? "Logged to"
+                            : "Log write failed"}
+                        </span>
+                        <code>{state.page.debug.log_path}</code>
+                      </p>
+                      <small>Trace {state.page.debug.trace_id}</small>
+                    </div>
+                  </details>
                 ) : null}
                 <div className="search-card-grid">
                   {cards.map((card) => {

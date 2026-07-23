@@ -67,8 +67,54 @@ planned phases.
 
 The public embedding model runs locally and does not require a Hugging Face
 token. Set `OPENROUTER_API_KEY` to enable the optional
-`google/gemini-3.5-flash` reranker, which uses minimal reasoning. Exact, fuzzy,
-and explicit Scryfall searches do not call OpenRouter.
+`google/gemini-3.5-flash-lite` reranker, which uses minimal reasoning. Exact,
+fuzzy, and explicit Scryfall searches do not call OpenRouter.
+
+Model, provider, and reasoning can be pinned independently:
+
+```dotenv
+MTG_OPENROUTER_MODEL=openai/gpt-oss-120b
+MTG_OPENROUTER_PROVIDER=Cerebras
+MTG_OPENROUTER_REASONING_EFFORT=low
+MTG_OPENROUTER_MAX_TOKENS=2200
+```
+
+## Search Debugging
+
+Open search settings and enable **Search debug log** to trace individual
+searches. The choice is stored locally in the browser. To make tracing the
+default for every client, enable it in `.env`, then restart the servers:
+
+```dotenv
+MTG_SEARCH_DEBUG_ENABLED=true
+MTG_SEARCH_DEBUG_LOG_PATH=local-data/search-debug.jsonl
+MTG_SEARCH_DEBUG_RESULT_LIMIT=25
+```
+
+Debug responses expose a compact stage and timing summary in the search
+drawer. The append-only JSONL file records the raw query and filters,
+classification decision, generated Scryfall query, provider ordering and
+counts, per-layer timings, before/after rankings, rank deltas, warnings, and
+final results. For the LLM layer it also records the complete parsed and raw
+JSON request and response bodies, response status, model, provider, and
+reasoning effort. Credentials and authorization headers are never included.
+
+Each line is an independent JSON object, so an interrupted write cannot corrupt
+earlier searches. Read the complete log as a JSON array with:
+
+```bash
+jq -s '.' local-data/search-debug.jsonl
+```
+
+Run the live reranker latency comparison with:
+
+```bash
+npm run benchmark:rerankers
+```
+
+The summary is written to `local-data/search-reranker-benchmark.json`; its
+complete request and response traces are written to
+`local-data/search-reranker-benchmark.jsonl`.
 
 ## Test And Build
 

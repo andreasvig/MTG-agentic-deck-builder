@@ -361,6 +361,7 @@ def test_search_endpoint_passes_structured_filters_to_provider() -> None:
                 ("mana_max", "5"),
                 ("price_min", "0.25"),
                 ("price_max", "12"),
+                ("debug", "true"),
             ],
         )
 
@@ -369,6 +370,7 @@ def test_search_endpoint_passes_structured_filters_to_provider() -> None:
         CardSearchQuery(
             q="red draw",
             page=1,
+            debug=True,
             filters=CardSearchFilters(
                 colors=["R", "B"],
                 include_colorless=True,

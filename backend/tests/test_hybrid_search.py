@@ -1,6 +1,7 @@
 import asyncio
 import json
 from decimal import Decimal
+from pathlib import Path
 from uuid import UUID
 
 import httpx2
@@ -19,6 +20,7 @@ from mtg_deck_builder.search import (
     compile_filter_query,
     compile_intent,
 )
+from mtg_deck_builder.search_debug import JsonlSearchDebugLogger
 
 
 def make_card(
@@ -235,7 +237,136 @@ def test_intent_results_are_locally_ranked() -> None:
     assert ranker.calls == [("green ramp", ["Mana Rock", "Cultivate"])]
 
 
-def test_openrouter_reranker_uses_minimal_reasoning_and_validates_order() -> None:
+def test_debug_mode_returns_summary_and_writes_layer_ordering(
+    tmp_path: Path,
+) -> None:
+    first = make_card("Mana Rock")
+    second = make_card(
+        "Cultivate",
+        scryfall_id="3e3f0bcd-0796-494d-bf51-94b33c1671e9",
+        colors=["G"],
+        mana_value=3,
+    )
+    log_path = tmp_path / "search-debug.jsonl"
+    scryfall = StubScryfall(
+        [
+            CardSearchPage(
+                query="provider query",
+                page=1,
+                total_results=2,
+                has_more=False,
+                cards=[first, second],
+            )
+        ]
+    )
+    provider = HybridCardSearchProvider(  # type: ignore[arg-type]
+        scryfall,
+        semantic_ranker=ReverseRanker(),
+        debug_logger=JsonlSearchDebugLogger(log_path, result_limit=10),
+    )
+
+    result = asyncio.run(provider.search(CardSearchQuery(q="green ramp")))
+
+    assert result.debug is not None
+    assert result.debug.log_written is True
+    assert result.debug.log_path == str(log_path)
+    assert [stage.name for stage in result.debug.stages] == [
+        "Intent compilation",
+        "Scryfall intent candidates",
+        "Local semantic ranking",
+        "OpenRouter ranking",
+    ]
+    assert result.debug.stages[2].input_count == 2
+    assert result.debug.stages[2].output_count == 2
+    assert result.debug.stages[3].status == "skipped"
+
+    lines = log_path.read_text(encoding="utf-8").splitlines()
+    assert len(lines) == 1
+    record = json.loads(lines[0])
+    assert record["trace_id"] == str(result.debug.trace_id)
+    assert record["request"]["query"] == "green ramp"
+    assert record["decision"]["strategy"] == "intent"
+    assert record["stages"][1]["details"]["provider_order"] == "edhrec"
+    semantic_stage = record["stages"][2]
+    assert [card["name"] for card in semantic_stage["input"]["top"]] == [
+        "Mana Rock",
+        "Cultivate",
+    ]
+    assert [card["name"] for card in semantic_stage["output"]["top"]] == [
+        "Cultivate",
+        "Mana Rock",
+    ]
+    assert semantic_stage["rank_changes"][0] == {
+        "scryfall_id": str(second.scryfall_id),
+        "name": "Cultivate",
+        "before_rank": 2,
+        "after_rank": 1,
+        "delta": 1,
+    }
+    assert record["result"]["returned"]["top"][0]["name"] == "Cultivate"
+    assert "api_key" not in lines[0].casefold()
+    assert "authorization" not in lines[0].casefold()
+
+
+def test_debug_mode_logs_exact_and_fuzzy_layer_decisions(tmp_path: Path) -> None:
+    forest = make_card(colors=["G"])
+    log_path = tmp_path / "search-debug.jsonl"
+    scryfall = StubScryfall([empty_page()], fuzzy_card=forest)
+    provider = HybridCardSearchProvider(  # type: ignore[arg-type]
+        scryfall,
+        debug_logger=JsonlSearchDebugLogger(log_path),
+    )
+
+    result = asyncio.run(provider.search(CardSearchQuery(q="foret")))
+
+    assert result.debug is not None
+    records = [
+        json.loads(line)
+        for line in log_path.read_text(encoding="utf-8").splitlines()
+    ]
+    assert len(records) == 1
+    assert records[0]["decision"]["input_kind"] == "card_name"
+    assert records[0]["decision"]["strategy"] == "fuzzy"
+    assert [stage["name"] for stage in records[0]["stages"]] == [
+        "Intent compilation",
+        "Exact name lookup",
+        "Fuzzy name lookup",
+    ]
+    assert records[0]["stages"][2]["details"] == {
+        "provider_match": "Forest",
+        "accepted_by_filters": True,
+    }
+
+
+def test_search_debug_can_be_enabled_for_one_request(tmp_path: Path) -> None:
+    log_path = tmp_path / "search-debug.jsonl"
+    scryfall = StubScryfall([empty_page(), empty_page()])
+    provider = HybridCardSearchProvider(  # type: ignore[arg-type]
+        scryfall,
+        debug_logger=JsonlSearchDebugLogger(log_path),
+        debug_default_enabled=False,
+    )
+
+    async def run() -> tuple[CardSearchPage, CardSearchPage]:
+        plain = await provider.search(CardSearchQuery(q="green ramp"))
+        traced = await provider.search(
+            CardSearchQuery(q="green ramp", debug=True)
+        )
+        return plain, traced
+
+    plain, traced = asyncio.run(run())
+
+    assert plain.debug is None
+    assert traced.debug is not None
+    records = [
+        json.loads(line)
+        for line in log_path.read_text(encoding="utf-8").splitlines()
+    ]
+    assert len(records) == 1
+    assert records[0]["request"]["debug"] is True
+
+
+def test_openrouter_reranker_uses_configured_routing_and_validates_order() -> None:
     first = make_card("Mana Rock")
     second = make_card(
         "Cultivate",
@@ -247,7 +378,13 @@ def test_openrouter_reranker_uses_minimal_reasoning_and_validates_order() -> Non
     def handler(request: httpx2.Request) -> httpx2.Response:
         payload = json.loads(request.content)
         assert payload["model"] == "google/gemini-3.5-flash"
-        assert payload["reasoning"] == {"effort": "minimal", "exclude": True}
+        assert payload["reasoning"] == {"effort": "low", "exclude": True}
+        assert payload["provider"] == {
+            "only": ["Cerebras"],
+            "allow_fallbacks": False,
+            "require_parameters": True,
+        }
+        assert payload["max_tokens"] == 1_800
         ordered = [str(second.scryfall_id), str(first.scryfall_id)]
         return httpx2.Response(
             200,
@@ -264,8 +401,108 @@ def test_openrouter_reranker_uses_minimal_reasoning_and_validates_order() -> Non
             ranker = OpenRouterCardReranker(
                 client,
                 model="google/gemini-3.5-flash",
+                provider="Cerebras",
+                reasoning_effort="low",
+                max_tokens=1_800,
             )
             return await ranker.rank("green ramp", [first, second])
 
     ranked = asyncio.run(run())
     assert [card.name for card in ranked] == ["Cultivate", "Mana Rock"]
+
+
+def test_openrouter_debug_trace_contains_full_request_and_response(
+    tmp_path: Path,
+) -> None:
+    first = make_card("Mana Rock")
+    second = make_card(
+        "Cultivate",
+        scryfall_id="3e3f0bcd-0796-494d-bf51-94b33c1671e9",
+        colors=["G"],
+        mana_value=3,
+    )
+    ordered = [str(second.scryfall_id), str(first.scryfall_id)]
+    openrouter_response = {
+        "id": "generation-123",
+        "model": "openai/gpt-oss-120b",
+        "provider": "Cerebras",
+        "choices": [
+            {
+                "message": {
+                    "role": "assistant",
+                    "content": json.dumps({"ordered_scryfall_ids": ordered}),
+                },
+                "finish_reason": "stop",
+            }
+        ],
+        "usage": {
+            "prompt_tokens": 250,
+            "completion_tokens": 35,
+            "total_tokens": 285,
+        },
+    }
+
+    def handler(_: httpx2.Request) -> httpx2.Response:
+        return httpx2.Response(200, json=openrouter_response)
+
+    async def run() -> CardSearchPage:
+        scryfall = StubScryfall(
+            [
+                CardSearchPage(
+                    query="provider query",
+                    page=1,
+                    total_results=2,
+                    has_more=False,
+                    cards=[first, second],
+                )
+            ]
+        )
+        async with httpx2.AsyncClient(
+            base_url="https://openrouter.test/api/v1",
+            transport=httpx2.MockTransport(handler),
+        ) as client:
+            return await HybridCardSearchProvider(  # type: ignore[arg-type]
+                scryfall,
+                llm_ranker=OpenRouterCardReranker(
+                    client,
+                    model="openai/gpt-oss-120b",
+                    provider="Cerebras",
+                    reasoning_effort="low",
+                ),
+                debug_logger=JsonlSearchDebugLogger(
+                    tmp_path / "search-debug.jsonl"
+                ),
+            ).search(CardSearchQuery(q="green ramp"))
+
+    result = asyncio.run(run())
+    assert result.debug is not None
+    record = json.loads(
+        (tmp_path / "search-debug.jsonl").read_text(encoding="utf-8")
+    )
+    llm_stage = next(
+        stage
+        for stage in record["stages"]
+        if stage["name"] == "OpenRouter ranking"
+    )
+    exchange = llm_stage["details"]["exchange"]
+    request = exchange["request"]
+    response = exchange["response"]
+
+    assert request["method"] == "POST"
+    assert request["path"] == "/chat/completions"
+    assert json.loads(request["raw_body"]) == request["body"]
+    assert request["body"]["model"] == "openai/gpt-oss-120b"
+    assert request["body"]["reasoning"]["effort"] == "low"
+    assert request["body"]["provider"]["only"] == ["Cerebras"]
+    sent_prompt = json.loads(request["body"]["messages"][1]["content"])
+    assert sent_prompt["intent"] == "green ramp"
+    assert [card["name"] for card in sent_prompt["cards"]] == [
+        "Mana Rock",
+        "Cultivate",
+    ]
+    assert response["status_code"] == 200
+    assert json.loads(response["raw_body"]) == response["body"]
+    assert response["body"] == openrouter_response
+    serialized = json.dumps(record).casefold()
+    assert "authorization" not in serialized
+    assert "api_key" not in serialized

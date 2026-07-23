@@ -87,6 +87,10 @@ async def search_cards(
     mana_max: Annotated[float | None, Query(ge=0, le=100)] = None,
     price_min: Annotated[Decimal | None, Query(ge=0)] = None,
     price_max: Annotated[Decimal | None, Query(ge=0)] = None,
+    debug: Annotated[
+        bool,
+        Query(description="Write and return a layered search debug trace."),
+    ] = False,
 ) -> CardSearchPage:
     """Search names, Scryfall syntax, or natural-language card intent."""
 
@@ -104,6 +108,7 @@ async def search_cards(
     query = CardSearchQuery(
         q=q,
         page=page,
+        debug=debug,
         filters=CardSearchFilters(
             colors=color or [],
             include_colorless=include_colorless,

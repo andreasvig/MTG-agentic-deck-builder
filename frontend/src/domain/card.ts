@@ -3,6 +3,7 @@ export type CardLegality = "legal" | "not_legal" | "restricted" | "banned";
 export type CardFinish = "nonfoil" | "foil" | "etched";
 export type ColorMatchMode = "subset" | "exact";
 export type SearchStrategy = "exact" | "fuzzy" | "intent" | "syntax";
+export type SearchDebugStageStatus = "ok" | "skipped" | "error";
 
 export interface CardSearchFilters {
   colors: MagicColor[];
@@ -85,6 +86,23 @@ export interface CardSearchPage {
   strategy: SearchStrategy;
   interpretation: string | null;
   reranked: boolean;
+  debug: SearchDebugSummary | null;
+}
+
+export interface SearchDebugStage {
+  name: string;
+  status: SearchDebugStageStatus;
+  duration_ms: number;
+  input_count: number | null;
+  output_count: number | null;
+}
+
+export interface SearchDebugSummary {
+  trace_id: string;
+  log_path: string;
+  log_written: boolean;
+  total_duration_ms: number;
+  stages: SearchDebugStage[];
 }
 
 export function getCardImage(

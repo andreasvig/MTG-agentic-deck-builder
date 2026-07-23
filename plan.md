@@ -53,7 +53,7 @@ agent that can inspect a deck, explain suggestions, and propose safe edits.
   Scryfall candidate queries.
 - Rank intent candidates locally with a small Hugging Face embedding model.
 - Optionally apply a bounded OpenRouter rerank with
-  `google/gemini-3.5-flash` at minimal reasoning effort.
+  `google/gemini-3.5-flash-lite` at minimal reasoning effort.
 - Filter every search by color identity using can-include or exact matching,
   including colorless, plus minimum/maximum mana value and EUR estimate.
 - Support useful Scryfall-style filters.
@@ -129,9 +129,10 @@ Add a deck-scoped chat assistant with tools that can:
 - Apply a confirmed patch through the same deck service used by the UI.
 - Preserve an undoable change history.
 
-The assistant will use Pydantic AI. Start with `google/gemini-3.5-flash`
-through OpenRouter at minimal reasoning effort, then change models only when
-hands-on use exposes a concrete latency, reliability, quality, or cost problem.
+The assistant will use Pydantic AI. Start with
+`google/gemini-3.5-flash-lite` through OpenRouter at minimal reasoning effort,
+then change models only when hands-on use exposes a concrete latency,
+reliability, quality, or cost problem.
 
 Planned tools:
 
@@ -189,9 +190,12 @@ Completed in the first usable slice:
 - A typed, provider-neutral card-search boundary backed by live Scryfall search.
 - Layered exact, fuzzy, intent, and explicit-Scryfall search routing.
 - Local `BAAI/bge-small-en-v1.5` semantic ranking for intent candidates, with a
-  bounded optional Gemini 3.5 Flash rerank through OpenRouter.
+  bounded optional Gemini 3.5 Flash Lite rerank through OpenRouter.
 - Search filters for subset or exact color identity, colorless cards, mana
   value, and Scryfall EUR estimates.
+- Persistent in-app search-debug settings with timing summaries and append-only
+  JSONL records of layer decisions, provider queries, complete LLM exchanges,
+  rankings, rank deltas, warnings, and final results.
 - Search loading, empty, invalid-query, provider-error, and pagination states.
 - A single detailed in-context search drawer with inline quantities.
 - A persistent local deck library with creation, switching, renaming, commander

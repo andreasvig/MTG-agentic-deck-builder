@@ -28,6 +28,7 @@ export interface ApiClient {
     page?: number,
     signal?: AbortSignal,
     filters?: CardSearchFilters,
+    debug?: boolean,
   ): Promise<CardSearchPage>;
 }
 
@@ -64,7 +65,7 @@ export function createApiClient(
         version: body.version,
       };
     },
-    async searchCards(query, page = 1, signal, filters) {
+    async searchCards(query, page = 1, signal, filters, debug = false) {
       const url = new URL(`${normalizedBaseUrl}/cards/search`);
       url.searchParams.set("q", query.trim());
       url.searchParams.set("page", String(page));
@@ -79,6 +80,9 @@ export function createApiClient(
       setNumberParam(url, "mana_max", filters?.manaValueMax);
       setNumberParam(url, "price_min", filters?.priceEurMin);
       setNumberParam(url, "price_max", filters?.priceEurMax);
+      if (debug) {
+        url.searchParams.set("debug", "true");
+      }
       const response = await fetcher(url, {
         headers: { Accept: "application/json" },
         signal,
@@ -150,6 +154,29 @@ function isCardSearchPage(value: unknown): value is CardSearchPage {
     ["exact", "fuzzy", "intent", "syntax"].includes(String(value.strategy)) &&
     (value.interpretation === null ||
       typeof value.interpretation === "string") &&
-    typeof value.reranked === "boolean"
+    typeof value.reranked === "boolean" &&
+    (value.debug === null || isSearchDebugSummary(value.debug))
+  );
+}
+
+function isSearchDebugSummary(value: unknown): boolean {
+  return (
+    isRecord(value) &&
+    typeof value.trace_id === "string" &&
+    typeof value.log_path === "string" &&
+    typeof value.log_written === "boolean" &&
+    typeof value.total_duration_ms === "number" &&
+    Array.isArray(value.stages) &&
+    value.stages.every(
+      (stage) =>
+        isRecord(stage) &&
+        typeof stage.name === "string" &&
+        ["ok", "skipped", "error"].includes(String(stage.status)) &&
+        typeof stage.duration_ms === "number" &&
+        (stage.input_count === null ||
+          typeof stage.input_count === "number") &&
+        (stage.output_count === null ||
+          typeof stage.output_count === "number"),
+    )
   );
 }

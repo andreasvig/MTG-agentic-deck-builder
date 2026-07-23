@@ -9,7 +9,8 @@
     "test": "uv --directory backend run pytest && npm test --prefix frontend && node scripts/smoke.mjs",
     "test:e2e": "playwright test",
     "test:smoke": "node scripts/smoke.mjs",
-    "build": "npm run build --prefix frontend"
+    "build": "npm run build --prefix frontend",
+    "benchmark:rerankers": "uv --directory backend run python scripts/benchmark_search_rerankers.py"
   },
   "engines": {
     "node": ">=22.12.0"

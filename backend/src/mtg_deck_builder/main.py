@@ -16,6 +16,7 @@ from mtg_deck_builder.search import (
     HybridCardSearchProvider,
     OpenRouterCardReranker,
 )
+from mtg_deck_builder.search_debug import JsonlSearchDebugLogger
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -59,6 +60,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 llm_ranker = OpenRouterCardReranker(
                     openrouter_client,
                     model=runtime_settings.openrouter_model,
+                    provider=runtime_settings.openrouter_provider,
+                    reasoning_effort=runtime_settings.openrouter_reasoning_effort,
+                    max_tokens=runtime_settings.openrouter_max_tokens,
                 )
             application.state.card_search_provider = HybridCardSearchProvider(
                 scryfall,
@@ -66,6 +70,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     runtime_settings.embedding_model
                 ),
                 llm_ranker=llm_ranker,
+                debug_logger=JsonlSearchDebugLogger(
+                    runtime_settings.search_debug_log_path,
+                    result_limit=runtime_settings.search_debug_result_limit,
+                ),
+                debug_default_enabled=runtime_settings.search_debug_enabled,
             )
             yield
 

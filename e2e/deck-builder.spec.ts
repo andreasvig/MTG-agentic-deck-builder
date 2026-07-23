@@ -371,14 +371,57 @@ test("search filters shape requests without crowding the results", async ({
   let requestedUrl: URL | null = null;
   await page.route(SEARCH_ROUTE, async (route) => {
     requestedUrl = new URL(route.request().url());
+    const response = searchPage(
+      requestedUrl.searchParams.get("q") ?? "",
+      [solRing],
+    );
+    if (requestedUrl.searchParams.get("debug") === "true") {
+      response.debug = {
+        trace_id: "f3c7af78-93ea-4d1b-8873-0eac5b4f6c5f",
+        log_path: "local-data/search-debug.jsonl",
+        log_written: true,
+        total_duration_ms: 918.4,
+        stages: [
+          {
+            name: "Scryfall intent candidates",
+            status: "ok",
+            duration_ms: 112.1,
+            input_count: null,
+            output_count: 16,
+          },
+          {
+            name: "Local semantic ranking",
+            status: "ok",
+            duration_ms: 308.7,
+            input_count: 16,
+            output_count: 16,
+          },
+          {
+            name: "OpenRouter ranking",
+            status: "ok",
+            duration_ms: 497.6,
+            input_count: 16,
+            output_count: 16,
+          },
+        ],
+      };
+    }
     await fulfillJson(
       route,
-      searchPage(requestedUrl.searchParams.get("q") ?? "", [solRing]),
+      response,
     );
   });
 
   await page.goto("/");
   await openSearch(page);
+  await page.getByRole("button", { name: "Search settings" }).click();
+  const debugSwitch = page.getByRole("switch", {
+    name: "Search debug log",
+  });
+  await expect(debugSwitch).not.toBeChecked();
+  await debugSwitch.click();
+  await expect(debugSwitch).toBeChecked();
+  await page.getByRole("button", { name: "Search settings" }).click();
   await page.getByRole("radio", { name: "Exact" }).click();
   await page.getByRole("checkbox", { name: "Blue" }).click();
   await page.getByRole("checkbox", { name: "Colorless" }).click();
@@ -405,6 +448,13 @@ test("search filters shape requests without crowding the results", async ({
   expect(requestedUrl?.searchParams.get("mana_max")).toBe("5");
   expect(requestedUrl?.searchParams.get("price_min")).toBe("0.25");
   expect(requestedUrl?.searchParams.get("price_max")).toBe("12");
+  expect(requestedUrl?.searchParams.get("debug")).toBe("true");
+  await expect(page.getByText("Search trace")).toBeVisible();
+  await page.getByText("Search trace").click();
+  await expect(page.getByText("OpenRouter ranking")).toBeVisible();
+  await expect(
+    page.getByText("local-data/search-debug.jsonl"),
+  ).toBeVisible();
 
   const filters = page.getByLabel("Card search filters");
   const filtersBounds = await filters.boundingBox();

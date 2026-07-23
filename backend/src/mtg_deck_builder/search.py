@@ -8,7 +8,7 @@ import re
 from dataclasses import dataclass
 from decimal import Decimal
 from threading import Lock
-from typing import Protocol
+from typing import Any, Protocol
 
 import httpx2
 
@@ -19,6 +19,12 @@ from mtg_deck_builder.domain import (
     CardSearchResult,
 )
 from mtg_deck_builder.providers import ScryfallCardSearchProvider
+from mtg_deck_builder.search_debug import (
+    JsonlSearchDebugLogger,
+    SearchDebugTrace,
+    stage_elapsed_ms,
+    stage_started,
+)
 
 _LOGGER = logging.getLogger(__name__)
 _SCRYFALL_SYNTAX = re.compile(
@@ -76,6 +82,28 @@ class IntentPlan:
     interpretation: str
 
 
+@dataclass(frozen=True)
+class OpenRouterRankOutcome:
+    """A completed ranking plus the full header-free HTTP exchange."""
+
+    cards: list[CardSearchResult]
+    exchange: dict[str, Any]
+
+
+class OpenRouterRankError(RuntimeError):
+    """Keep a failed OpenRouter exchange available to debug tracing."""
+
+    def __init__(
+        self,
+        *,
+        exchange: dict[str, Any],
+        cause: BaseException,
+    ) -> None:
+        super().__init__("OpenRouter ranking failed")
+        self.exchange = exchange
+        self.cause_type = type(cause).__name__
+
+
 class FastEmbedCardRanker:
     """Rank candidates with a Hugging Face embedding model running locally."""
 
@@ -83,6 +111,10 @@ class FastEmbedCardRanker:
         self._model_name = model_name
         self._model: object | None = None
         self._model_lock = Lock()
+
+    @property
+    def model_name(self) -> str:
+        return self._model_name
 
     async def rank(
         self,
@@ -128,97 +160,186 @@ class OpenRouterCardReranker:
         *,
         model: str,
         candidate_limit: int = 16,
+        provider: str | None = None,
+        reasoning_effort: str = "minimal",
+        max_tokens: int = 900,
     ) -> None:
         self._client = client
         self._model = model
         self._candidate_limit = candidate_limit
+        self._provider = provider
+        self._reasoning_effort = reasoning_effort
+        self._max_tokens = max_tokens
+
+    @property
+    def model_name(self) -> str:
+        return self._model
+
+    @property
+    def candidate_limit(self) -> int:
+        return self._candidate_limit
+
+    @property
+    def provider(self) -> str | None:
+        return self._provider
+
+    @property
+    def reasoning_effort(self) -> str:
+        return self._reasoning_effort
+
+    @property
+    def max_tokens(self) -> int:
+        return self._max_tokens
 
     async def rank(
         self,
         query: str,
         cards: list[CardSearchResult],
     ) -> list[CardSearchResult]:
+        return (await self.rank_with_trace(query, cards)).cards
+
+    async def rank_with_trace(
+        self,
+        query: str,
+        cards: list[CardSearchResult],
+    ) -> OpenRouterRankOutcome:
         candidates = cards[: self._candidate_limit]
         if len(candidates) < 2:
-            return cards
+            return OpenRouterRankOutcome(
+                cards=cards,
+                exchange={
+                    "request": None,
+                    "response": None,
+                    "reason": "Fewer than two candidates.",
+                },
+            )
 
-        response = await self._client.post(
-            "/chat/completions",
-            json={
-                "model": self._model,
-                "messages": [
-                    {
-                        "role": "system",
-                        "content": (
-                            "Rank Magic: The Gathering cards for the user's deck-building "
-                            "intent. Prefer direct mechanical relevance, then efficiency. "
-                            "Return every supplied scryfall_id exactly once."
-                        ),
-                    },
-                    {
-                        "role": "user",
-                        "content": json.dumps(
-                            {
-                                "intent": query,
-                                "cards": [
-                                    {
-                                        "scryfall_id": str(card.scryfall_id),
-                                        "name": card.name,
-                                        "mana_value": card.mana_value,
-                                        "type_line": card.type_line,
-                                        "oracle_text": card.oracle_text,
-                                        "color_identity": card.color_identity,
-                                        "price_eur": (
-                                            str(card.prices.eur)
-                                            if card.prices.eur is not None
-                                            else None
-                                        ),
-                                    }
-                                    for card in candidates
-                                ],
-                            }
-                        ),
-                    },
-                ],
-                "reasoning": {"effort": "minimal", "exclude": True},
-                "response_format": {
-                    "type": "json_schema",
-                    "json_schema": {
-                        "name": "card_ranking",
-                        "strict": True,
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "ordered_scryfall_ids": {
-                                    "type": "array",
-                                    "items": {"type": "string"},
+        request_body: dict[str, Any] = {
+            "model": self._model,
+            "messages": [
+                {
+                    "role": "system",
+                    "content": (
+                        "Rank Magic: The Gathering cards for the user's deck-building "
+                        "intent. Prefer direct mechanical relevance, then efficiency. "
+                        "Return every supplied scryfall_id exactly once."
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": json.dumps(
+                        {
+                            "intent": query,
+                            "cards": [
+                                {
+                                    "scryfall_id": str(card.scryfall_id),
+                                    "name": card.name,
+                                    "mana_value": card.mana_value,
+                                    "type_line": card.type_line,
+                                    "oracle_text": card.oracle_text,
+                                    "color_identity": card.color_identity,
+                                    "price_eur": (
+                                        str(card.prices.eur)
+                                        if card.prices.eur is not None
+                                        else None
+                                    ),
                                 }
-                            },
-                            "required": ["ordered_scryfall_ids"],
-                            "additionalProperties": False,
+                                for card in candidates
+                            ],
                         },
+                        ensure_ascii=True,
+                        separators=(",", ":"),
+                    ),
+                },
+            ],
+            "reasoning": {
+                "effort": self._reasoning_effort,
+                "exclude": True,
+            },
+            "response_format": {
+                "type": "json_schema",
+                "json_schema": {
+                    "name": "card_ranking",
+                    "strict": True,
+                    "schema": {
+                        "type": "object",
+                        "properties": {
+                            "ordered_scryfall_ids": {
+                                "type": "array",
+                                "items": {"type": "string"},
+                            }
+                        },
+                        "required": ["ordered_scryfall_ids"],
+                        "additionalProperties": False,
                     },
                 },
-                "temperature": 0,
-                "max_tokens": 900,
             },
-        )
-        response.raise_for_status()
-        payload = response.json()
-        content = payload["choices"][0]["message"]["content"]
-        ranking = json.loads(content)["ordered_scryfall_ids"]
+            "temperature": 0,
+            "max_tokens": self._max_tokens,
+        }
+        if self._provider is not None:
+            request_body["provider"] = {
+                "only": [self._provider],
+                "allow_fallbacks": False,
+                "require_parameters": True,
+            }
 
-        by_id = {str(card.scryfall_id): card for card in candidates}
-        ordered_ids = list(
-            dict.fromkeys(card_id for card_id in ranking if card_id in by_id)
+        request_raw_body = json.dumps(
+            request_body,
+            ensure_ascii=True,
+            separators=(",", ":"),
         )
-        if not ordered_ids:
-            raise ValueError("OpenRouter returned no recognized card identities")
-        missing_ids = [card_id for card_id in by_id if card_id not in ordered_ids]
-        return (
-            [by_id[card_id] for card_id in [*ordered_ids, *missing_ids]]
-            + cards[len(candidates) :]
-        )
+        exchange: dict[str, Any] = {
+            "request": {
+                "method": "POST",
+                "path": "/chat/completions",
+                "body": request_body,
+                "raw_body": request_raw_body,
+            },
+            "response": None,
+        }
+        try:
+            response = await self._client.post(
+                "/chat/completions",
+                content=request_raw_body,
+                headers={"Content-Type": "application/json"},
+            )
+            response_raw_body = response.text
+            try:
+                response_body: Any = response.json()
+            except ValueError:
+                response_body = None
+            exchange["response"] = {
+                "status_code": response.status_code,
+                "body": response_body,
+                "raw_body": response_raw_body,
+            }
+            response.raise_for_status()
+            content = response_body["choices"][0]["message"]["content"]
+            ranking = json.loads(content)["ordered_scryfall_ids"]
+
+            by_id = {str(card.scryfall_id): card for card in candidates}
+            ordered_ids = list(
+                dict.fromkeys(card_id for card_id in ranking if card_id in by_id)
+            )
+            if not ordered_ids:
+                raise ValueError("OpenRouter returned no recognized card identities")
+            missing_ids = [card_id for card_id in by_id if card_id not in ordered_ids]
+            ranked_cards = (
+                [by_id[card_id] for card_id in [*ordered_ids, *missing_ids]]
+                + cards[len(candidates) :]
+            )
+        except Exception as exc:
+            if exchange["response"] is None:
+                exchange["response"] = {
+                    "status_code": None,
+                    "body": None,
+                    "raw_body": None,
+                    "error_type": type(exc).__name__,
+                }
+            raise OpenRouterRankError(exchange=exchange, cause=exc) from exc
+
+        return OpenRouterRankOutcome(cards=ranked_cards, exchange=exchange)
 
 
 class HybridCardSearchProvider:
@@ -230,29 +351,129 @@ class HybridCardSearchProvider:
         *,
         semantic_ranker: CardRanker | None = None,
         llm_ranker: CardRanker | None = None,
+        debug_logger: JsonlSearchDebugLogger | None = None,
+        debug_default_enabled: bool = True,
     ) -> None:
         self._scryfall = scryfall
         self._semantic_ranker = semantic_ranker
         self._llm_ranker = llm_ranker
+        self._debug_logger = debug_logger
+        self._debug_default_enabled = debug_default_enabled
 
     async def search(self, query: CardSearchQuery) -> CardSearchPage:
-        if _is_scryfall_syntax(query.q):
-            return await self._search_syntax(query)
+        trace = (
+            self._debug_logger.new_trace(
+                query,
+                configuration={
+                    "semantic_ranker": _ranker_name(self._semantic_ranker),
+                    "llm_ranker": _ranker_name(self._llm_ranker),
+                    "llm_candidate_limit": getattr(
+                        self._llm_ranker,
+                        "candidate_limit",
+                        None,
+                    ),
+                    "llm_provider": getattr(
+                        self._llm_ranker,
+                        "provider",
+                        None,
+                    ),
+                    "llm_reasoning_effort": getattr(
+                        self._llm_ranker,
+                        "reasoning_effort",
+                        None,
+                    ),
+                    "llm_max_tokens": getattr(
+                        self._llm_ranker,
+                        "max_tokens",
+                        None,
+                    ),
+                },
+            )
+            if self._debug_logger is not None
+            and (self._debug_default_enabled or query.debug)
+            else None
+        )
+        try:
+            page = await self._search(query, trace)
+        except asyncio.CancelledError as exc:
+            await self._record_failed_trace(trace, exc)
+            raise
+        except Exception as exc:
+            await self._record_failed_trace(trace, exc)
+            raise
 
+        if trace is None:
+            return page
+
+        trace.finish(page)
+        log_written = await self._write_trace(trace)
+        return page.model_copy(
+            update={"debug": trace.summary(log_written=log_written)}
+        )
+
+    async def _search(
+        self,
+        query: CardSearchQuery,
+        trace: SearchDebugTrace | None,
+    ) -> CardSearchPage:
+        if _is_scryfall_syntax(query.q):
+            if trace is not None:
+                trace.set_decision(input_kind="scryfall_syntax")
+            return await self._search_syntax(query, trace)
+
+        intent_started = stage_started()
         intent = compile_intent(query.q)
         if intent is not None:
-            return await self._search_intent(query, intent)
+            if trace is not None:
+                trace.add_stage(
+                    "Intent compilation",
+                    status="ok",
+                    duration_ms=stage_elapsed_ms(intent_started),
+                    details={
+                        "candidate_query": intent.scryfall_query,
+                        "interpretation": intent.interpretation,
+                    },
+                )
+                trace.set_decision(
+                    input_kind="natural_language_intent",
+                    candidate_query=intent.scryfall_query,
+                )
+            return await self._search_intent(query, intent, trace)
 
-        exact_page = await self._scryfall.search(
-            CardSearchQuery(
-                q=_join_query(
-                    _exact_name_query(query.q),
-                    "game:paper",
-                    compile_filter_query(query.filters),
-                ),
-                page=query.page,
+        if trace is not None:
+            trace.add_stage(
+                "Intent compilation",
+                status="skipped",
+                duration_ms=stage_elapsed_ms(intent_started),
+                details={"reason": "No supported deck-building intent detected."},
             )
+            trace.set_decision(input_kind="card_name")
+
+        provider_query = CardSearchQuery(
+            q=_join_query(
+                _exact_name_query(query.q),
+                "game:paper",
+                compile_filter_query(query.filters),
+            ),
+            page=query.page,
         )
+        exact_started = stage_started()
+        exact_page = await self._scryfall.search(
+            provider_query
+        )
+        if trace is not None:
+            trace.add_stage(
+                "Exact name lookup",
+                status="ok",
+                duration_ms=stage_elapsed_ms(exact_started),
+                output_cards=exact_page.cards,
+                details={
+                    "provider_query": provider_query.q,
+                    "provider_order": provider_query.order,
+                    "provider_total_results": exact_page.total_results,
+                    "has_more": exact_page.has_more,
+                },
+            )
         if exact_page.cards or query.page > 1:
             corrected_name = (
                 exact_page.cards[0].name
@@ -263,6 +484,11 @@ class HybridCardSearchProvider:
                 )
                 else None
             )
+            if trace is not None:
+                trace.set_decision(
+                    strategy="fuzzy" if corrected_name else "exact",
+                    scryfall_corrected_name=corrected_name,
+                )
             return exact_page.model_copy(
                 update={
                     "query": query.q,
@@ -275,12 +501,25 @@ class HybridCardSearchProvider:
                 }
             )
 
+        fuzzy_started = stage_started()
         fuzzy_card = await self._scryfall.find_fuzzy(query.q)
         fuzzy_cards = (
             [fuzzy_card]
             if fuzzy_card is not None and card_matches_filters(fuzzy_card, query.filters)
             else []
         )
+        if trace is not None:
+            trace.add_stage(
+                "Fuzzy name lookup",
+                status="ok",
+                duration_ms=stage_elapsed_ms(fuzzy_started),
+                output_cards=fuzzy_cards,
+                details={
+                    "provider_match": fuzzy_card.name if fuzzy_card else None,
+                    "accepted_by_filters": bool(fuzzy_cards),
+                },
+            )
+            trace.set_decision(strategy="fuzzy")
         return CardSearchPage(
             query=query.q,
             page=1,
@@ -293,13 +532,31 @@ class HybridCardSearchProvider:
             ),
         )
 
-    async def _search_syntax(self, query: CardSearchQuery) -> CardSearchPage:
-        page = await self._scryfall.search(
-            CardSearchQuery(
-                q=_join_query(query.q, compile_filter_query(query.filters)),
-                page=query.page,
-            )
+    async def _search_syntax(
+        self,
+        query: CardSearchQuery,
+        trace: SearchDebugTrace | None,
+    ) -> CardSearchPage:
+        provider_query = CardSearchQuery(
+            q=_join_query(query.q, compile_filter_query(query.filters)),
+            page=query.page,
         )
+        search_started = stage_started()
+        page = await self._scryfall.search(provider_query)
+        if trace is not None:
+            trace.add_stage(
+                "Scryfall syntax lookup",
+                status="ok",
+                duration_ms=stage_elapsed_ms(search_started),
+                output_cards=page.cards,
+                details={
+                    "provider_query": provider_query.q,
+                    "provider_order": provider_query.order,
+                    "provider_total_results": page.total_results,
+                    "has_more": page.has_more,
+                },
+            )
+            trace.set_decision(strategy="syntax")
         return page.model_copy(
             update={
                 "query": query.q,
@@ -312,50 +569,170 @@ class HybridCardSearchProvider:
         self,
         query: CardSearchQuery,
         intent: IntentPlan,
+        trace: SearchDebugTrace | None,
     ) -> CardSearchPage:
-        page = await self._scryfall.search(
-            CardSearchQuery(
-                q=_join_query(
-                    intent.scryfall_query,
-                    "game:paper",
-                    compile_filter_query(query.filters),
-                ),
-                page=query.page,
-                order="edhrec",
-            )
+        provider_query = CardSearchQuery(
+            q=_join_query(
+                intent.scryfall_query,
+                "game:paper",
+                compile_filter_query(query.filters),
+            ),
+            page=query.page,
+            order="edhrec",
         )
+        candidates_started = stage_started()
+        page = await self._scryfall.search(provider_query)
+        if trace is not None:
+            trace.add_stage(
+                "Scryfall intent candidates",
+                status="ok",
+                duration_ms=stage_elapsed_ms(candidates_started),
+                output_cards=page.cards,
+                details={
+                    "provider_query": provider_query.q,
+                    "provider_order": provider_query.order,
+                    "provider_total_results": page.total_results,
+                    "has_more": page.has_more,
+                },
+            )
         cards = page.cards
         warnings = list(page.warnings)
         reranked = False
 
         if cards and self._semantic_ranker is not None:
+            semantic_input = cards
+            semantic_started = stage_started()
             try:
                 cards = await self._semantic_ranker.rank(query.q, cards)
                 reranked = len(cards) > 1
+                if trace is not None:
+                    trace.add_stage(
+                        "Local semantic ranking",
+                        status="ok",
+                        duration_ms=stage_elapsed_ms(semantic_started),
+                        input_cards=semantic_input,
+                        output_cards=cards,
+                        details={"model": _ranker_name(self._semantic_ranker)},
+                    )
             except Exception as exc:
                 _LOGGER.warning(
                     "Local semantic ranking failed (%s): %s",
                     type(exc).__name__,
                     exc,
                 )
+                if trace is not None:
+                    trace.add_stage(
+                        "Local semantic ranking",
+                        status="error",
+                        duration_ms=stage_elapsed_ms(semantic_started),
+                        input_cards=semantic_input,
+                        output_cards=semantic_input,
+                        details={"error_type": type(exc).__name__},
+                    )
                 warnings.append(
                     "Local semantic ranking was unavailable; results use Scryfall order."
                 )
+        elif trace is not None:
+            trace.add_stage(
+                "Local semantic ranking",
+                status="skipped",
+                duration_ms=0,
+                input_cards=cards,
+                output_cards=cards,
+                details={
+                    "reason": "No candidates."
+                    if not cards
+                    else "No semantic ranker configured."
+                },
+            )
 
         if cards and self._llm_ranker is not None:
+            llm_input = cards
+            llm_started = stage_started()
             try:
-                cards = await self._llm_ranker.rank(query.q, cards)
+                exchange = None
+                if isinstance(self._llm_ranker, OpenRouterCardReranker):
+                    outcome = await self._llm_ranker.rank_with_trace(query.q, cards)
+                    cards = outcome.cards
+                    exchange = outcome.exchange
+                else:
+                    cards = await self._llm_ranker.rank(query.q, cards)
                 reranked = len(cards) > 1
+                if trace is not None:
+                    trace.add_stage(
+                        "OpenRouter ranking",
+                        status="ok",
+                        duration_ms=stage_elapsed_ms(llm_started),
+                        input_cards=llm_input,
+                        output_cards=cards,
+                        details={
+                            "model": _ranker_name(self._llm_ranker),
+                            "candidate_limit": getattr(
+                                self._llm_ranker,
+                                "candidate_limit",
+                                None,
+                            ),
+                            "provider": getattr(
+                                self._llm_ranker,
+                                "provider",
+                                None,
+                            ),
+                            "reasoning_effort": getattr(
+                                self._llm_ranker,
+                                "reasoning_effort",
+                                None,
+                            ),
+                            "max_tokens": getattr(
+                                self._llm_ranker,
+                                "max_tokens",
+                                None,
+                            ),
+                            "exchange": exchange,
+                        },
+                    )
             except Exception as exc:
                 _LOGGER.warning(
                     "OpenRouter reranking failed (%s): %s",
                     type(exc).__name__,
                     exc,
                 )
+                if trace is not None:
+                    details: dict[str, Any] = {
+                        "error_type": (
+                            exc.cause_type
+                            if isinstance(exc, OpenRouterRankError)
+                            else type(exc).__name__
+                        )
+                    }
+                    if isinstance(exc, OpenRouterRankError):
+                        details["exchange"] = exc.exchange
+                    trace.add_stage(
+                        "OpenRouter ranking",
+                        status="error",
+                        duration_ms=stage_elapsed_ms(llm_started),
+                        input_cards=llm_input,
+                        output_cards=llm_input,
+                        details=details,
+                    )
                 warnings.append(
                     "The optional AI reranker was unavailable; local results are shown."
                 )
+        elif trace is not None:
+            trace.add_stage(
+                "OpenRouter ranking",
+                status="skipped",
+                duration_ms=0,
+                input_cards=cards,
+                output_cards=cards,
+                details={
+                    "reason": "No candidates."
+                    if not cards
+                    else "No OpenRouter ranker configured."
+                },
+            )
 
+        if trace is not None:
+            trace.set_decision(strategy="intent")
         return page.model_copy(
             update={
                 "query": query.q,
@@ -366,6 +743,30 @@ class HybridCardSearchProvider:
                 "reranked": reranked,
             }
         )
+
+    async def _record_failed_trace(
+        self,
+        trace: SearchDebugTrace | None,
+        error: BaseException,
+    ) -> None:
+        if trace is None:
+            return
+        trace.finish_error(error)
+        await self._write_trace(trace)
+
+    async def _write_trace(self, trace: SearchDebugTrace) -> bool:
+        if self._debug_logger is None:
+            return False
+        try:
+            await self._debug_logger.write(trace)
+        except Exception as exc:
+            _LOGGER.warning(
+                "Search debug log write failed (%s): %s",
+                type(exc).__name__,
+                exc,
+            )
+            return False
+        return True
 
 
 def compile_filter_query(filters: CardSearchFilters) -> str:
@@ -542,6 +943,12 @@ def _card_has_exact_name(card: CardSearchResult, query: str) -> bool:
 
 def _join_query(*parts: str) -> str:
     return " ".join(part for part in parts if part)
+
+
+def _ranker_name(ranker: CardRanker | None) -> str | None:
+    if ranker is None:
+        return None
+    return str(getattr(ranker, "model_name", type(ranker).__name__))
 
 
 def _format_decimal(value: Decimal) -> str:

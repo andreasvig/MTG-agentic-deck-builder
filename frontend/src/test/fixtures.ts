@@ -104,5 +104,6 @@ export function cardSearchPage(
     strategy: "exact",
     interpretation: "Exact card name",
     reranked: false,
+    debug: null,
   };
 }

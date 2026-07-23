@@ -40,7 +40,7 @@ describe("API client", () => {
       manaValueMax: 5,
       priceEurMin: 0.25,
       priceEurMax: 12,
-    });
+    }, true);
 
     const requestedUrl = new URL(String(fetcher.mock.calls[0]?.[0]));
     expect(requestedUrl.pathname).toBe("/api/v1/cards/search");
@@ -53,6 +53,7 @@ describe("API client", () => {
     expect(requestedUrl.searchParams.get("mana_max")).toBe("5");
     expect(requestedUrl.searchParams.get("price_min")).toBe("0.25");
     expect(requestedUrl.searchParams.get("price_max")).toBe("12");
+    expect(requestedUrl.searchParams.get("debug")).toBe("true");
   });
 
   it("surfaces a safe provider message and rejects malformed payloads", async () => {
@@ -82,6 +83,35 @@ describe("API client", () => {
     ).rejects.toEqual(
       new ApiError("The card search response was invalid.", 502),
     );
+  });
+
+  it("accepts typed search debug summaries", async () => {
+    const page = cardSearchPage();
+    page.debug = {
+      trace_id: "f3c7af78-93ea-4d1b-8873-0eac5b4f6c5f",
+      log_path: "local-data/search-debug.jsonl",
+      log_written: true,
+      total_duration_ms: 18.4,
+      stages: [
+        {
+          name: "Exact name lookup",
+          status: "ok",
+          duration_ms: 17.9,
+          input_count: null,
+          output_count: 1,
+        },
+      ],
+    };
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValue(Response.json(page));
+
+    await expect(
+      createApiClient("http://localhost/api/v1", fetcher).searchCards("Forest"),
+    ).resolves.toMatchObject({
+      debug: {
+        log_written: true,
+        stages: [{ name: "Exact name lookup" }],
+      },
+    });
   });
 
   it("rejects a healthy response from an unrelated service", async () => {

@@ -13,6 +13,8 @@ from mtg_deck_builder.domain.cards import (
     CardSearchResult,
     ColorMatchMode,
     MagicColor,
+    SearchDebugStage,
+    SearchDebugSummary,
     SearchStrategy,
 )
 from mtg_deck_builder.domain.deck import (
@@ -39,5 +41,7 @@ __all__ = [
     "DeckCardEntry",
     "DeckSection",
     "MagicColor",
+    "SearchDebugStage",
+    "SearchDebugSummary",
     "SearchStrategy",
 ]
