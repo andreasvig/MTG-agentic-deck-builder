@@ -33,7 +33,11 @@ export function ConnectionStatus({
   const StatusIcon = status.Icon;
 
   return (
-    <div className={`connection-status connection-status--${health.state}`}>
+    <div
+      className={`connection-status connection-status--${health.state}`}
+      role="status"
+      aria-live="polite"
+    >
       <StatusIcon aria-hidden="true" size={18} />
       <div>
         <strong>{status.label}</strong>

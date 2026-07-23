@@ -57,7 +57,7 @@ const frontend = start(
   "frontend",
   process.execPath,
   [
-    viteEntry,
+    path.resolve(viteEntry),
     "--host",
     frontendOrigin.hostname,
     "--port",
@@ -65,6 +65,7 @@ const frontend = start(
     "--strictPort",
   ],
   { VITE_API_BASE_URL: apiBaseUrl },
+  path.resolve("frontend"),
 );
 
 console.log(`Backend:  http://${backendHost}:${backendPort}`);
@@ -94,9 +95,9 @@ for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) {
 }
 process.once("exit", terminateChildren);
 
-function start(name, command, args, extraEnv) {
+function start(name, command, args, extraEnv, cwd = process.cwd()) {
   const child = spawn(command, args, {
-    cwd: process.cwd(),
+    cwd,
     env: { ...process.env, ...extraEnv },
     stdio: "inherit",
   });
@@ -183,15 +184,12 @@ function defaultPort(protocol) {
   if (protocol === "http:") {
     return "80";
   }
-  if (protocol === "https:") {
-    return "443";
-  }
-  throw new Error("MTG_FRONTEND_ORIGIN must use http or https.");
+  throw new Error("MTG_FRONTEND_ORIGIN must use http for local development.");
 }
 
 function validateFrontendOrigin(origin) {
-  if (!["http:", "https:"].includes(origin.protocol)) {
-    throw new Error("MTG_FRONTEND_ORIGIN must use http or https.");
+  if (origin.protocol !== "http:") {
+    throw new Error("MTG_FRONTEND_ORIGIN must use http for local development.");
   }
   if (
     origin.pathname !== "/" ||

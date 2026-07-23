@@ -41,11 +41,28 @@ npm run dev
 The runner checks that both ports are free before starting. `Ctrl+C` stops both
 services, including their reload subprocesses.
 
+## Current Workflow
+
+- Search Scryfall-backed card data by exact card name or Scryfall syntax.
+- Add cards through full search or quick add without leaving the deck.
+- Edit quantities and sections, remove cards, and undo recent changes.
+- Switch between visual category stacks and a dense list.
+- Group, sort, and locally filter the current deck.
+- Inspect card text, printing details, Commander legality, and daily EUR
+  estimates.
+- Keep one local Commander deck across browser sessions.
+
+The current provider returns one representative printing per gameplay card.
+Full printing and finish selection is tracked as the next search enhancement.
+The local SQLite catalog, complete Commander validation, deck management,
+imports, analytics, and chat agent remain planned phases.
+
 ## Test And Build
 
 ```bash
 npm test
 npm run build
+npm run test:e2e
 ```
 
 Run one side independently when narrowing a failure:
@@ -65,4 +82,6 @@ scripts/   Root development utilities
 
 Product scope, architecture decisions, and milestones live in
 [`plan.md`](plan.md). Notable changes are recorded in
-[`changelog.md`](changelog.md).
+[`changelog.md`](changelog.md). The researched interaction target and explicit
+parity boundary are recorded in
+[`docs/archidekt-ux-benchmark.md`](docs/archidekt-ux-benchmark.md).

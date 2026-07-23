@@ -6,10 +6,15 @@
   "scripts": {
     "setup": "uv sync --project backend --all-groups && npm install --prefix frontend",
     "dev": "node --env-file-if-exists=.env scripts/dev.mjs",
-    "test": "uv --directory backend run pytest && npm test --prefix frontend",
+    "test": "uv --directory backend run pytest && npm test --prefix frontend && node scripts/smoke.mjs",
+    "test:e2e": "playwright test",
+    "test:smoke": "node scripts/smoke.mjs",
     "build": "npm run build --prefix frontend"
   },
   "engines": {
     "node": ">=22.12.0"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.61.1"
   }
 }

@@ -35,6 +35,23 @@ All notable changes to this project will be documented in this file.
   services, and shuts them down together.
 - Added backend and frontend test suites, deterministic dependency lockfiles,
   environment templates, and local setup documentation.
+- Added an Archidekt UX benchmark based on official product documentation and
+  Playwright inspection of desktop search, deck editing, and mobile navigation.
+- Added a provider-neutral FastAPI card-search contract with a rate-conscious
+  Scryfall implementation, typed reversible-card mapping, public-safe provider
+  errors, pagination, and shared HTTP client lifecycle.
+- Added a live card-search drawer with Scryfall syntax, debounced results,
+  loading, empty, retry, pagination, card preview, pricing, and inline deck
+  quantity controls.
+- Added a persistent local Commander deck with quick add, category placement,
+  move, remove, quantity editing, singleton warnings, and 30-step undo.
+- Added visual category stacks and a dense list with grouping, sorting, local
+  filtering, category totals, deck totals, card art, and a detailed inspector.
+- Added an intentionally compact desktop workspace and a purpose-built mobile
+  layout with bottom actions, navigation/search/inspector drawers, focus
+  containment, scroll locking, and inactive-background isolation.
+- Added production-build checks, provider/API/domain/component tests, a paired
+  development-server smoke test, and Playwright desktop/mobile workflows.
 
 ### Repository
 
@@ -51,3 +68,9 @@ All notable changes to this project will be documented in this file.
   from Scryfall `default_cards`, with Scryfall remaining authoritative.
 - Set weekly gameplay-data synchronization, daily active-deck price refreshes,
   remote card images, and live Scryfall fallback behavior.
+- Corrected the root development runner so Vite serves from the frontend
+  workspace, and made the paired-server smoke test assert startup, health,
+  frontend HTML, the local HTTP-origin guard, and clean shutdown.
+- Clarified that the current card search returns a representative printing per
+  gameplay card; full printing and finish selection remains a planned
+  enhancement.

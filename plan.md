@@ -170,6 +170,28 @@ validation, history, and tests.
 10. Add the chat assistant and permitted recommendation providers.
 11. Add power-level guidance and an opening-hand/playtest view.
 
+## Current Implementation
+
+Completed in the first usable slice:
+
+- React and FastAPI scaffolds on ports `41737` and `43127`.
+- A typed, provider-neutral card-search boundary backed by live Scryfall search.
+- Search loading, empty, invalid-query, provider-error, and pagination states.
+- Quick add plus a detailed in-context search drawer with inline quantities.
+- A persistent local deck with add, remove, move, quantity, and 30-step undo.
+- Command zone, core functional categories, maybeboard, and singleton warnings.
+- Visual category stacks, dense list mode, grouping, sorting, and local filtering.
+- Card inspection, selected-printing EUR estimates, and deck/category totals.
+- Purpose-built desktop and mobile layouts with keyboard-contained drawers.
+- Backend, frontend, process-runner, production-build, and browser workflow
+  verification.
+
+The current live search is the provider foundation for milestones 2 and 3, not
+their completion. The atomic local Scryfall catalog importer and indexed SQLite
+search still come next. Full deck management and Commander validation also
+remain milestone work; the current local deck proves the editor interaction
+model without pretending to complete those broader contracts.
+
 ## Out of Scope for MVP
 
 - User accounts, hosted deployment, and multiplayer collaboration

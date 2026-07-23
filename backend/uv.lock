@@ -168,13 +168,13 @@ version = "0.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "fastapi" },
+    { name = "httpx2" },
     { name = "pydantic-settings" },
     { name = "uvicorn", extra = ["standard"] },
 ]
 
 [package.dev-dependencies]
 dev = [
-    { name = "httpx2" },
     { name = "pytest" },
     { name = "ruff" },
 ]
@@ -182,13 +182,13 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "fastapi", specifier = ">=0.139.2,<0.140" },
+    { name = "httpx2", specifier = ">=2.8.0,<3" },
     { name = "pydantic-settings", specifier = ">=2.14.2,<3" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.51.0,<0.52" },
 ]
 
 [package.metadata.requires-dev]
 dev = [
-    { name = "httpx2", specifier = ">=2.8.0,<3" },
     { name = "pytest", specifier = ">=9.1.1,<10" },
     { name = "ruff", specifier = ">=0.15.22,<0.16" },
 ]

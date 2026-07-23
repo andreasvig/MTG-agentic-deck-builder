@@ -1,0 +1,93 @@
+# Archidekt UX Benchmark
+
+Research date: 2026-07-23
+
+This benchmark defines the interaction qualities the local Commander builder
+should match. It does not require copying Archidekt's visual identity or its
+social, marketplace, and hosted-account features.
+
+## Sources Reviewed
+
+- [Public Commander deck](https://archidekt.com/decks/20057620/deathleaper_terror_weapon_a_myriad_of_possibilities)
+- [Archidekt FAQ](https://archidekt.com/faq)
+- [2026 mobile UI overhaul](https://archidekt.com/news/22633051)
+- [2026 static card view and search UI](https://archidekt.com/news/20605672)
+- [Draggable categories and deck controls](https://archidekt.com/news/7305181)
+- [Multiple categories](https://archidekt.com/news/660198)
+
+The public deck, desktop search overlay, search results, and mobile deck page
+were also inspected with Playwright at desktop and mobile viewport sizes.
+
+## Experience To Match
+
+### Cards First
+
+- Keep the deck name, format, legality, card count, and estimated price compact.
+- Give most of the screen to cards and category or list organization.
+- Show category quantities and subtotals where edits happen.
+- Keep card identity, quantity, printing, finish, category, and price in context.
+
+### Fast And Detailed Add Paths
+
+- Keep Search and Quick Add visible on desktop.
+- Open a focused search surface without navigating away from the deck.
+- Show card art, key metadata, price, and current deck membership in results.
+- Allow repeated add and remove actions without closing search.
+- Make loading, no-results, invalid-query, and provider-error states explicit.
+
+### Power Without Clutter
+
+- Keep view, grouping, sorting, and local filtering next to the deck.
+- Provide visual category and dense list modes.
+- Use a stable inspector for card details and common printing/category actions.
+- Keep high-frequency controls visible; place secondary actions in menus.
+- Preserve keyboard and non-drag alternatives for repeated work.
+
+### Purpose-Built Mobile
+
+- Use a persistent bottom toolbar for Search, Quick Add, Layout, Undo, and More.
+- Use drawers for search, layout controls, and card inspection.
+- Avoid shrinking the complete desktop control surface into a narrow viewport.
+- Keep touch targets at least 40 pixels and prevent hidden navigation from
+  remaining keyboard-focusable.
+
+## Current Acceptance Slice
+
+- Live Scryfall-backed card search through the FastAPI provider boundary.
+- Full search state handling and inline deck membership.
+- Persistent local deck state with add, remove, quantity, move, and undo.
+- Command zone, main categories, and maybeboard.
+- Visual and dense list views with actual card images.
+- Category and deck EUR estimates for the selected printing.
+- Group, sort, and local-filter controls.
+- Selected-card inspector with rules and printing details.
+- Compact desktop controls and a mobile bottom toolbar.
+- Responsive, accessible search/navigation/drawer behavior.
+- Unit, integration, production-build, and browser-driven workflow tests.
+
+## Useful Next
+
+- Full Scryfall syntax and advanced search filters.
+- Printing and finish selection with an all-printings endpoint.
+- Drag-and-drop plus multi-select and bulk editing.
+- Multiple categories with primary and secondary semantics.
+- Category templates, pinned categories, and customizable columns.
+- Printing optimizer with a previewed diff.
+- Mana curve, color production, probability, and category charts.
+- Plaintext import/export preview with unmatched-line reporting.
+- Persisted mutation history and named deck snapshots.
+
+## Later Or Intentionally Excluded
+
+- Hosted accounts, collaboration, public deck discovery, and social features.
+- Collection ownership and buy/sell cart integrations.
+- Full playtester and game simulation.
+- EDHREC automation without a permitted, stable provider agreement.
+- Salt or Commander bracket scoring until the product model is chosen.
+
+## Product Lesson
+
+The target is not Archidekt's decoration. The target is short distance between
+intent and card action: a fast add path, a detailed search path, continuous
+deck context, visible power-user controls, and a mobile layout designed around
+the same repeated actions.
