@@ -17,11 +17,13 @@ tradeoffs; they are not task lists.
 | ADR | Status | Scope |
 | --- | --- | --- |
 | [0001](0001-local-first-react-fastapi.md) | Accepted | Product and runtime baseline |
-| [0002](0002-scryfall-authority-and-derived-catalog.md) | Accepted, partial implementation | Card-data ownership |
-| [0003](0003-layered-observable-search.md) | Accepted | Search routing and diagnostics |
+| [0002](0002-scryfall-authority-and-derived-catalog.md) | Accepted | Card-data ownership |
+| [0003](0003-layered-observable-search.md) | Superseded | Former layered search |
 | [0004](0004-browser-local-deck-library.md) | Accepted (transitional) | Current deck persistence |
 | [0005](0005-editor-grouping-and-inspection.md) | Accepted | Editor information architecture |
 | [0006](0006-agent-uses-typed-deck-patches.md) | Proposed | Future agent mutation safety |
+| [0007](0007-single-fuzzy-title-search.md) | Accepted | One fuzzy title-search path |
+| [0008](0008-local-catalog-serves-search.md) | Accepted | Local catalog search reads and pagination |
 
 ## Updating Decisions
 

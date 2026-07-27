@@ -1,6 +1,6 @@
 # Implementation Status
 
-Last verified: 2026-07-23
+Last verified: 2026-07-27
 
 This is the canonical feature ledger. It describes the repository as it exists,
 not the intended end state.
@@ -13,38 +13,38 @@ not the intended end state.
 - FastAPI and Pydantic backend.
 - Root runner that starts both services and shuts down child processes cleanly.
 - Uncommon loopback development ports `41737` and `43127`.
-- Root setup, test, build, E2E, smoke, and reranker benchmark commands.
+- Root setup, test, build, E2E, and smoke commands.
 - CORS restricted to the configured frontend origin.
 - Strict public API response validation in both backend and frontend.
 
 ### Card Search
 
-- Live Scryfall card search behind a provider boundary.
-- Explicit Scryfall syntax routing.
-- Deterministic compilation of supported natural-language deck-building intent.
-- Exact full-name and contained-name results with normalized per-card scores.
-- Multi-result fuzzy name recovery from a process-cached Scryfall name catalog.
-- Configurable fuzzy candidate limit and minimum score.
+- Local SQLite catalog synchronized from Scryfall `default_cards`.
+- Streaming, timestamp-aware, atomic bulk import with every paper printing and
+  one representative result per Oracle card.
+- One fuzzy title path for exact names, typos, words, and partial segments.
+- Local full-title, face, and before-comma aliases.
+- RapidFuzz `WRatio` scores normalized to `0..1`.
+- Exact title first, followed by partial and typo matches in score order.
+- Complete-catalog fuzzy ranking with no score threshold or candidate cap.
+- Local filtering followed by full 12-card numbered pages and **Load more**.
+- No network requests during normal search.
 - Search filters for subset/exact color identity, colorless, mana-value range,
   and EUR-price range.
-- Paper-card restriction for generated name and intent queries.
-- EDHREC ordering for intent candidate pools.
-- Local `BAAI/bge-small-en-v1.5` embedding ranking.
-- Optional OpenRouter reranking with full structured request/response tracing.
-- Loading, empty, invalid-query, provider-unavailable, retry, and pagination
-  states.
+- Paper-card restriction for matched titles.
+- Loading, empty, provider-unavailable, and retry states.
 - Per-result daily Scryfall EUR estimate and Cardmarket verification links.
 
 ### Search Diagnostics
 
 - Browser-persisted Search debug log toggle.
 - Environment-level debug default.
-- Inline trace viewer with route, timings, provider queries, rank movement,
-  exact LLM messages, raw JSON, and candidate tables.
+- Debug-only fuzzy percentage beneath each returned result.
+- One-stage inline trace with algorithm, catalog and filtered counts, page,
+  aliases, original ranks, and scores.
 - Append-only JSONL traces in `local-data/search-debug.jsonl`.
-- Exact and fuzzy name scores in API results and logs.
-- Fuzzy accepted/rejected status, alias, configured cutoff, and return outcome.
-- Repeatable OpenRouter reranker benchmark with JSON and JSONL outputs.
+- Fuzzy title scores in API results and logs.
+- Fuzzy alias, score, and original catalog rank for each loaded-page card.
 
 ### Deck Editor
 
@@ -113,26 +113,22 @@ Missing:
 - Foil/finish choice in the editor.
 - MTGJSON Cardmarket trend integration.
 
-### Search Intelligence
+### Title Matching
 
 Implemented:
 
-- Deterministic common-intent compiler.
-- Local semantic reranking.
-- Optional LLM reranking.
+- Exact, partial, segmented, and typo-tolerant title matching.
+- Configurable page size.
+- Debug evidence for every title on the loaded page.
 
 Missing:
 
-- General LLM query planning for unsupported intent.
-- Local vector or lexical index over the complete card corpus.
-- An evaluation suite for routing thresholds and ranking quality.
-- User-facing controls for routing cutoffs. Cutoffs are environment settings.
-- A fallback from low fuzzy confidence into a general intent planner.
+- A formal evaluation corpus for a future semantic-routing threshold.
+- In-app controls for the YAML matching values.
 
 ## Planned, Not Implemented
 
-- SQLite card catalog synchronized from Scryfall `default_cards`.
-- Atomic weekly card-data import and live miss fallback.
+- Automatic weekly catalog-refresh scheduling.
 - Backend deck CRUD, persistence, and typed mutation API.
 - Browser-local deck import/migration into backend storage.
 - Plaintext import and export.
@@ -159,11 +155,9 @@ Missing:
 
 - Deck state is not stored by FastAPI. It lives in frontend `localStorage`.
 - Backend deck Pydantic models exist, but no route or service owns mutations.
-- The SQLite catalog described in `plan.md` is a target architecture, not
-  current code.
+- The local catalog is a derived read model and can be rebuilt from Scryfall.
 - Search is the only product API beyond health.
-- The OpenRouter reranker runs only when a key is configured.
-- Exact, fuzzy, and explicit syntax search do not call an LLM.
+- Search accepts card titles only and does not call an embedding or LLM model.
 - Scryfall images remain remote.
 - Search returns one representative printing per gameplay card.
 
@@ -173,6 +167,5 @@ Missing:
    the current UI behavior.
 2. Add browser-local library import and migration into that service.
 3. Implement complete Commander validation against shared domain models.
-4. Add atomic local Scryfall catalog synchronization and indexed search.
-5. Add plaintext import/export and full printing selection.
-6. Introduce agent patch schemas and confirmation flow before building chat.
+4. Add plaintext import/export and full printing selection.
+5. Introduce agent patch schemas and confirmation flow before building chat.

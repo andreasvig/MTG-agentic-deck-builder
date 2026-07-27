@@ -13,12 +13,12 @@ The first manual editing slice is usable and tested.
 | Area | Status |
 | --- | --- |
 | Card search and filters | Shipped |
-| Exact/fuzzy score visibility and traces | Shipped |
+| Fuzzy title scores and traces | Shipped |
 | Browser-local deck library and undo | Shipped |
 | Custom groups and derived card types | Shipped |
 | Color-identity and singleton warnings | Partial validation |
 | Backend deck persistence | Not implemented |
-| Local SQLite card catalog | Not implemented |
+| Local SQLite card catalog | Shipped |
 | Import/export and analytics | Not implemented |
 | Agent chat and deck tools | Not implemented |
 
@@ -32,9 +32,9 @@ The application currently supports:
 
 - Create, switch, and inline-rename local Commander decks.
 - Use commander art as the deck thumbnail.
-- Search live Scryfall data from one detailed card-search workflow.
-- Enter explicit Scryfall syntax or common Commander intent.
-- Recover misspelled card names and inspect exact/fuzzy name scores.
+- Search exact, partial, segmented, and misspelled card titles through one
+  fuzzy workflow.
+- Inspect fuzzy title percentages beneath results in debug mode.
 - Filter by color identity, colorless, mana value, and Scryfall EUR estimate.
 - Add cards into Command zone, Not assigned, or user-created custom groups.
 - Drag cards between custom groups or onto Add custom group.
@@ -48,7 +48,8 @@ The application currently supports:
 
 Deliberate UX choices:
 
-- There is no separate Quick Add; Card search is the single add workflow.
+- There is no persistent search field. **Add cards** opens the focused search
+  popup and is the single add workflow.
 - There is no standalone maybeboard in the active editor.
 - Card-type grouping is derived and cannot be edited.
 - The right side is not used for a permanent card inspector; it is reserved for
@@ -75,10 +76,10 @@ git clone git@github.com:andreasvig/MTG-agentic-deck-builder.git
 cd MTG-agentic-deck-builder
 npm run setup
 cp .env.example .env
+npm run catalog:sync
 ```
 
-No API key is required for manual editing, exact/fuzzy search, Scryfall syntax,
-or local embedding ranking.
+No API key is required.
 
 ### Run
 
@@ -104,60 +105,46 @@ React browser application
   v
 FastAPI
   |- strict provider-neutral contracts
-  |- layered search routing and filters
-  |- exact/fuzzy name scores
-  |- local embedding ranker
-  |- optional OpenRouter reranker
+  |- local SQLite card catalog
+  |- uncapped RapidFuzz title scoring and local filters
   |- append-only search diagnostics
   |
-  +--> Scryfall
-  +--> OpenRouter (optional)
+  +--> Scryfall default_cards (refresh command only)
 ```
 
 Current ownership is important:
 
 - The frontend owns decks in `localStorage`.
 - FastAPI owns card discovery only.
-- Scryfall is the authoritative card-data provider.
-- SQLite deck storage and the derived local card catalog are target
-  architecture, not current implementation.
+- Scryfall is the authoritative source for catalog refreshes and card images.
+- The derived SQLite card catalog owns normal search reads.
+- SQLite deck storage remains target architecture, not current implementation.
 
 See [`docs/architecture.md`](docs/architecture.md) for module ownership,
 contracts, data identities, failure behavior, and the migration target.
 
 ## Search
 
-One input supports four strategies:
+Every query uses one local fuzzy card-title matcher. It compares the normalized
+input against the SQLite catalog with RapidFuzz `WRatio`, ranks every canonical
+card without a score threshold or candidate cap, applies local filters, and
+returns the requested 12-card page. **Load more** requests the next numbered
+page. Normal search makes no Scryfall request.
 
-1. Explicit Scryfall syntax.
-2. Deterministic supported natural-language intent.
-3. Exact full names plus every genuine name containing the query.
-4. Multi-result fuzzy catalog ranking when no full exact name exists.
+For example, `forest` returns Forest first at 100%, followed by partial-title
+matches such as Forest Bear and Misty Rainforest at about 90%. A typo such as
+`galta` matches Ghalta titles at about 91%.
 
-Examples:
+The values live in [`config.yaml`](config.yaml):
 
-```text
-forest
-galta
-red card draw
-cheap dinosaurs
-things which let me untap my elves
-t:instant id<=u mv<=2
+```yaml
+search:
+  title_match:
+    page_size: 12
 ```
 
-Exact and fuzzy results include a normalized `0..1` name score. An exact
-`forest` search ranks Forest at `1.000` and also returns names such as Forest
-Bear and Misty Rainforest. A misspelling such as `galta` can return multiple
-Ghalta candidates and show their raw fuzzy values.
-
-Intent candidates are requested in EDHREC order, reranked locally with
-`BAAI/bge-small-en-v1.5`, and optionally reranked through OpenRouter.
-
-Exact, fuzzy, and explicit Scryfall syntax never call OpenRouter.
-
-The complete routing and scoring contract is in
-[`docs/search.md`](docs/search.md) and
-[`ADR 0003`](docs/decisions/0003-layered-observable-search.md).
+The full scoring contract is in [`docs/search.md`](docs/search.md) and
+[`ADR 0007`](docs/decisions/0007-single-fuzzy-title-search.md).
 
 ## Search Debugging
 
@@ -166,13 +153,9 @@ preference locally.
 
 The inline trace viewer exposes:
 
-- Route classification and final strategy.
-- Layer timing and provider query.
-- Input/output order and rank movement.
-- Exact and fuzzy name scores.
-- Fuzzy aliases, cutoff acceptance, and filter/return outcome.
-- Local and LLM ranker configuration.
-- Exact parsed and raw OpenRouter request/response bodies.
+- The fuzzy percentage beneath each returned card.
+- The matching algorithm, catalog count, filtered count, and page range.
+- Matched aliases, original ranks, and scores for the current page.
 
 The backend also appends one complete JSON object per line:
 
@@ -195,62 +178,19 @@ tail -1 local-data/search-debug.jsonl |
 
 Credentials and authorization headers are never written.
 
-Default tuning:
-
-```dotenv
-MTG_SEARCH_DEBUG_ENABLED=false
-MTG_SEARCH_DEBUG_LOG_PATH=local-data/search-debug.jsonl
-MTG_SEARCH_DEBUG_RESULT_LIMIT=25
-MTG_FUZZY_NAME_CANDIDATE_LIMIT=12
-MTG_FUZZY_NAME_MIN_SCORE=0.45
-```
-
-The permissive fuzzy cutoff is intentional while real traces are evaluated.
-Low-confidence fuzzy routing records an intent-candidate signal, but the
-general LLM query-planner fallback is not implemented yet.
-
-## Optional OpenRouter Reranking
-
-Set an API key to enable the final intent-only reranking layer:
-
-```dotenv
-OPENROUTER_API_KEY=
-MTG_OPENROUTER_MODEL=google/gemini-3.5-flash-lite
-MTG_OPENROUTER_PROVIDER=
-MTG_OPENROUTER_REASONING_EFFORT=minimal
-MTG_OPENROUTER_MAX_TOKENS=900
-```
-
-The model, provider, reasoning effort, and token cap can be pinned
-independently:
-
-```dotenv
-MTG_OPENROUTER_MODEL=openai/gpt-oss-120b
-MTG_OPENROUTER_PROVIDER=Cerebras
-MTG_OPENROUTER_REASONING_EFFORT=low
-MTG_OPENROUTER_MAX_TOKENS=2200
-```
-
-Run the repeatable live comparison:
-
-```bash
-npm run benchmark:rerankers
-```
-
-Outputs are ignored under `local-data/`. The latest recorded methodology and
-result is in
-[`docs/search-reranker-benchmark-2026-07-23.md`](docs/search-reranker-benchmark-2026-07-23.md).
+Normal search behavior is configured in `config.yaml`; `.env` remains for
+runtime and debug overrides.
 
 ## Development Commands
 
 ```bash
 npm run setup
+npm run catalog:sync
 npm run dev
 npm test
 npm run build
 npm run test:e2e
 npm run test:smoke
-npm run benchmark:rerankers
 ```
 
 Focused checks:
@@ -262,7 +202,7 @@ npm test --prefix frontend
 npm run build --prefix frontend
 ```
 
-`npm test` runs 45 backend tests, 24 frontend tests, and the paired-process
+`npm test` runs 34 backend tests, 26 frontend tests, and the paired-process
 smoke test at the time of this documentation update. Test counts may grow; a
 passing result matters more than preserving these exact numbers.
 
@@ -283,7 +223,7 @@ backend/
     providers/         Scryfall and provider boundaries
     config.py          Validated runtime settings
     main.py            FastAPI lifecycle and dependencies
-    search.py          Routing and ranking
+    search.py          Fuzzy title matching
     search_debug.py    JSONL trace construction
   tests/               Backend contract and behavior tests
 frontend/
@@ -325,7 +265,7 @@ recorded in
 - No complete Commander partner/background/companion validation.
 - No persisted price history or true Cardmarket trend integration.
 - No full printing/finish chooser.
-- No local complete-card catalog or vector index.
+- No rules-text or semantic search index beyond the local title catalog.
 - No plaintext import/export.
 - No deck analytics.
 - No agent chat, tools, or confirmed patch workflow.
@@ -362,7 +302,6 @@ Decision history begins at
 - [Product plan](plan.md)
 - [Changelog](changelog.md)
 - [Archidekt UX benchmark](docs/archidekt-ux-benchmark.md)
-- [Reranker benchmark](docs/search-reranker-benchmark-2026-07-23.md)
 
 This is a private personal repository. Do not add public accounts, hosted
 collaboration, tracking, or deployment infrastructure unless the product scope

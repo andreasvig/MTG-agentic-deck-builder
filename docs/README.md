@@ -12,7 +12,7 @@ research, and future plans.
    and ownership.
 4. [`development.md`](development.md) - environment, commands, testing, and
    common change workflows.
-5. [`search.md`](search.md) - exact, fuzzy, intent, ranking, filters, and traces.
+5. [`search.md`](search.md) - fuzzy title scoring, filters, configuration, and traces.
 6. [`decisions/README.md`](decisions/README.md) - accepted and proposed ADRs.
 7. [`../plan.md`](../plan.md) - product scope and roadmap.
 
@@ -38,7 +38,6 @@ silently contradicted by implementation.
 
 - [`../plan.md`](../plan.md)
 - [`archidekt-ux-benchmark.md`](archidekt-ux-benchmark.md)
-- [`search-reranker-benchmark-2026-07-23.md`](search-reranker-benchmark-2026-07-23.md)
 
 These documents guide scope and tradeoffs. Planned items are not evidence of
 implementation.

@@ -106,198 +106,93 @@ export function cardSearchPage(
     cards,
     name_match_scores: {},
     warnings: [],
-    strategy: "exact",
-    interpretation: "Exact card name",
+    strategy: "fuzzy",
+    interpretation: "Titles ranked locally by fuzzy similarity",
     reranked: false,
     debug: null,
   };
 }
 
 export function searchDebugSummary(): SearchDebugSummary {
-  const systemPrompt = "Rank Magic cards for the user's deck-building intent.";
-  const userPrompt = JSON.stringify({
-    intent: "green ramp",
-    cards: [{ scryfall_id: "printing-sol-ring", name: "Sol Ring" }],
-  });
-  const assistantResponse = JSON.stringify({
-    ordered_scryfall_ids: ["printing-sol-ring"],
-  });
-  const requestBody = {
-    model: "google/gemini-3.5-flash-lite",
-    messages: [
-      { role: "system", content: systemPrompt },
-      { role: "user", content: userPrompt },
-    ],
-    reasoning: { effort: "minimal", exclude: true },
-    max_tokens: 900,
-  };
-  const responseBody = {
-    model: "google/gemini-3.5-flash-lite",
-    provider: "Google AI Studio",
-    choices: [
-      {
-        message: {
-          role: "assistant",
-          content: assistantResponse,
-        },
-      },
-    ],
-    usage: { total_tokens: 312, cost: 0.00042 },
-  };
-
   return {
     trace_id: "f3c7af78-93ea-4d1b-8873-0eac5b4f6c5f",
     log_path: "local-data/search-debug.jsonl",
     log_written: true,
-    total_duration_ms: 742.3,
+    total_duration_ms: 83.2,
     stages: [
       {
-        name: "Scryfall intent candidates",
+        name: "Local fuzzy title ranking",
         status: "ok",
-        duration_ms: 110.2,
+        duration_ms: 83.2,
         input_count: null,
-        output_count: 175,
-      },
-      {
-        name: "Local semantic ranking",
-        status: "ok",
-        duration_ms: 310.1,
-        input_count: 175,
-        output_count: 175,
-      },
-      {
-        name: "OpenRouter ranking",
-        status: "ok",
-        duration_ms: 322,
-        input_count: 175,
-        output_count: 175,
+        output_count: 1,
       },
     ],
     trace: {
       schema_version: 1,
       trace_id: "f3c7af78-93ea-4d1b-8873-0eac5b4f6c5f",
-      started_at: "2026-07-23T18:00:00Z",
-      completed_at: "2026-07-23T18:00:00.742Z",
-      total_duration_ms: 742.3,
-      request: { query: "green ramp", page: 1, debug: true, filters: {} },
+      started_at: "2026-07-27T12:00:00Z",
+      completed_at: "2026-07-27T12:00:00.083Z",
+      total_duration_ms: 83.2,
+      request: {
+        query: "sol rng",
+        page: 1,
+        debug: true,
+        filters: {},
+      },
       configuration: {
-        semantic_ranker: "BAAI/bge-small-en-v1.5",
-        llm_ranker: "google/gemini-3.5-flash-lite",
+        algorithm: "rapidfuzz.WRatio",
+        catalog: "local-data/cards.sqlite3",
+        minimum_score: null,
+        page_size: 12,
       },
       decision: {
-        input_kind: "natural_language_intent",
-        strategy: "intent",
+        input_kind: "card_title",
+        strategy: "fuzzy",
+        source: "local_sqlite_catalog",
+        top_score: 0.933333,
+        page_start: 0,
+        page_end: 1,
       },
       stages: [
         {
-          name: "Scryfall intent candidates",
+          name: "Local fuzzy title ranking",
           status: "ok",
-          duration_ms: 110.2,
+          duration_ms: 83.2,
           output: {
-            count: 175,
+            count: 1,
             top: [
               {
                 rank: 1,
-                scryfall_id: "printing-sol-ring",
-                name: "Sol Ring",
+                scryfall_id: solRing.scryfall_id,
+                name: solRing.name,
               },
             ],
           },
           details: {
-            provider_query: 'o:"add" game:paper',
-            provider_order: "edhrec",
-            provider_total_results: 175,
-          },
-        },
-        {
-          name: "Local semantic ranking",
-          status: "ok",
-          duration_ms: 310.1,
-          input: {
-            count: 175,
-            top: [
-              {
-                rank: 4,
-                scryfall_id: "printing-sol-ring",
-                name: "Sol Ring",
-              },
-            ],
-          },
-          output: {
-            count: 175,
-            top: [
+            algorithm: "rapidfuzz.WRatio",
+            minimum_score: null,
+            catalog_card_count: 1,
+            filtered_card_count: 1,
+            removed_by_filters: 0,
+            page: 1,
+            page_size: 12,
+            page_start: 0,
+            page_end: 1,
+            top_score: 0.933333,
+            fuzzy_candidates: [
               {
                 rank: 1,
-                scryfall_id: "printing-sol-ring",
                 name: "Sol Ring",
+                matched_alias: "sol ring",
+                score: 0.933333,
+                original_rank: 1,
               },
             ],
-          },
-          rank_changes: [
-            {
-              scryfall_id: "printing-sol-ring",
-              name: "Sol Ring",
-              before_rank: 4,
-              after_rank: 1,
-              delta: 3,
-            },
-          ],
-          details: { model: "BAAI/bge-small-en-v1.5" },
-        },
-        {
-          name: "OpenRouter ranking",
-          status: "ok",
-          duration_ms: 322,
-          input: {
-            count: 175,
-            top: [
-              {
-                rank: 1,
-                scryfall_id: "printing-sol-ring",
-                name: "Sol Ring",
-              },
-            ],
-          },
-          output: {
-            count: 175,
-            top: [
-              {
-                rank: 1,
-                scryfall_id: "printing-sol-ring",
-                name: "Sol Ring",
-              },
-            ],
-          },
-          rank_changes: [
-            {
-              scryfall_id: "printing-sol-ring",
-              name: "Sol Ring",
-              before_rank: 1,
-              after_rank: 1,
-              delta: 0,
-            },
-          ],
-          details: {
-            model: "google/gemini-3.5-flash-lite",
-            reasoning_effort: "minimal",
-            max_tokens: 900,
-            exchange: {
-              request: {
-                method: "POST",
-                path: "/chat/completions",
-                body: requestBody,
-                raw_body: JSON.stringify(requestBody),
-              },
-              response: {
-                status_code: 200,
-                body: responseBody,
-                raw_body: JSON.stringify(responseBody),
-              },
-            },
           },
         },
       ],
-      result: { status: "ok", strategy: "intent" },
+      result: { status: "ok", strategy: "fuzzy" },
     },
   };
 }

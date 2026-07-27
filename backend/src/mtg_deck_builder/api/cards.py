@@ -50,7 +50,7 @@ def get_card_search_provider(request: Request) -> CardSearchProvider:
     response_model=CardSearchPage,
     responses={
         status.HTTP_400_BAD_REQUEST: {
-            "description": "The Scryfall search expression is invalid.",
+            "description": "The card-title lookup could not be executed.",
             "model": PublicErrorResponse,
         },
         status.HTTP_503_SERVICE_UNAVAILABLE: {
@@ -67,7 +67,7 @@ async def search_cards(
             min_length=1,
             max_length=500,
             pattern=r".*\S.*",
-            description="A card name, deck-building intent, or Scryfall expression.",
+            description="A complete or partial card title.",
         ),
     ],
     page: Annotated[int, Query(ge=1, le=1_000)] = 1,
@@ -92,7 +92,7 @@ async def search_cards(
         Query(description="Write and return a layered search debug trace."),
     ] = False,
 ) -> CardSearchPage:
-    """Search names, Scryfall syntax, or natural-language card intent."""
+    """Return fuzzy, partial, and typo-tolerant card-title matches."""
 
     if mana_min is not None and mana_max is not None and mana_min > mana_max:
         raise HTTPException(
@@ -126,7 +126,7 @@ async def search_cards(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=PublicError(
                 code="invalid_card_search",
-                message="The card search query is not valid.",
+                message="The card title could not be searched.",
             ).model_dump(),
         ) from None
     except CardSearchUnavailable:

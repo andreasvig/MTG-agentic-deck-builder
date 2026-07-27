@@ -32,15 +32,21 @@ describe("API client", () => {
       .mockResolvedValue(Response.json(cardSearchPage()));
     const client = createApiClient("http://localhost:9999/api/v1", fetcher);
 
-    await client.searchCards(" Sol Ring ", 2, undefined, {
-      colors: ["U", "R"],
-      includeColorless: true,
-      colorMode: "exact",
-      manaValueMin: 2,
-      manaValueMax: 5,
-      priceEurMin: 0.25,
-      priceEurMax: 12,
-    }, true);
+    await client.searchCards(
+      " Sol Ring ",
+      2,
+      undefined,
+      {
+        colors: ["U", "R"],
+        includeColorless: true,
+        colorMode: "exact",
+        manaValueMin: 2,
+        manaValueMax: 5,
+        priceEurMin: 0.25,
+        priceEurMax: 12,
+      },
+      true,
+    );
 
     const requestedUrl = new URL(String(fetcher.mock.calls[0]?.[0]));
     expect(requestedUrl.pathname).toBe("/api/v1/cards/search");
@@ -96,10 +102,10 @@ describe("API client", () => {
       debug: {
         log_written: true,
         stages: expect.arrayContaining([
-          expect.objectContaining({ name: "Scryfall intent candidates" }),
+          expect.objectContaining({ name: "Local fuzzy title ranking" }),
         ]),
         trace: {
-          decision: { strategy: "intent" },
+          decision: expect.objectContaining({ strategy: "fuzzy" }),
         },
       },
     });

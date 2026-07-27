@@ -14,13 +14,13 @@ Docker is not part of the current local workflow.
 ```bash
 npm run setup
 cp .env.example .env
+npm run catalog:sync
 ```
 
 `npm run setup` synchronizes the backend environment, including development
-dependencies, and installs frontend packages.
-
-The application runs without OpenRouter credentials. The local embedding model
-may download model files on the first intent search.
+dependencies, and installs frontend packages. Search requires no API key.
+The catalog command downloads Scryfall's current compressed `default_cards`
+export and atomically installs the local search database.
 
 ## Run
 
@@ -42,18 +42,18 @@ The runner requires both default ports to be free.
 | Command | Purpose |
 | --- | --- |
 | `npm run setup` | Install backend and frontend dependencies |
+| `npm run catalog:sync` | Refresh the local Scryfall card catalog |
 | `npm run dev` | Start Vite and reload-enabled Uvicorn |
 | `npm test` | Backend tests, frontend tests, and process smoke test |
 | `npm run build` | Type-check and build the frontend |
-| `npm run test:e2e` | Run five Chrome Playwright workflows |
+| `npm run test:e2e` | Run six Chrome Playwright workflows |
 | `npm run test:smoke` | Verify alternate-port startup and clean shutdown |
-| `npm run benchmark:rerankers` | Run live OpenRouter latency benchmark |
 
 ## Focused Commands
 
 ```bash
 uv --directory backend run pytest
-uv --directory backend run pytest tests/test_hybrid_search.py
+uv --directory backend run pytest tests/test_title_search.py
 uv --directory backend run ruff check src tests
 npm test --prefix frontend
 npm run build --prefix frontend
@@ -83,40 +83,37 @@ colliding with common development tools.
 | --- | --- |
 | `MTG_SCRYFALL_BASE_URL` | `https://api.scryfall.com` |
 | `MTG_SCRYFALL_USER_AGENT` | Project/version/repository identifier |
-| `MTG_SCRYFALL_TIMEOUT_SECONDS` | `10` |
+| `MTG_SCRYFALL_BULK_TIMEOUT_SECONDS` | `900` |
+| `MTG_CARD_CATALOG_PATH` | `local-data/cards.sqlite3` |
 
-Do not remove the identifying user agent or rate-conscious provider interval.
+Do not remove the identifying user agent. Normal search does not call
+Scryfall; these settings belong to the explicit bulk refresh command.
 
 ### Search
 
+Non-secret matching values live in `config.yaml`:
+
+```yaml
+search:
+  title_match:
+    page_size: 12
+```
+
+Temporary environment overrides use nested names:
+
 | Variable | Default | Purpose |
 | --- | ---: | --- |
-| `MTG_EMBEDDING_MODEL` | `BAAI/bge-small-en-v1.5` | Local intent ranking |
-| `MTG_FUZZY_NAME_CANDIDATE_LIMIT` | `12` | Catalog candidates traced |
-| `MTG_FUZZY_NAME_MIN_SCORE` | `0.45` | Candidates fetched |
+| `MTG_SEARCH__TITLE_MATCH__PAGE_SIZE` | `12` | Cards returned per page |
 | `MTG_SEARCH_DEBUG_ENABLED` | `false` | Trace every request by default |
 | `MTG_SEARCH_DEBUG_LOG_PATH` | `local-data/search-debug.jsonl` | JSONL output |
 | `MTG_SEARCH_DEBUG_RESULT_LIMIT` | `25` | Cards retained per snapshot |
-
-### OpenRouter
-
-| Variable | Default |
-| --- | --- |
-| `OPENROUTER_API_KEY` | unset |
-| `MTG_OPENROUTER_MODEL` | `google/gemini-3.5-flash-lite` |
-| `MTG_OPENROUTER_PROVIDER` | unset |
-| `MTG_OPENROUTER_REASONING_EFFORT` | `minimal` |
-| `MTG_OPENROUTER_MAX_TOKENS` | `900` |
-
-`MTG_OPENROUTER_API_KEY` is also accepted, but the unprefixed key is the normal
-local setting. Never place secrets in documentation, fixtures, or traces.
 
 ## Test Matrix
 
 | Change | Minimum checks |
 | --- | --- |
 | Backend model or route | pytest and Ruff |
-| Scryfall mapping or search route | pytest, Ruff, live sanity query |
+| Scryfall mapping, importer, or search route | pytest, Ruff, local sanity query |
 | Frontend domain or API | Vitest and production build |
 | Deck mutation or migration | domain/hook tests and E2E |
 | Search result or trace UI | component tests, build, E2E |
@@ -205,15 +202,11 @@ lsof -nP -iTCP:43127 -sTCP:LISTEN
 
 Stop the existing runner or change all related environment URLs consistently.
 
-### First Intent Search Is Slow
+### Search Returns 503
 
-FastEmbed initializes lazily and may download the configured model. A warmed
-process is faster. Exact and fuzzy name search do not initialize embeddings.
-
-### Search Returns A Warning But Not An Error
-
-Local or OpenRouter ranking failure is intentionally non-fatal. Inspect the
-debug trace and server logs. Candidate results should remain in Scryfall order.
+The local catalog is missing or unreadable. Run `npm run catalog:sync`, then
+retry the search. A successful refresh is visible to the running backend after
+the atomic file swap.
 
 ### Frontend Reports Malformed Search Data
 

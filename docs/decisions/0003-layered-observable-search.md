@@ -1,6 +1,6 @@
 # ADR 0003: Layered And Observable Card Search
 
-- Status: Accepted
+- Status: Superseded by ADR 0007
 - Date: 2026-07-23
 
 ## Context

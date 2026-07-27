@@ -97,6 +97,9 @@ Keep mutation announcements meaningful for assistive technology.
 ## Search Contract
 
 The browser validates every search response at runtime in `lib/api.ts`.
+Every response uses the fuzzy title strategy. The search drawer renders
+`Fuzzy match N%` from `name_match_scores` only while debug mode is enabled.
+When `has_more` is true, request `page + 1` and append its cards.
 
 When the backend changes `CardSearchPage`, update:
 
@@ -106,8 +109,6 @@ When the backend changes `CardSearchPage`, update:
 - `../e2e/fixtures/cards.ts`.
 - Components that consume the field.
 - Unit and E2E assertions.
-
-Pagination must merge both cards and per-card `name_match_scores`.
 
 ## Deck Identity
 

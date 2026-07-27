@@ -107,7 +107,11 @@ export function SearchDrawer({
   );
 
   const runSearch = useCallback(
-    async (searchQuery: string, page = 1, append = false) => {
+    async (
+      searchQuery: string,
+      page = 1,
+      append = false,
+    ) => {
       const normalized = searchQuery.trim();
       if (!normalized) {
         setState({ phase: "idle", page: null });
@@ -366,7 +370,7 @@ export function SearchDrawer({
             value={query}
             onChange={(event) => setQuery(event.target.value)}
             aria-label="Search cards"
-            placeholder="Card name, Scryfall query, or deck-building intent"
+            placeholder="Card title or part of a title"
             autoComplete="off"
           />
           {query ? (
@@ -602,11 +606,13 @@ export function SearchDrawer({
             {cards.length > 0 ? (
               <>
                 <div className="search-results__meta">
-                  <span>{state.page?.total_results.toLocaleString()} results</span>
+                  <span>
+                    {state.page?.total_results.toLocaleString()} ranked{" "}
+                    {state.page?.total_results === 1 ? "card" : "cards"}
+                  </span>
                   {state.page?.interpretation ? (
                     <span className="search-results__intent">
                       {state.page.interpretation}
-                      {state.page.reranked ? " · semantic rank" : ""}
                     </span>
                   ) : null}
                   {state.phase === "loading" ? <span>Loading more…</span> : null}
@@ -660,12 +666,10 @@ export function SearchDrawer({
                           </button>
                           <span className="mana-line">{card.mana_cost || "No mana cost"}</span>
                           <span className="type-line">{card.type_line}</span>
-                          {typeof nameMatchScore === "number" ? (
+                          {debugEnabled &&
+                          typeof nameMatchScore === "number" ? (
                             <span className="search-card__match-score">
-                              {state.page?.strategy === "fuzzy"
-                                ? "Fuzzy"
-                                : "Name"}{" "}
-                              {nameMatchScore.toFixed(3)}
+                              Fuzzy match {Math.round(nameMatchScore * 100)}%
                             </span>
                           ) : null}
                           <span className="printing-line">
@@ -729,19 +733,23 @@ export function SearchDrawer({
                     );
                   })}
                 </div>
-                {state.page?.has_more ? (
-                  <button
-                    className="secondary-button load-more"
-                    type="button"
-                    disabled={state.phase === "loading"}
-                    onClick={() =>
-                      void runSearch(query, (state.page?.page ?? 1) + 1, true)
-                    }
-                  >
-                    {state.phase === "loading" ? "Loading…" : "Load more"}
-                  </button>
-                ) : null}
               </>
+            ) : null}
+            {state.page?.has_more ? (
+              <button
+                className="secondary-button load-more"
+                type="button"
+                disabled={state.phase === "loading"}
+                onClick={() =>
+                  void runSearch(
+                    query,
+                    (state.page?.page ?? 1) + 1,
+                    true,
+                  )
+                }
+              >
+                {state.phase === "loading" ? "Loading…" : "Load more"}
+              </button>
             ) : null}
           </div>
 

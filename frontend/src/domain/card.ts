@@ -2,7 +2,7 @@ export type MagicColor = "W" | "U" | "B" | "R" | "G";
 export type CardLegality = "legal" | "not_legal" | "restricted" | "banned";
 export type CardFinish = "nonfoil" | "foil" | "etched";
 export type ColorMatchMode = "subset" | "exact";
-export type SearchStrategy = "exact" | "fuzzy" | "intent" | "syntax";
+export type SearchStrategy = "fuzzy";
 export type SearchDebugStageStatus = "ok" | "skipped" | "error";
 
 export interface CardSearchFilters {

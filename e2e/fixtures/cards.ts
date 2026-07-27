@@ -7,33 +7,16 @@ import type {
 
 const solRingImages: CardImageUris = {
   small:
-    "https://cards.scryfall.io/small/front/9/1/91fdb56b-54d5-4272-8319-505ff987fe9b.jpg?1783903215",
+    "https://cards.scryfall.io/small/front/9/1/91fdb56b-54d5-4272-8319-505ff987fe9b.jpg",
   normal:
-    "https://cards.scryfall.io/normal/front/9/1/91fdb56b-54d5-4272-8319-505ff987fe9b.jpg?1783903215",
-  large:
-    "https://cards.scryfall.io/large/front/9/1/91fdb56b-54d5-4272-8319-505ff987fe9b.jpg?1783903215",
-  png: "https://cards.scryfall.io/png/front/9/1/91fdb56b-54d5-4272-8319-505ff987fe9b.png?1783903215",
-  art_crop:
-    "https://cards.scryfall.io/art_crop/front/9/1/91fdb56b-54d5-4272-8319-505ff987fe9b.jpg?1783903215",
-  border_crop:
-    "https://cards.scryfall.io/border_crop/front/9/1/91fdb56b-54d5-4272-8319-505ff987fe9b.jpg?1783903215",
+    "https://cards.scryfall.io/normal/front/9/1/91fdb56b-54d5-4272-8319-505ff987fe9b.jpg",
+  large: null,
+  png: null,
+  art_crop: null,
+  border_crop: null,
 };
 
-const llanowarElvesImages: CardImageUris = {
-  small:
-    "https://cards.scryfall.io/small/front/6/a/6a0b230b-d391-4998-a3f7-7b158a0ec2cd.jpg?1783909057",
-  normal:
-    "https://cards.scryfall.io/normal/front/6/a/6a0b230b-d391-4998-a3f7-7b158a0ec2cd.jpg?1783909057",
-  large:
-    "https://cards.scryfall.io/large/front/6/a/6a0b230b-d391-4998-a3f7-7b158a0ec2cd.jpg?1783909057",
-  png: "https://cards.scryfall.io/png/front/6/a/6a0b230b-d391-4998-a3f7-7b158a0ec2cd.png?1783909057",
-  art_crop:
-    "https://cards.scryfall.io/art_crop/front/6/a/6a0b230b-d391-4998-a3f7-7b158a0ec2cd.jpg?1783909057",
-  border_crop:
-    "https://cards.scryfall.io/border_crop/front/6/a/6a0b230b-d391-4998-a3f7-7b158a0ec2cd.jpg?1783909057",
-};
-
-export const solRing: CardSearchResult = {
+const baseCard: CardSearchResult = {
   oracle_id: "6ad8011d-3471-4369-9d68-b264cc027487",
   scryfall_id: "91fdb56b-54d5-4272-8319-505ff987fe9b",
   name: "Sol Ring",
@@ -58,93 +41,29 @@ export const solRing: CardSearchResult = {
     eur_foil: null,
     tix: "0.04",
   },
-  legalities: {
-    standard: "not_legal",
-    future: "not_legal",
-    historic: "not_legal",
-    timeless: "not_legal",
-    gladiator: "not_legal",
-    pioneer: "not_legal",
-    modern: "not_legal",
-    legacy: "banned",
-    pauper: "not_legal",
-    vintage: "restricted",
-    penny: "not_legal",
-    commander: "legal",
-    oathbreaker: "banned",
-    standardbrawl: "not_legal",
-    brawl: "not_legal",
-    competitivebrawl: "not_legal",
-    alchemy: "not_legal",
-    paupercommander: "not_legal",
-    duel: "banned",
-    oldschool: "not_legal",
-    premodern: "not_legal",
-    predh: "legal",
-    tlr: "banned",
-  },
+  legalities: { commander: "legal" },
   finishes: ["nonfoil", "foil"],
-  scryfall_url:
-    "https://scryfall.com/card/msc/211/sol-ring?utm_source=api",
-  cardmarket_url:
-    "https://www.cardmarket.com/en/Magic/Products?idProduct=891691",
+  scryfall_url: "https://scryfall.com/card/msc/211/sol-ring",
+  cardmarket_url: "https://www.cardmarket.com/sol-ring",
 };
 
+export const solRing = baseCard;
+
 export const llanowarElves: CardSearchResult = {
+  ...baseCard,
   oracle_id: "68954295-54e3-4303-a6bc-fc4547a4e3a3",
   scryfall_id: "6a0b230b-d391-4998-a3f7-7b158a0ec2cd",
   name: "Llanowar Elves",
-  layout: "normal",
   mana_cost: "{G}",
-  mana_value: 1,
   type_line: "Creature — Elf Druid",
   oracle_text: "{T}: Add {G}.",
   colors: ["G"],
   color_identity: ["G"],
-  image_uris: llanowarElvesImages,
-  card_faces: [],
   set_code: "fdn",
   set_name: "Foundations",
   collector_number: "227",
   rarity: "common",
-  prices: {
-    usd: "0.30",
-    usd_foil: "2.33",
-    usd_etched: null,
-    eur: "0.23",
-    eur_foil: "0.57",
-    tix: "0.03",
-  },
-  legalities: {
-    standard: "legal",
-    future: "legal",
-    historic: "legal",
-    timeless: "legal",
-    gladiator: "legal",
-    pioneer: "legal",
-    modern: "legal",
-    legacy: "legal",
-    pauper: "legal",
-    vintage: "legal",
-    penny: "not_legal",
-    commander: "legal",
-    oathbreaker: "legal",
-    standardbrawl: "legal",
-    brawl: "legal",
-    competitivebrawl: "legal",
-    alchemy: "legal",
-    paupercommander: "legal",
-    duel: "legal",
-    oldschool: "not_legal",
-    premodern: "legal",
-    predh: "legal",
-    tlr: "legal",
-  },
-  finishes: ["nonfoil", "foil"],
-  scryfall_url:
-    "https://scryfall.com/card/fdn/227/llanowar-elves?utm_source=api",
-  cardmarket_url:
-    "https://www.cardmarket.com/en/Magic/Products?idProduct=795132",
+  prices: { ...baseCard.prices, eur: "0.23" },
 };
 
 export const ghalta: CardSearchResult = {
@@ -164,7 +83,7 @@ export const ghalta: CardSearchResult = {
 };
 
 export const counterspell: CardSearchResult = {
-  ...solRing,
+  ...baseCard,
   oracle_id: "de65d6ad-0405-4f73-85bb-3f57d6f1c9c1",
   scryfall_id: "f3f7a6f9-bc72-4d14-969d-d89d0e702d24",
   name: "Counterspell",
@@ -180,7 +99,7 @@ export const counterspell: CardSearchResult = {
 };
 
 export const gamble: CardSearchResult = {
-  ...solRing,
+  ...baseCard,
   oracle_id: "41f9f4a2-77ea-4fe9-aec3-8f3b00cc75f3",
   scryfall_id: "7e52bdca-31bb-4f72-bb11-8d98c6c0b756",
   name: "Gamble",
@@ -209,103 +128,61 @@ export function searchPage(
     cards,
     name_match_scores: {},
     warnings: [],
-    strategy: "exact",
-    interpretation: "Exact card name",
+    strategy: "fuzzy",
+    interpretation: "Titles ranked locally by fuzzy similarity",
     reranked: false,
     debug: null,
   };
 }
 
 export function searchDebugSummary(): SearchDebugSummary {
-  const requestBody = {
-    model: "google/gemini-3.5-flash-lite",
-    messages: [
-      {
-        role: "system",
-        content: "Rank Magic cards for the user's deck-building intent.",
-      },
-      {
-        role: "user",
-        content: JSON.stringify({
-          intent: "blue ramp",
-          cards: [{ scryfall_id: solRing.scryfall_id, name: solRing.name }],
-        }),
-      },
-    ],
-    reasoning: { effort: "minimal", exclude: true },
-    max_tokens: 900,
-  };
-  const responseBody = {
-    model: "google/gemini-3.5-flash-lite",
-    provider: "Google AI Studio",
-    choices: [
-      {
-        message: {
-          role: "assistant",
-          content: JSON.stringify({
-            ordered_scryfall_ids: [solRing.scryfall_id],
-          }),
-        },
-      },
-    ],
-    usage: { total_tokens: 312, cost: 0.00042 },
-  };
-
   return {
     trace_id: "f3c7af78-93ea-4d1b-8873-0eac5b4f6c5f",
     log_path: "local-data/search-debug.jsonl",
     log_written: true,
-    total_duration_ms: 918.4,
+    total_duration_ms: 83.2,
     stages: [
       {
-        name: "Scryfall intent candidates",
+        name: "Local fuzzy title ranking",
         status: "ok",
-        duration_ms: 112.1,
+        duration_ms: 83.2,
         input_count: null,
-        output_count: 16,
-      },
-      {
-        name: "Local semantic ranking",
-        status: "ok",
-        duration_ms: 308.7,
-        input_count: 16,
-        output_count: 16,
-      },
-      {
-        name: "OpenRouter ranking",
-        status: "ok",
-        duration_ms: 497.6,
-        input_count: 16,
-        output_count: 16,
+        output_count: 1,
       },
     ],
     trace: {
       schema_version: 1,
       trace_id: "f3c7af78-93ea-4d1b-8873-0eac5b4f6c5f",
-      started_at: "2026-07-23T18:00:00Z",
-      completed_at: "2026-07-23T18:00:00.918Z",
-      total_duration_ms: 918.4,
+      started_at: "2026-07-27T12:00:00Z",
+      completed_at: "2026-07-27T12:00:00.083Z",
+      total_duration_ms: 83.2,
       request: {
-        query: "blue ramp",
+        query: "sol rng",
         page: 1,
         debug: true,
         filters: {},
       },
       configuration: {
-        semantic_ranker: "BAAI/bge-small-en-v1.5",
-        llm_ranker: "google/gemini-3.5-flash-lite",
+        algorithm: "rapidfuzz.WRatio",
+        catalog: "local-data/cards.sqlite3",
+        minimum_score: null,
+        page_size: 12,
       },
       decision: {
-        input_kind: "natural_language_intent",
-        strategy: "intent",
+        input_kind: "card_title",
+        strategy: "fuzzy",
+        source: "local_sqlite_catalog",
+        top_score: 0.933333,
+        page_start: 0,
+        page_end: 1,
       },
       stages: [
         {
-          name: "Scryfall intent candidates",
+          name: "Local fuzzy title ranking",
           status: "ok",
-          duration_ms: 112.1,
+          duration_ms: 83.2,
           output: {
-            count: 16,
+            count: 1,
             top: [
               {
                 rank: 1,
@@ -315,64 +192,29 @@ export function searchDebugSummary(): SearchDebugSummary {
             ],
           },
           details: {
-            provider_query: '(o:"add" OR o:"put a land card") id<=u game:paper',
-            provider_order: "edhrec",
-            provider_total_results: 86,
-          },
-        },
-        {
-          name: "Local semantic ranking",
-          status: "ok",
-          duration_ms: 308.7,
-          input: { count: 16, top: [] },
-          output: { count: 16, top: [] },
-          rank_changes: [
-            {
-              scryfall_id: solRing.scryfall_id,
-              name: solRing.name,
-              before_rank: 4,
-              after_rank: 1,
-              delta: 3,
-            },
-          ],
-          details: { model: "BAAI/bge-small-en-v1.5" },
-        },
-        {
-          name: "OpenRouter ranking",
-          status: "ok",
-          duration_ms: 497.6,
-          input: { count: 16, top: [] },
-          output: { count: 16, top: [] },
-          rank_changes: [
-            {
-              scryfall_id: solRing.scryfall_id,
-              name: solRing.name,
-              before_rank: 2,
-              after_rank: 1,
-              delta: 1,
-            },
-          ],
-          details: {
-            model: "google/gemini-3.5-flash-lite",
-            reasoning_effort: "minimal",
-            max_tokens: 900,
-            exchange: {
-              request: {
-                method: "POST",
-                path: "/chat/completions",
-                body: requestBody,
-                raw_body: JSON.stringify(requestBody),
+            algorithm: "rapidfuzz.WRatio",
+            minimum_score: null,
+            catalog_card_count: 1,
+            filtered_card_count: 1,
+            removed_by_filters: 0,
+            page: 1,
+            page_size: 12,
+            page_start: 0,
+            page_end: 1,
+            top_score: 0.933333,
+            fuzzy_candidates: [
+              {
+                rank: 1,
+                name: "Sol Ring",
+                matched_alias: "sol ring",
+                score: 0.933333,
+                original_rank: 1,
               },
-              response: {
-                status_code: 200,
-                body: responseBody,
-                raw_body: JSON.stringify(responseBody),
-              },
-            },
+            ],
           },
         },
       ],
-      result: { status: "ok", strategy: "intent" },
+      result: { status: "ok", strategy: "fuzzy" },
     },
   };
 }

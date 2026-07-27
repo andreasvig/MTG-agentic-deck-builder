@@ -6,6 +6,20 @@ All notable changes to this project will be documented in this file.
 
 ### Added
 
+- Added a streaming Scryfall `default_cards` importer, timestamp-aware refresh
+  command, atomic SQLite installation, and local catalog reload after swaps.
+- Added canonical Oracle-card search rows while retaining every eligible paper
+  printing in the derived database.
+- Added root `config.yaml` with a 12-card display page size.
+- Ranked the complete title catalog without a score threshold or
+  candidate-pool cap.
+- Added simple numbered **Load more** pagination over locally filtered cards.
+- Added RapidFuzz `WRatio` matching for exact titles, typos, words, and partial
+  title segments.
+- Added debug-only fuzzy match percentages beneath every returned card and a
+  one-stage title-candidate trace.
+- Added ADR 0007 for the single fuzzy card-title search decision.
+- Added ADR 0008 for local-catalog search reads and pagination.
 - Initial product and implementation plan.
 - Proposed React, FastAPI, and SQLite architecture.
 - Reserved uncommon local ports: `41737` for the frontend and `43127` for the
@@ -86,8 +100,8 @@ All notable changes to this project will be documented in this file.
   card name with the exact card ranked first, while typo search returns several
   ranked fuzzy candidates instead of one opaque correction.
 - Added normalized name-match values to result cards and complete fuzzy
-  candidate tables to debug traces, including matched aliases, cutoff
-  acceptance, filter outcome, and configurable candidate/cutoff settings.
+  candidate tables to debug traces, including matched aliases, scores, and
+  filter outcomes.
 - Added a repository-level agent guide with product invariants, architecture
   boundaries, persistence and search traps, test expectations, and definition
   of done.
@@ -104,6 +118,16 @@ All notable changes to this project will be documented in this file.
 
 ### Changed
 
+- Replaced per-query Scryfall exact-name batches and generated OR expressions
+  with local SQLite card reads, local structured filters, and no network access
+  during normal search.
+- Replaced candidate cursors and filter backfill with ordinary numbered pages.
+- Replaced layered search routing with one fuzzy card-title path over the
+  local Scryfall-derived card catalog.
+- Changed search results to always expose normalized fuzzy-title scores while
+  rendering those percentages only in debug mode.
+- Removed active intent compilation, direct Scryfall-syntax routing, local
+  embeddings, OpenRouter reranking, and the reranker benchmark command.
 - Replaced the credential-dependent direct Cardmarket integration with
   Scryfall's daily EUR price estimates for the MVP.
 - Added Cardmarket product links for manual price verification.

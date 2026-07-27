@@ -1,8 +1,5 @@
-import asyncio
-from collections.abc import Callable
 from typing import Any
 
-import httpx2
 import pytest
 from fastapi.testclient import TestClient
 
@@ -12,13 +9,22 @@ from mtg_deck_builder.main import create_app
 from mtg_deck_builder.providers import (
     CardSearchQueryError,
     CardSearchUnavailable,
-    ScryfallCardSearchProvider,
+    map_scryfall_card,
+    name_similarity_score,
 )
 
 SCRYFALL_ID = "d5d41bfc-6f17-42b5-b82e-3d99dbd608bd"
 ORACLE_ID = "f3c7af78-93ea-4d1b-8873-0eac5b4f6c5f"
 REVERSIBLE_SCRYFALL_ID = "3e3f0bcd-0796-494d-bf51-94b33c1671e9"
 PROPAGANDA_ORACLE_ID = "6bb7d0df-7a9f-4e17-8c31-7628c4b12356"
+
+
+def test_title_similarity_covers_exact_partial_segment_and_typo_matches() -> None:
+    assert name_similarity_score("forest", "Forest") == 1.0
+    assert name_similarity_score("forest", "Forest Bear") == 0.9
+    assert name_similarity_score("forest", "Forestfolk") == 0.9
+    assert name_similarity_score("forest", "Misty Rainforest") == 0.9
+    assert name_similarity_score("galta", "Ghalta") == 0.909091
 
 
 def make_card_payload() -> dict[str, Any]:
@@ -79,7 +85,9 @@ def make_card_payload() -> dict[str, Any]:
         "finishes": ["nonfoil", "foil"],
         "scryfall_uri": "https://scryfall.com/card/mid/47/delver-of-secrets",
         "purchase_uris": {
-            "cardmarket": "https://www.cardmarket.com/en/Magic/Products/Search?searchString=Delver",
+            "cardmarket": (
+                "https://www.cardmarket.com/en/Magic/Products/Search?searchString=Delver"
+            ),
         },
     }
 
@@ -97,6 +105,22 @@ def make_reversible_card_payload() -> dict[str, Any]:
     ):
         payload.pop(face_only_field)
 
+    face = {
+        "oracle_id": PROPAGANDA_ORACLE_ID,
+        "name": "Propaganda",
+        "mana_cost": "{2}{U}",
+        "cmc": 3.0,
+        "type_line": "Enchantment",
+        "oracle_text": (
+            "Creatures can't attack you unless their controller pays {2} "
+            "for each attacking creature."
+        ),
+        "colors": ["U"],
+        "image_uris": {
+            "small": "https://cards.scryfall.io/small/front/propaganda.jpg",
+            "normal": "https://cards.scryfall.io/normal/front/propaganda.jpg",
+        },
+    }
     payload.update(
         {
             "id": REVERSIBLE_SCRYFALL_ID,
@@ -105,92 +129,15 @@ def make_reversible_card_payload() -> dict[str, Any]:
             "set": "sld",
             "set_name": "Secret Lair Drop",
             "collector_number": "279",
-            "card_faces": [
-                {
-                    "oracle_id": PROPAGANDA_ORACLE_ID,
-                    "name": "Propaganda",
-                    "mana_cost": "{2}{U}",
-                    "cmc": 3.0,
-                    "type_line": "Enchantment",
-                    "oracle_text": (
-                        "Creatures can't attack you unless their controller pays {2} "
-                        "for each creature they control that's attacking you."
-                    ),
-                    "colors": ["U"],
-                    "image_uris": {
-                        "small": "https://cards.scryfall.io/small/front/propaganda.jpg",
-                        "normal": "https://cards.scryfall.io/normal/front/propaganda.jpg",
-                    },
-                },
-                {
-                    "oracle_id": PROPAGANDA_ORACLE_ID,
-                    "name": "Propaganda",
-                    "mana_cost": "{2}{U}",
-                    "cmc": 3.0,
-                    "type_line": "Enchantment",
-                    "oracle_text": (
-                        "Creatures can't attack you unless their controller pays {2} "
-                        "for each creature they control that's attacking you."
-                    ),
-                    "colors": ["U"],
-                    "image_uris": {
-                        "small": "https://cards.scryfall.io/small/back/propaganda.jpg",
-                        "normal": "https://cards.scryfall.io/normal/back/propaganda.jpg",
-                    },
-                },
-            ],
+            "card_faces": [face, face],
         }
     )
     return payload
 
 
-async def run_provider_search(
-    handler: Callable[[httpx2.Request], httpx2.Response],
-    query: CardSearchQuery | None = None,
-) -> CardSearchPage:
-    transport = httpx2.MockTransport(handler)
-    async with httpx2.AsyncClient(
-        base_url="https://api.scryfall.test",
-        headers={
-            "Accept": "application/json;q=0.9,*/*;q=0.8",
-            "User-Agent": "MTG-Agentic-Deck-Builder/test",
-        },
-        transport=transport,
-    ) as client:
-        provider = ScryfallCardSearchProvider(client)
-        return await provider.search(query or CardSearchQuery(q="delver", page=2))
+def test_scryfall_card_mapper_preserves_printing_and_face_data() -> None:
+    card = map_scryfall_card(make_card_payload())
 
-
-def test_scryfall_provider_maps_printing_and_face_data() -> None:
-    def handler(request: httpx2.Request) -> httpx2.Response:
-        assert request.url.path == "/cards/search"
-        assert request.url.params["q"] == "delver"
-        assert request.url.params["page"] == "2"
-        assert request.url.params["unique"] == "cards"
-        assert request.url.params["order"] == "name"
-        assert request.url.params["include_extras"] == "false"
-        assert request.url.params["include_multilingual"] == "false"
-        assert request.headers["accept"] == "application/json;q=0.9,*/*;q=0.8"
-        assert request.headers["user-agent"] == "MTG-Agentic-Deck-Builder/test"
-        return httpx2.Response(
-            200,
-            json={
-                "object": "list",
-                "total_cards": 201,
-                "has_more": True,
-                "data": [make_card_payload()],
-                "warnings": ["The search included a deprecated alias."],
-            },
-        )
-
-    result = asyncio.run(run_provider_search(handler))
-    card = result.cards[0]
-
-    assert result.query == "delver"
-    assert result.page == 2
-    assert result.total_results == 201
-    assert result.has_more is True
-    assert result.warnings == ["The search included a deprecated alias."]
     assert str(card.scryfall_id) == SCRYFALL_ID
     assert str(card.oracle_id) == ORACLE_ID
     assert card.set_code == "mid"
@@ -204,22 +151,8 @@ def test_scryfall_provider_maps_printing_and_face_data() -> None:
     assert str(card.cardmarket_url).startswith("https://www.cardmarket.com/")
 
 
-def test_scryfall_provider_normalizes_reversible_card_from_first_face() -> None:
-    def handler(_: httpx2.Request) -> httpx2.Response:
-        return httpx2.Response(
-            200,
-            json={
-                "object": "list",
-                "total_cards": 1,
-                "has_more": False,
-                "data": [make_reversible_card_payload()],
-            },
-        )
-
-    result = asyncio.run(
-        run_provider_search(handler, CardSearchQuery(q="layout:reversible_card", page=1))
-    )
-    card = result.cards[0]
+def test_scryfall_card_mapper_normalizes_reversible_card_from_first_face() -> None:
+    card = map_scryfall_card(make_reversible_card_payload())
 
     assert str(card.scryfall_id) == REVERSIBLE_SCRYFALL_ID
     assert str(card.oracle_id) == PROPAGANDA_ORACLE_ID
@@ -229,137 +162,6 @@ def test_scryfall_provider_normalizes_reversible_card_from_first_face() -> None:
     assert card.oracle_text.startswith("Creatures can't attack you")
     assert card.colors == ["U"]
     assert len(card.card_faces) == 2
-    assert str(card.card_faces[0].image_uris.normal).endswith("/front/propaganda.jpg")
-    assert str(card.card_faces[1].image_uris.normal).endswith("/back/propaganda.jpg")
-
-
-def test_scryfall_fuzzy_catalog_is_cached_and_returns_ranked_candidates() -> None:
-    requested_paths: list[str] = []
-    catalog_requests = 0
-
-    def handler(request: httpx2.Request) -> httpx2.Response:
-        nonlocal catalog_requests
-        requested_paths.append(request.url.path)
-        if request.url.path == "/catalog/card-names":
-            catalog_requests += 1
-            return httpx2.Response(
-                200,
-                json={
-                    "object": "catalog",
-                    "total_values": 3,
-                    "data": [
-                        "Ghalta and Mavren",
-                        "Ghalta, Primal Hunger",
-                        "Ghastly Remains",
-                    ],
-                },
-            )
-        if request.url.params.get("fuzzy"):
-            return httpx2.Response(404, json={"object": "error"})
-
-        assert request.url.params["exact"] == "Ghalta, Primal Hunger"
-        payload = make_card_payload()
-        payload["name"] = "Ghalta, Primal Hunger"
-        return httpx2.Response(200, json=payload)
-
-    async def run() -> tuple[str | None, str | None, list[tuple[str, float]]]:
-        async with httpx2.AsyncClient(
-            base_url="https://api.scryfall.test",
-            transport=httpx2.MockTransport(handler),
-        ) as client:
-            provider = ScryfallCardSearchProvider(
-                client,
-                minimum_request_interval_seconds=0,
-            )
-            first = await provider.find_fuzzy("galta")
-            second = await provider.find_fuzzy("galhta")
-            candidates = await provider.rank_fuzzy_names("galta", limit=3)
-            return (
-                first.name if first is not None else None,
-                second.name if second is not None else None,
-                [
-                    (candidate.name, candidate.score)
-                    for candidate in candidates
-                ],
-            )
-
-    assert asyncio.run(run()) == (
-        "Ghalta, Primal Hunger",
-        "Ghalta, Primal Hunger",
-        [
-            ("Ghalta, Primal Hunger", 0.909091),
-            ("Ghalta and Mavren", 0.454545),
-            ("Ghastly Remains", 0.4),
-        ],
-    )
-    assert catalog_requests == 1
-    assert requested_paths == [
-        "/cards/named",
-        "/catalog/card-names",
-        "/cards/named",
-        "/cards/named",
-        "/cards/named",
-    ]
-
-
-def test_scryfall_not_found_becomes_empty_search_page() -> None:
-    def handler(_: httpx2.Request) -> httpx2.Response:
-        return httpx2.Response(
-            404,
-            json={
-                "object": "error",
-                "code": "not_found",
-                "status": 404,
-                "details": "Your query didn't match any cards.",
-            },
-        )
-
-    result = asyncio.run(run_provider_search(handler, CardSearchQuery(q="no-such-card", page=1)))
-
-    assert result == CardSearchPage(
-        query="no-such-card",
-        page=1,
-        total_results=0,
-        has_more=False,
-        cards=[],
-    )
-
-
-@pytest.mark.parametrize("status_code", [400, 422])
-def test_scryfall_bad_query_has_a_distinct_provider_error(status_code: int) -> None:
-    def handler(_: httpx2.Request) -> httpx2.Response:
-        return httpx2.Response(
-            status_code,
-            json={"object": "error", "code": "bad_request"},
-        )
-
-    with pytest.raises(CardSearchQueryError):
-        asyncio.run(run_provider_search(handler))
-
-
-@pytest.mark.parametrize("status_code", [403, 429, 500])
-def test_scryfall_http_failure_is_provider_unavailable(status_code: int) -> None:
-    def handler(_: httpx2.Request) -> httpx2.Response:
-        return httpx2.Response(status_code, json={"object": "error"})
-
-    with pytest.raises(CardSearchUnavailable):
-        asyncio.run(run_provider_search(handler))
-
-
-def test_scryfall_timeout_is_provider_unavailable() -> None:
-    def handler(request: httpx2.Request) -> httpx2.Response:
-        raise httpx2.ReadTimeout("Scryfall timed out", request=request)
-
-    with pytest.raises(CardSearchUnavailable):
-        asyncio.run(run_provider_search(handler))
-
-
-def test_scryfall_malformed_success_is_provider_unavailable() -> None:
-    def handler(_: httpx2.Request) -> httpx2.Response:
-        return httpx2.Response(200, json={"object": "list", "data": "not-a-list"})
-
-    with pytest.raises(CardSearchUnavailable):
-        asyncio.run(run_provider_search(handler))
 
 
 class StubProvider:
@@ -381,21 +183,16 @@ def make_client(provider: StubProvider) -> TestClient:
 
 
 def test_search_endpoint_returns_typed_page() -> None:
-    page = asyncio.run(
-        run_provider_search(
-            lambda _: httpx2.Response(
-                200,
-                json={
-                    "object": "list",
-                    "total_cards": 1,
-                    "has_more": False,
-                    "data": [make_card_payload()],
-                },
-            ),
-            CardSearchQuery(q="delver", page=1),
+    card = map_scryfall_card(make_card_payload())
+    provider = StubProvider(
+        CardSearchPage(
+            query="delver",
+            page=1,
+            total_results=1,
+            has_more=False,
+            cards=[card],
         )
     )
-    provider = StubProvider(page)
 
     with make_client(provider) as client:
         response = client.get("/api/v1/cards/search", params={"q": " delver ", "page": 1})
@@ -461,7 +258,7 @@ def test_search_endpoint_passes_structured_filters_to_provider() -> None:
             400,
             {
                 "code": "invalid_card_search",
-                "message": "The card search query is not valid.",
+                "message": "The card title could not be searched.",
             },
         ),
         (

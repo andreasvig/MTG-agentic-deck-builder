@@ -1,48 +1,30 @@
-"""Live Scryfall implementation of the card search boundary."""
+"""Scryfall card-object mapping and provider-neutral title scoring."""
 
-import asyncio
 import re
-from dataclasses import dataclass
 from decimal import Decimal
-from difflib import SequenceMatcher, get_close_matches
-from time import monotonic
 from typing import Annotated, Literal
 from uuid import UUID
 
-import httpx2
 from pydantic import (
     AnyHttpUrl,
     BaseModel,
     ConfigDict,
     Field,
     StringConstraints,
-    ValidationError,
 )
+from rapidfuzz.fuzz import WRatio
 
 from mtg_deck_builder.domain import (
     CardFace,
     CardImageUris,
     CardPrices,
-    CardSearchPage,
-    CardSearchQuery,
     CardSearchResult,
     MagicColor,
 )
-from mtg_deck_builder.providers.cards import CardSearchQueryError, CardSearchUnavailable
 
 _NonEmptyString = Annotated[str, StringConstraints(min_length=1)]
 _Legality = Literal["legal", "not_legal", "restricted", "banned"]
 _Finish = Literal["nonfoil", "foil", "etched"]
-
-
-@dataclass(frozen=True)
-class FuzzyNameCandidate:
-    """A catalog card name and the alias that produced its similarity score."""
-
-    name: str
-    matched_alias: str
-    score: float
-
 
 class _ScryfallModel(BaseModel):
     model_config = ConfigDict(extra="ignore")
@@ -149,218 +131,10 @@ class _ScryfallCard(_ScryfallModel):
         )
 
 
-class _ScryfallList(_ScryfallModel):
-    object: Literal["list"]
-    total_cards: Annotated[int, Field(ge=0)]
-    has_more: bool
-    data: list[_ScryfallCard]
-    warnings: list[str] = Field(default_factory=list)
+def map_scryfall_card(payload: object) -> CardSearchResult:
+    """Validate one Scryfall card object and map it to the app contract."""
 
-
-class _ScryfallCatalog(_ScryfallModel):
-    object: Literal["catalog"]
-    total_values: Annotated[int, Field(ge=0)]
-    data: list[_NonEmptyString]
-
-
-class ScryfallCardSearchProvider:
-    """Search Scryfall while keeping its wire format out of the application."""
-
-    def __init__(
-        self,
-        client: httpx2.AsyncClient,
-        *,
-        minimum_request_interval_seconds: float = 0.11,
-    ) -> None:
-        if minimum_request_interval_seconds < 0:
-            raise ValueError("minimum_request_interval_seconds must not be negative")
-        self._client = client
-        self._minimum_request_interval_seconds = minimum_request_interval_seconds
-        self._request_lock = asyncio.Lock()
-        self._last_request_started_at = 0.0
-        self._name_catalog_lock = asyncio.Lock()
-        self._name_aliases: dict[str, tuple[str, ...]] | None = None
-
-    async def search(self, query: CardSearchQuery) -> CardSearchPage:
-        await self._wait_for_request_slot()
-        try:
-            response = await self._client.get(
-                "/cards/search",
-                params={
-                    "q": query.q,
-                    "page": query.page,
-                    "unique": "cards",
-                    "order": query.order,
-                    "include_extras": "false",
-                    "include_multilingual": "false",
-                },
-            )
-        except httpx2.RequestError as exc:
-            raise CardSearchUnavailable from exc
-
-        if response.status_code == 404:
-            return CardSearchPage(
-                query=query.q,
-                page=query.page,
-                total_results=0,
-                has_more=False,
-                cards=[],
-            )
-        if response.status_code in {400, 422}:
-            raise CardSearchQueryError
-        if response.is_error:
-            raise CardSearchUnavailable
-
-        try:
-            payload = _ScryfallList.model_validate(response.json())
-            cards = [card.to_domain() for card in payload.data]
-        except (ValueError, ValidationError) as exc:
-            raise CardSearchUnavailable from exc
-
-        return CardSearchPage(
-            query=query.q,
-            page=query.page,
-            total_results=payload.total_cards,
-            has_more=payload.has_more,
-            cards=cards,
-            warnings=payload.warnings,
-        )
-
-    async def find_fuzzy(self, name: str) -> CardSearchResult | None:
-        """Return Scryfall's closest named card match."""
-
-        response = await self._request_named({"fuzzy": name})
-        if response.status_code == 404:
-            catalog_name = await self._closest_catalog_name(name)
-            if catalog_name is None:
-                return None
-            response = await self._request_named({"exact": catalog_name})
-
-        if response.status_code == 404:
-            return None
-        if response.status_code in {400, 422}:
-            raise CardSearchQueryError
-        if response.is_error:
-            raise CardSearchUnavailable
-
-        try:
-            return _ScryfallCard.model_validate(response.json()).to_domain()
-        except (ValueError, ValidationError) as exc:
-            raise CardSearchUnavailable from exc
-
-    async def rank_fuzzy_names(
-        self,
-        name: str,
-        *,
-        limit: int = 12,
-    ) -> list[FuzzyNameCandidate]:
-        """Rank several catalog names so callers can apply and inspect a cutoff."""
-
-        if limit < 1:
-            raise ValueError("limit must be positive")
-        normalized = _normalize_card_name(name)
-        if len(normalized) < 4:
-            return []
-
-        aliases = await self._get_name_aliases()
-        scores_by_name: dict[str, tuple[float, str]] = {}
-        for alias, card_names in aliases.items():
-            score = name_similarity_score(normalized, alias)
-            for card_name in card_names:
-                current = scores_by_name.get(card_name)
-                if current is None or score > current[0]:
-                    scores_by_name[card_name] = (score, alias)
-
-        candidates = [
-            FuzzyNameCandidate(
-                name=card_name,
-                matched_alias=matched_alias,
-                score=score,
-            )
-            for card_name, (score, matched_alias) in scores_by_name.items()
-        ]
-        candidates.sort(
-            key=lambda candidate: (
-                -candidate.score,
-                abs(len(candidate.matched_alias) - len(normalized)),
-                candidate.name.casefold(),
-            )
-        )
-        return candidates[:limit]
-
-    async def _request_named(self, params: dict[str, str]) -> httpx2.Response:
-        await self._wait_for_request_slot()
-        try:
-            return await self._client.get("/cards/named", params=params)
-        except httpx2.RequestError as exc:
-            raise CardSearchUnavailable from exc
-
-    async def _closest_catalog_name(self, name: str) -> str | None:
-        normalized = _normalize_card_name(name)
-        if len(normalized) < 4:
-            return None
-        aliases = await self._get_name_aliases()
-        matches = get_close_matches(
-            normalized,
-            aliases,
-            n=1,
-            cutoff=0.72,
-        )
-        return aliases[matches[0]][0] if matches else None
-
-    async def _get_name_aliases(self) -> dict[str, tuple[str, ...]]:
-        async with self._name_catalog_lock:
-            if self._name_aliases is not None:
-                return self._name_aliases
-
-            await self._wait_for_request_slot()
-            try:
-                response = await self._client.get("/catalog/card-names")
-            except httpx2.RequestError as exc:
-                raise CardSearchUnavailable from exc
-            if response.is_error:
-                raise CardSearchUnavailable
-            try:
-                catalog = _ScryfallCatalog.model_validate(response.json())
-            except (ValueError, ValidationError) as exc:
-                raise CardSearchUnavailable from exc
-
-            names_by_alias: dict[str, set[str]] = {}
-            for card_name in catalog.data:
-                canonical_name = _canonical_catalog_name(card_name)
-                for alias in _card_name_aliases(card_name):
-                    names_by_alias.setdefault(alias, set()).add(
-                        canonical_name
-                    )
-            aliases = {
-                alias: tuple(sorted(card_names, key=str.casefold))
-                for alias, card_names in names_by_alias.items()
-            }
-            self._name_aliases = aliases
-            return aliases
-
-    async def _wait_for_request_slot(self) -> None:
-        async with self._request_lock:
-            elapsed = monotonic() - self._last_request_started_at
-            remaining = self._minimum_request_interval_seconds - elapsed
-            if remaining > 0:
-                await asyncio.sleep(remaining)
-            self._last_request_started_at = monotonic()
-
-
-def _card_name_aliases(card_name: str) -> set[str]:
-    faces = card_name.split(" // ")
-    aliases = {_normalize_card_name(card_name)}
-    for face in faces:
-        aliases.add(_normalize_card_name(face))
-        if "," in face:
-            aliases.add(_normalize_card_name(face.split(",", 1)[0]))
-    return {alias for alias in aliases if alias}
-
-
-def _canonical_catalog_name(card_name: str) -> str:
-    faces = card_name.split(" // ")
-    return faces[0] if len(set(faces)) == 1 else card_name
+    return _ScryfallCard.model_validate(payload).to_domain()
 
 
 def _normalize_card_name(value: str) -> str:
@@ -368,17 +142,10 @@ def _normalize_card_name(value: str) -> str:
 
 
 def name_similarity_score(query: str, candidate: str) -> float:
-    """Return a stable normalized similarity value for two card-name strings."""
+    """Score exact, typo, word, and partial-segment title similarity."""
 
     normalized_query = _normalize_card_name(query)
     normalized_candidate = _normalize_card_name(candidate)
     if not normalized_query or not normalized_candidate:
         return 0.0
-    return round(
-        SequenceMatcher(
-            None,
-            normalized_query,
-            normalized_candidate,
-        ).ratio(),
-        6,
-    )
+    return round(WRatio(normalized_query, normalized_candidate) / 100, 6)

@@ -43,7 +43,7 @@ async function fulfillJson(
 }
 
 async function openSearch(page: Page) {
-  const trigger = page.getByRole("button", { name: "Card search" });
+  const trigger = page.getByRole("button", { name: "Add cards" });
   await expect(trigger).toBeVisible();
   await trigger.click();
   await expect(
@@ -132,7 +132,9 @@ test("desktop deck-building flow remains fast and reversible", async ({
   });
   await searchInput.fill("Sol Ring");
 
-  await expect(page.getByText("2 results", { exact: true })).toBeVisible();
+  await expect(
+    page.getByText("2 ranked cards", { exact: true }),
+  ).toBeVisible();
   expect(outgoingQuery).toBe("Sol Ring");
   await waitForCardArt(page, "Sol Ring");
   await expect(page.getByText("Marvel Super Heroes Commander")).toBeVisible();
@@ -166,7 +168,7 @@ test("desktop deck-building flow remains fast and reversible", async ({
     page.getByRole("dialog", { name: "Find cards" }),
   ).toBeHidden();
   await expect(
-    page.getByRole("button", { name: "Card search" }),
+    page.getByRole("button", { name: "Add cards" }),
   ).toBeFocused();
   await expect(
     page.getByRole("button", { name: "Inspect Sol Ring" }),
@@ -310,9 +312,63 @@ test("desktop deck-building flow remains fast and reversible", async ({
   ).toBeVisible();
 });
 
+test("search loads 12 fuzzy results before appending the next page", async ({
+  page,
+}, testInfo) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  const cards = Array.from({ length: 13 }, (_, index) => ({
+    ...solRing,
+    oracle_id: `pagination-oracle-${index + 1}`,
+    scryfall_id: `pagination-printing-${index + 1}`,
+    name: `Forest Match ${index + 1}`,
+  }));
+  const requestedPages: number[] = [];
+  await page.route(SEARCH_ROUTE, async (route) => {
+    const requestUrl = new URL(route.request().url());
+    const query = requestUrl.searchParams.get("q") ?? "";
+    const requestedPage = Number(requestUrl.searchParams.get("page") ?? "1");
+    requestedPages.push(requestedPage);
+    const response = searchPage(
+      query,
+      requestedPage === 1 ? cards.slice(0, 12) : cards.slice(12),
+    );
+    response.page = requestedPage;
+    response.total_results = cards.length;
+    response.has_more = requestedPage === 1;
+    await fulfillJson(route, response);
+  });
+
+  await page.goto("/");
+  await openSearch(page);
+  await page.getByRole("textbox", { name: "Search cards" }).fill("forest");
+
+  await expect(page.getByRole("article")).toHaveCount(12);
+  await expect(
+    page.getByText("13 ranked cards", { exact: true }),
+  ).toBeVisible();
+  const loadMore = page.getByRole("button", { name: "Load more" });
+  await expect(loadMore).toBeVisible();
+  await page.screenshot({
+    path: testInfo.outputPath("desktop-first-12.png"),
+    fullPage: true,
+  });
+  await loadMore.click();
+
+  await expect(page.getByRole("article")).toHaveCount(13);
+  await expect(loadMore).toHaveCount(0);
+  expect(requestedPages).toEqual([1, 2]);
+  await page.screenshot({
+    path: testInfo.outputPath("desktop-loaded-more.png"),
+    fullPage: true,
+  });
+});
+
 test("search communicates empty and provider-recovery states", async ({
   page,
 }) => {
+  await page.addInitScript(() => {
+    window.localStorage.setItem("manabase.search-debug", "true");
+  });
   let providerAttempts = 0;
   await page.route(SEARCH_ROUTE, async (route) => {
     const requestUrl = new URL(route.request().url());
@@ -340,7 +396,7 @@ test("search communicates empty and provider-recovery states", async ({
     if (query === "galta") {
       const response = searchPage(query, [ghalta]);
       response.strategy = "fuzzy";
-      response.interpretation = "Closest card names above 0.450";
+      response.interpretation = "Titles ranked locally by fuzzy similarity";
       response.name_match_scores = {
         [ghalta.scryfall_id]: 0.909091,
       };
@@ -366,7 +422,7 @@ test("search communicates empty and provider-recovery states", async ({
   ).toBeVisible();
 
   await searchInput.fill("galta");
-  await expect(page.getByText("Fuzzy 0.909")).toBeVisible();
+  await expect(page.getByText("Fuzzy match 91%")).toBeVisible();
   await expect(
     page.getByRole("button", { name: "Add Ghalta, Primal Hunger to deck" }),
   ).toBeVisible();
@@ -376,7 +432,7 @@ test("search communicates empty and provider-recovery states", async ({
     "Scryfall is temporarily unavailable.",
   );
   await page.getByRole("button", { name: "Try again" }).click();
-  await expect(page.getByText("1 results", { exact: true })).toBeVisible();
+  await expect(page.getByText("1 ranked card", { exact: true })).toBeVisible();
   await expect(
     page.getByRole("button", { name: "Add Sol Ring to deck" }),
   ).toBeVisible();
@@ -429,7 +485,7 @@ test("search filters shape requests without crowding the results", async ({
     .fill("12");
   await page.getByRole("textbox", { name: "Search cards" }).fill("blue ramp");
 
-  await expect(page.getByText("1 results", { exact: true })).toBeVisible();
+  await expect(page.getByText("1 ranked card", { exact: true })).toBeVisible();
   expect(requestedUrl).not.toBeNull();
   expect(requestedUrl?.searchParams.getAll("color")).toEqual(["U"]);
   expect(requestedUrl?.searchParams.get("include_colorless")).toBe("true");
@@ -441,12 +497,9 @@ test("search filters shape requests without crowding the results", async ({
   expect(requestedUrl?.searchParams.get("debug")).toBe("true");
   await expect(page.getByText("Search trace")).toBeVisible();
   await page.getByText("Search trace").click();
-  await expect(page.getByText("OpenRouter ranking")).toBeVisible();
-  await expect(page.getByText("LLM request")).toBeVisible();
-  await expect(page.getByText("LLM response")).toBeVisible();
-  await expect(
-    page.getByText("Google AI Studio", { exact: true }),
-  ).toBeVisible();
+  await expect(page.getByText("Local fuzzy title ranking")).toBeVisible();
+  await expect(page.getByText("Title candidates")).toBeVisible();
+  await expect(page.getByText("rapidfuzz.WRatio")).toBeVisible();
   await expect(
     page.getByText("local-data/search-debug.jsonl"),
   ).toBeVisible();
@@ -558,6 +611,10 @@ test("mobile keeps primary deck actions reachable and contained", async ({
     const requestUrl = new URL(route.request().url());
     const query = requestUrl.searchParams.get("q") ?? "";
     const response = searchPage(query, [llanowarElves, solRing]);
+    response.name_match_scores = {
+      [llanowarElves.scryfall_id]: 1,
+      [solRing.scryfall_id]: 0.75,
+    };
     if (requestUrl.searchParams.get("debug") === "true") {
       response.debug = searchDebugSummary();
     }
@@ -576,14 +633,14 @@ test("mobile keeps primary deck actions reachable and contained", async ({
     name: "Deck actions",
   });
   await expect(mobileToolbar).toBeVisible();
-  for (const action of ["Search", "Layout", "Undo", "More"]) {
+  for (const action of ["Add cards", "Layout", "Undo", "More"]) {
     await expect(
       mobileToolbar.getByRole("button", { name: action, exact: true }),
     ).toBeVisible();
   }
 
   await mobileToolbar
-    .getByRole("button", { name: "Search", exact: true })
+    .getByRole("button", { name: "Add cards", exact: true })
     .click();
   const searchDialog = page.getByRole("dialog", { name: "Find cards" });
   await expect(searchDialog).toBeVisible();
@@ -597,13 +654,14 @@ test("mobile keeps primary deck actions reachable and contained", async ({
   await expect(
     page.getByRole("button", { name: "Add Llanowar Elves to deck" }),
   ).toBeVisible();
+  await expect(page.getByText("Fuzzy match 100%")).toBeVisible();
   await page.screenshot({
     path: testInfo.outputPath("mobile-search-results.png"),
     fullPage: true,
   });
   await page.getByText("Search trace").click();
-  await expect(page.getByText("LLM request")).toBeVisible();
-  await expect(page.getByText("LLM response")).toBeVisible();
+  await expect(page.getByText("Local fuzzy title ranking")).toBeVisible();
+  await expect(page.getByText("Title candidates")).toBeVisible();
   const traceBounds = await page.locator(".search-debug").boundingBox();
   expect(traceBounds).not.toBeNull();
   expect(traceBounds?.x).toBeGreaterThanOrEqual(0);
@@ -622,7 +680,7 @@ test("mobile keeps primary deck actions reachable and contained", async ({
   await searchInput.press("Escape");
   await expect(searchDialog).toBeHidden();
   await expect(
-    mobileToolbar.getByRole("button", { name: "Search", exact: true }),
+    mobileToolbar.getByRole("button", { name: "Add cards", exact: true }),
   ).toBeFocused();
 
   await page.getByRole("button", { name: "Add custom group" }).click();

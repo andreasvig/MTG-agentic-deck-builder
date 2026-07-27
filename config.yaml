@@ -1,0 +1,4 @@
+search:
+  title_match:
+    # Return this many locally ranked cards before showing "Load more".
+    page_size: 12

@@ -17,18 +17,20 @@ Browser
   v
 FastAPI (127.0.0.1:43127/api/v1)
   |
-  | HybridCardSearchProvider
-  | - route selection
-  | - filters
-  | - exact/fuzzy name scores
-  | - intent ranking
+  | FuzzyTitleSearchProvider
+  | - local SQLite cards and title aliases
+  | - RapidFuzz WRatio scores
+  | - threshold-free, numbered 12-card pages
+  | - local structured filters
   | - debug tracing
   |
-  +--> Scryfall API
-  +--> local FastEmbed model
-  +--> OpenRouter API (optional)
+  +--> local-data/cards.sqlite3
   |
   +--> local-data/search-debug.jsonl (debug only)
+
+Explicit refresh:
+
+Scryfall default_cards -> streaming importer -> atomic cards.sqlite3 swap
 ```
 
 The backend does not currently persist decks. The frontend does not call a
@@ -48,22 +50,18 @@ The runner:
 6. Injects the resolved API base URL into Vite.
 7. Forwards termination and stops both children.
 
-Uvicorn's FastAPI lifespan creates:
-
-- An `httpx2.AsyncClient` for Scryfall.
-- `ScryfallCardSearchProvider`.
-- Lazy `FastEmbedCardRanker`.
-- Optional OpenRouter client and `OpenRouterCardReranker`.
-- `JsonlSearchDebugLogger`.
-- `HybridCardSearchProvider`, stored on `application.state`.
+Uvicorn's FastAPI lifespan creates a `SQLiteCardCatalog`,
+`JsonlSearchDebugLogger`, and `FuzzyTitleSearchProvider` on application state.
+It does not create a Scryfall HTTP client. The separate `catalog:sync` command
+owns bulk network access.
 
 ## Backend Modules
 
 ### `config.py`
 
-`Settings` is the single runtime configuration model. It reads environment
-variables with the `MTG_` prefix, except `OPENROUTER_API_KEY`, which is also
-accepted directly. Origins and URLs are validated before startup.
+`Settings` is the single runtime configuration model. Non-secret title-match
+values load from root `config.yaml`; environment variables and `.env` can
+override them. Origins and URLs are validated before startup.
 
 ### `domain/cards.py`
 
@@ -105,31 +103,32 @@ search orchestration depend on this boundary.
 
 ### `providers/scryfall.py`
 
-Owns Scryfall wire models, validation, rate-conscious request spacing, card
-mapping, name-catalog caching, aliases, and similarity scoring.
+Owns Scryfall card-object wire models, validation, domain mapping, and the
+provider-neutral title-similarity function.
 
 Scryfall-specific response objects must not cross this module boundary.
+
+### `card_catalog.py`
+
+Discovers and streams Scryfall `default_cards`, builds temporary SQLite tables
+for all paper printings and canonical Oracle cards, validates the result, and
+atomically installs it. `SQLiteCardCatalog` reloads after a swapped file's
+modification time changes.
 
 ### `search.py`
 
 Owns:
 
-- Route selection.
-- Structured filter compilation.
-- Deterministic intent compilation.
-- Exact and fuzzy name ranking.
-- Local embedding ranking.
-- Optional OpenRouter reranking.
-- Safe reranker degradation and warnings.
-
-The module is intentionally orchestration-heavy at this stage. Split it only
-when a new boundary removes real complexity, such as a general query planner or
-local search index.
+- The one fuzzy-title search operation.
+- Complete-catalog fuzzy ranking without a score threshold.
+- Local color, mana-value, and EUR filtering.
+- Simple numbered pagination after filters.
+- Score-ordered card results and trace evidence.
 
 ### `search_debug.py`
 
 Builds one structured trace per search and appends complete JSON objects as
-JSONL lines. It snapshots result ordering and computes rank deltas.
+JSONL lines.
 
 ## Frontend Modules
 
@@ -182,8 +181,8 @@ card preview.
 
 ### `components/SearchTracePanel.tsx`
 
-Human-readable projection of structured backend traces. It intentionally
-exposes raw LLM request and response JSON only under expandable details.
+Human-readable projection of the title matcher, ranked candidates, aliases,
+scores, and filter outcomes.
 
 ### `components/DeckBoard.tsx`
 
@@ -250,12 +249,10 @@ Changing only one layer causes either server validation failures or frontend
 
 ## Error Boundaries
 
-- Invalid Scryfall syntax becomes HTTP 400 with `invalid_card_search`.
-- Provider/network failure becomes HTTP 503 with
+- Missing, incompatible, or unreadable local catalog becomes HTTP 503 with
   `card_search_unavailable`.
 - Invalid min/max pairs become HTTP 422.
-- Local embedding or OpenRouter ranking failure preserves Scryfall ordering and
-  adds a warning instead of failing the search.
+- An empty catalog or page beyond its end returns an empty successful page.
 - Disabled/full `localStorage` does not make the active deck unusable; current
   memory state continues.
 
@@ -266,7 +263,8 @@ Current:
 ```text
 Browser localStorage owns decks
 FastAPI owns card discovery
-Scryfall owns card data
+Local SQLite owns search reads
+Scryfall owns authoritative bulk data and remote images
 ```
 
 Target:
@@ -275,7 +273,6 @@ Target:
 React UI and agent
   -> typed backend deck/search services
   -> SQLite deck store and derived Scryfall catalog
-  -> Scryfall live fallback
 ```
 
 The migration must preserve browser-local libraries and must not allow the

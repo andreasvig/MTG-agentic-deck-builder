@@ -10,14 +10,16 @@ readme = "README.md"
 requires-python = ">=3.12,<3.15"
 dependencies = [
     "fastapi>=0.139.2,<0.140",
-    "fastembed>=0.7.4,<0.8",
-    "httpx2>=2.8.0,<3",
+    "ijson>=3.4,<4",
     "pydantic-settings>=2.14.2,<3",
+    "pyyaml>=6.0.3,<7",
+    "rapidfuzz>=3.14.3,<4",
     "uvicorn[standard]>=0.51.0,<0.52",
 ]
 
 [dependency-groups]
 dev = [
+    "httpx2>=2.8.0,<3",
     "pytest>=9.1.1,<10",
     "ruff>=0.15.22,<0.16",
 ]

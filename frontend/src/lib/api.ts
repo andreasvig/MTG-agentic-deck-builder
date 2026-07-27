@@ -65,7 +65,13 @@ export function createApiClient(
         version: body.version,
       };
     },
-    async searchCards(query, page = 1, signal, filters, debug = false) {
+    async searchCards(
+      query,
+      page = 1,
+      signal,
+      filters,
+      debug = false,
+    ) {
       const url = new URL(`${normalizedBaseUrl}/cards/search`);
       url.searchParams.set("q", query.trim());
       url.searchParams.set("page", String(page));
@@ -159,7 +165,7 @@ function isCardSearchPage(value: unknown): value is CardSearchPage {
         score <= 1,
     ) &&
     Array.isArray(value.warnings) &&
-    ["exact", "fuzzy", "intent", "syntax"].includes(String(value.strategy)) &&
+    value.strategy === "fuzzy" &&
     (value.interpretation === null ||
       typeof value.interpretation === "string") &&
     typeof value.reranked === "boolean" &&

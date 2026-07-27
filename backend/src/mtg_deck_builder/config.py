@@ -2,21 +2,43 @@
 
 from functools import lru_cache
 from pathlib import Path
-from typing import Annotated, Literal
+from typing import Annotated
 
 from pydantic import (
-    AliasChoices,
     AnyHttpUrl,
+    BaseModel,
+    ConfigDict,
     Field,
-    SecretStr,
     TypeAdapter,
     field_validator,
 )
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic_settings import (
+    BaseSettings,
+    PydanticBaseSettingsSource,
+    SettingsConfigDict,
+    YamlConfigSettingsSource,
+)
 
 from mtg_deck_builder import __version__
 
 _http_url_adapter = TypeAdapter(AnyHttpUrl)
+_project_config_file = Path(__file__).resolve().parents[3] / "config.yaml"
+
+
+class TitleMatchSettings(BaseModel):
+    """User-facing controls for fuzzy card-title search."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    page_size: Annotated[int, Field(ge=1, le=30)] = 12
+
+
+class SearchSettings(BaseModel):
+    """Search configuration loaded from the repository YAML file."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    title_match: TitleMatchSettings = Field(default_factory=TitleMatchSettings)
 
 
 class Settings(BaseSettings):
@@ -25,6 +47,7 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_file=".env",
         env_prefix="MTG_",
+        env_nested_delimiter="__",
         extra="ignore",
     )
 
@@ -36,57 +59,42 @@ class Settings(BaseSettings):
         f"MTG-Agentic-Deck-Builder/{__version__} "
         "(+https://github.com/andreasvig/MTG-agentic-deck-builder)"
     )
-    scryfall_timeout_seconds: Annotated[float, Field(gt=0, le=60)] = 10.0
-    embedding_model: str = "BAAI/bge-small-en-v1.5"
-    openrouter_api_key: SecretStr | None = Field(
-        default=None,
-        validation_alias=AliasChoices(
-            "OPENROUTER_API_KEY",
-            "MTG_OPENROUTER_API_KEY",
-        ),
-    )
-    openrouter_base_url: str = "https://openrouter.ai/api/v1"
-    openrouter_model: str = "google/gemini-3.5-flash-lite"
-    openrouter_provider: str | None = None
-    openrouter_reasoning_effort: Literal[
-        "none",
-        "minimal",
-        "low",
-        "medium",
-        "high",
-        "xhigh",
-        "max",
-    ] = "minimal"
-    openrouter_max_tokens: Annotated[int, Field(ge=100, le=8_000)] = 900
-    openrouter_timeout_seconds: Annotated[float, Field(gt=0, le=60)] = 15.0
+    scryfall_bulk_timeout_seconds: Annotated[float, Field(gt=0, le=3_600)] = 900.0
+    card_catalog_path: Path = Path("local-data/cards.sqlite3")
+    search: SearchSettings = Field(default_factory=SearchSettings)
     search_debug_enabled: bool = False
     search_debug_log_path: Path = Path("local-data/search-debug.jsonl")
     search_debug_result_limit: Annotated[int, Field(ge=1, le=100)] = 25
-    fuzzy_name_candidate_limit: Annotated[int, Field(ge=2, le=30)] = 12
-    fuzzy_name_min_score: Annotated[float, Field(ge=0, le=1)] = 0.45
+
+    @classmethod
+    def settings_customise_sources(
+        cls,
+        settings_cls: type[BaseSettings],
+        init_settings: PydanticBaseSettingsSource,
+        env_settings: PydanticBaseSettingsSource,
+        dotenv_settings: PydanticBaseSettingsSource,
+        file_secret_settings: PydanticBaseSettingsSource,
+    ) -> tuple[PydanticBaseSettingsSource, ...]:
+        return (
+            init_settings,
+            env_settings,
+            dotenv_settings,
+            YamlConfigSettingsSource(settings_cls, yaml_file=_project_config_file),
+            file_secret_settings,
+        )
 
     @field_validator(
         "host",
         "frontend_origin",
         "scryfall_base_url",
         "scryfall_user_agent",
-        "embedding_model",
-        "openrouter_base_url",
-        "openrouter_model",
+        "card_catalog_path",
         "search_debug_log_path",
         mode="before",
     )
     @classmethod
     def strip_surrounding_whitespace(cls, value: object) -> object:
         return value.strip() if isinstance(value, str) else value
-
-    @field_validator("openrouter_provider", mode="before")
-    @classmethod
-    def empty_optional_string_is_none(cls, value: object) -> object:
-        if isinstance(value, str):
-            stripped = value.strip()
-            return stripped or None
-        return value
 
     @field_validator("host")
     @classmethod
@@ -124,21 +132,7 @@ class Settings(BaseSettings):
             raise ValueError("scryfall_base_url must not contain credentials, query, or fragment")
         return base_url
 
-    @field_validator("openrouter_base_url")
-    @classmethod
-    def validate_openrouter_base_url(cls, value: str) -> str:
-        base_url = value.rstrip("/")
-        url = _http_url_adapter.validate_python(base_url)
-        if (
-            url.username is not None
-            or url.password is not None
-            or url.query is not None
-            or url.fragment is not None
-        ):
-            raise ValueError("openrouter_base_url must not contain credentials, query, or fragment")
-        return base_url
-
-    @field_validator("scryfall_user_agent", "embedding_model", "openrouter_model")
+    @field_validator("scryfall_user_agent")
     @classmethod
     def required_string_must_not_be_empty(cls, value: str) -> str:
         if not value:

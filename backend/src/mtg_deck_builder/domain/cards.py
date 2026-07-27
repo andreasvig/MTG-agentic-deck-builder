@@ -19,8 +19,8 @@ MagicColor = Literal["W", "U", "B", "R", "G"]
 CardLegality = Literal["legal", "not_legal", "restricted", "banned"]
 CardFinish = Literal["nonfoil", "foil", "etched"]
 ColorMatchMode = Literal["subset", "exact"]
-SearchStrategy = Literal["exact", "fuzzy", "intent", "syntax"]
-CardSearchOrder = Literal["name", "edhrec"]
+SearchStrategy = Literal["fuzzy"]
+CardSearchOrder = Literal["name"]
 SearchDebugStageStatus = Literal["ok", "skipped", "error"]
 
 
@@ -125,7 +125,10 @@ class CardSearchFilters(CardModel):
 class CardSearchQuery(CardModel):
     """Validated search input shared by API and provider implementations."""
 
-    q: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=500)]
+    q: Annotated[
+        str,
+        StringConstraints(strip_whitespace=True, min_length=1, max_length=4_000),
+    ]
     page: Annotated[int, Field(ge=1, le=1_000)] = 1
     filters: CardSearchFilters = Field(default_factory=CardSearchFilters)
     order: CardSearchOrder = "name"
@@ -166,7 +169,7 @@ class CardSearchPage(CardModel):
         Annotated[float, Field(ge=0, le=1)],
     ] = Field(default_factory=dict)
     warnings: list[str] = Field(default_factory=list)
-    strategy: SearchStrategy = "syntax"
+    strategy: SearchStrategy = "fuzzy"
     interpretation: str | None = None
     reranked: bool = False
     debug: SearchDebugSummary | None = None

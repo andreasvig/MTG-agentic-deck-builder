@@ -1,5 +1,4 @@
 import {
-  BookOpen,
   Boxes,
   Columns3,
   Command,
@@ -9,12 +8,11 @@ import {
   MoreHorizontal,
   Pencil,
   Plus,
-  Search,
   Undo2,
   WandSparkles,
   X,
 } from "lucide-react";
-import { type FormEvent, useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import { CardInspector } from "./components/CardInspector";
 import {
@@ -66,7 +64,6 @@ function App() {
   const [navigationOpen, setNavigationOpen] = useState(false);
   const [searchRequest, setSearchRequest] = useState<SearchRequest | null>(null);
   const [selectedCard, setSelectedCard] = useState<CardSearchResult | null>(null);
-  const [toolbarQuery, setToolbarQuery] = useState("");
   const [renamingDeck, setRenamingDeck] = useState(false);
   const [deckNameDraft, setDeckNameDraft] = useState(deck.name);
   const returnFocus = useRef<HTMLElement | null>(null);
@@ -153,16 +150,6 @@ function App() {
     setSelectedCard(null);
   }, [deck.id, deck.name]);
 
-  const submitToolbarSearch = (event: FormEvent) => {
-    event.preventDefault();
-    const query = toolbarQuery.trim();
-    if (!query) {
-      return;
-    }
-    setToolbarQuery("");
-    openSearch(undefined, undefined, query);
-  };
-
   const beginDeckRename = () => {
     setDeckNameDraft(deck.name);
     setRenamingDeck(true);
@@ -234,23 +221,6 @@ function App() {
             <Boxes aria-hidden="true" size={18} />
             Deck editor
           </a>
-          <button
-            className="nav-item"
-            type="button"
-            onClick={() => {
-              const openedFromMobileNavigation = navigationOpen;
-              if (navigationOpen) {
-                setNavigationOpen(false);
-              }
-              openSearch();
-              if (openedFromMobileNavigation) {
-                returnFocus.current = menuTrigger.current;
-              }
-            }}
-          >
-            <BookOpen aria-hidden="true" size={18} />
-            Card search
-          </button>
         </nav>
 
         <div className="sidebar-section">
@@ -423,29 +393,13 @@ function App() {
 
         <div className="editor-toolbar" aria-label="Deck controls">
           <button
-            className="secondary-button toolbar-search"
+            className="secondary-button add-cards-button"
             type="button"
             onClick={() => openSearch()}
           >
-            <Search aria-hidden="true" size={16} />
-            Search
+            <Plus aria-hidden="true" size={16} />
+            Add cards
           </button>
-          <form className="quick-add" onSubmit={submitToolbarSearch}>
-            <Search aria-hidden="true" size={16} />
-            <input
-              value={toolbarQuery}
-              onChange={(event) => setToolbarQuery(event.target.value)}
-              aria-label="Search cards from toolbar"
-              placeholder="Search cards"
-              autoComplete="off"
-            />
-            <button
-              type="submit"
-              disabled={!toolbarQuery.trim()}
-            >
-              Search
-            </button>
-          </form>
           <div className="segmented-control view-control" aria-label="Deck view">
             <button
               className={view === "visual" ? "is-active" : ""}
@@ -539,8 +493,8 @@ function App() {
         }
       >
         <button type="button" onClick={() => openSearch()}>
-          <Search aria-hidden="true" size={20} />
-          <span>Search</span>
+          <Plus aria-hidden="true" size={20} />
+          <span>Add cards</span>
         </button>
         <button
           type="button"

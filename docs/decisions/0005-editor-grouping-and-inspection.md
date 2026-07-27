@@ -12,7 +12,8 @@ workflow and later agent chat.
 
 ## Decision
 
-- Use one Card search workflow; remove separate Quick Add.
+- Use one **Add cards** button that opens the focused search popup; remove
+  separate Quick Add and persistent search fields.
 - Offer two grouping modes:
   - Custom: editable placement.
   - Card types: derived, read-only placement.

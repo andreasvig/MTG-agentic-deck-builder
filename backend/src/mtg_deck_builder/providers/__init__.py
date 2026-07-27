@@ -6,8 +6,7 @@ from mtg_deck_builder.providers.cards import (
     CardSearchUnavailable,
 )
 from mtg_deck_builder.providers.scryfall import (
-    FuzzyNameCandidate,
-    ScryfallCardSearchProvider,
+    map_scryfall_card,
     name_similarity_score,
 )
 
@@ -15,7 +14,6 @@ __all__ = [
     "CardSearchProvider",
     "CardSearchQueryError",
     "CardSearchUnavailable",
-    "FuzzyNameCandidate",
-    "ScryfallCardSearchProvider",
+    "map_scryfall_card",
     "name_similarity_score",
 ]

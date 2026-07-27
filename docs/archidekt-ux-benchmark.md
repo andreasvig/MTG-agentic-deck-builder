@@ -29,12 +29,12 @@ were also inspected with Playwright at desktop and mobile viewport sizes.
 
 ### Fast And Detailed Add Paths
 
-- Keep one Card search action visible on desktop and mobile.
+- Keep one **Add cards** action visible on desktop and mobile.
 - Open a focused search surface without navigating away from the deck.
 - Show card art, key metadata, price, and current deck membership in results.
 - Allow repeated add and remove actions without closing search.
-- Let the same search handle exact names, misspellings, filters, intent, and
-  explicit Scryfall syntax.
+- Let the same fuzzy title search handle exact names, partial segments,
+  misspellings, and filters.
 - Make loading, no-results, invalid-query, and provider-error states explicit.
 
 ### Power Without Clutter
@@ -48,7 +48,7 @@ were also inspected with Playwright at desktop and mobile viewport sizes.
 
 ### Purpose-Built Mobile
 
-- Use a persistent bottom toolbar for Search, Layout, Undo, and More.
+- Use a persistent bottom toolbar for Add cards, Layout, Undo, and More.
 - Use drawers for search, layout controls, and card inspection.
 - Avoid shrinking the complete desktop control surface into a narrow viewport.
 - Keep touch targets at least 40 pixels and prevent hidden navigation from
@@ -57,8 +57,8 @@ were also inspected with Playwright at desktop and mobile viewport sizes.
 ## Current Acceptance Slice
 
 - Live Scryfall-backed card search through the FastAPI provider boundary.
-- Exact, fuzzy, intent, and syntax routing with structured filters and inline
-  deck membership.
+- One fuzzy title path with structured filters, percentages in debug mode, and
+  inline deck membership.
 - Persistent local deck state with add, remove, quantity, move, and undo.
 - Permanent Command zone and Not assigned groups plus user-created custom
   groups.

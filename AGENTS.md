@@ -23,10 +23,10 @@ the documentation in the same change when drift is found.
 - The frontend is React 19, TypeScript, and Vite.
 - The backend is FastAPI with Pydantic domain contracts.
 - Scryfall is the live card-data authority.
-- Search is layered: explicit Scryfall syntax, deterministic natural-language
-  intent, exact/contained card names, then fuzzy catalog names.
-- Intent results can be ranked by local FastEmbed embeddings and optionally by
-  an OpenRouter model.
+- Every search uses one fuzzy card-title path over Scryfall's cached name
+  catalog.
+- RapidFuzz `WRatio` handles exact titles, typos, words, and partial segments.
+- `config.yaml` owns the title-match page size.
 - Deck libraries are currently browser-local and persisted in `localStorage`.
 - There is no deck CRUD API or SQLite persistence yet.
 - The planned agent does not exist yet.
@@ -60,7 +60,8 @@ Do not change these without an explicit product decision and ADR update:
 - Public API contracts live in `backend/src/mtg_deck_builder/domain/`.
 - HTTP translation lives in `backend/src/mtg_deck_builder/api/`.
 - External provider wire formats stay in `backend/src/mtg_deck_builder/providers/`.
-- Search routing and ranking live in `backend/src/mtg_deck_builder/search.py`.
+- Title matching and result fetching live in
+  `backend/src/mtg_deck_builder/search.py`.
 - Append-only diagnostics live in
   `backend/src/mtg_deck_builder/search_debug.py`.
 - Runtime dependency construction lives in
@@ -87,20 +88,24 @@ Do not mutate deck state directly inside presentation components. Extend
 
 ## Search Invariants
 
-- Explicit Scryfall syntax is detected before other routing.
-- Supported natural-language intent is compiled before card-name matching.
-- An exact full-name hit returns all genuine names containing the query, with
-  full-name results first.
-- A plain query without a full-name hit proceeds to fuzzy catalog ranking even
-  when it happens to be a substring of another card name. This is why `foret`
-  can recover `Forest` instead of stopping at `As Foretold`.
-- Fuzzy results expose normalized scores in `name_match_scores`.
-- The fuzzy trace must include candidates above and below the configured
-  cutoff, matched aliases, and return/filter outcomes.
-- Filters affect every search strategy.
-- Exact, fuzzy, and explicit Scryfall syntax must not invoke OpenRouter.
-- Search logs may contain full LLM request and response bodies but never
-  credentials or authorization headers.
+- Every query is treated as a complete or partial card title.
+- Normalize case and punctuation before matching.
+- Score against full names, card faces, and the text before a comma.
+- Use RapidFuzz `WRatio` on a normalized `0..1` scale.
+- An exact title scores `1.0` and must precede partial matches.
+- Rank every catalog title; the current fuzzy phase has no score threshold.
+- Do not cap the fuzzy title match set.
+- Return fuzzy-ranked cards in `search.title_match.page_size` pages and keep
+  `has_more` accurate for the **Load more** action.
+- Apply color, mana-value, and EUR filters locally before slicing numbered
+  result pages.
+- Normal search must not call Scryfall; refresh the derived SQLite catalog from
+  `default_cards` through the explicit sync command.
+- Expose every returned score through `name_match_scores`.
+- The trace must include the algorithm, catalog and filtered counts, current
+  page, page size, aliases, original ranks, and scores.
+- Do not add intent, embedding, LLM, or Scryfall-syntax routing without a new
+  product decision and ADR.
 
 When the `CardSearchPage` contract changes, update all of:
 
@@ -172,8 +177,7 @@ record the intentional behavior change.
 - Copy `.env.example` to `.env` for local overrides.
 - Never commit `.env`, API keys, JSONL traces, benchmark outputs, screenshots,
   databases, or generated build output.
-- `OPENROUTER_API_KEY` is optional. The app must work without it.
-- The local embedding model may download on the first intent search.
+- Keep non-secret search behavior in `config.yaml`.
 - Keep the Scryfall user agent and rate-conscious request interval intact.
 
 ## Editing Discipline

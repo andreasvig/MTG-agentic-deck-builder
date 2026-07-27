@@ -10,20 +10,16 @@ interface SearchTracePanelProps {
 }
 
 const DETAIL_LABELS: Array<[string, string]> = [
-  ["candidate_query", "Candidate query"],
-  ["provider_query", "Scryfall query"],
-  ["provider_order", "Scryfall order"],
-  ["provider_total_results", "Provider results"],
-  ["interpretation", "Interpretation"],
-  ["reason", "Decision"],
-  ["fuzzy_cutoff", "Fuzzy cutoff"],
+  ["algorithm", "Matching algorithm"],
+  ["minimum_score", "Minimum score"],
+  ["catalog_card_count", "Catalog cards"],
+  ["filtered_card_count", "After filters"],
+  ["removed_by_filters", "Removed by filters"],
+  ["page", "Page"],
+  ["page_size", "Page size"],
+  ["page_start", "Page start"],
+  ["page_end", "Page end"],
   ["top_score", "Top score"],
-  ["routing_signal", "Routing signal"],
-  ["model", "Model"],
-  ["provider", "Provider"],
-  ["reasoning_effort", "Reasoning"],
-  ["candidate_limit", "Candidate limit"],
-  ["max_tokens", "Output limit"],
   ["error_type", "Error"],
 ];
 
@@ -96,18 +92,24 @@ function TraceStage({
     if (!stage.details || !(key in stage.details)) {
       return [];
     }
-    return [{ key, label, value: displayValue(stage.details[key]) }];
+    return [
+      {
+        key,
+        label,
+        value:
+          key === "top_score"
+            ? percentageValue(stage.details[key])
+            : displayValue(stage.details[key]),
+      },
+    ];
   });
-  const exchange = recordValue(stage.details?.exchange);
-  const nameMatches = recordList(stage.details?.name_matches);
   const fuzzyCandidates = recordList(stage.details?.fuzzy_candidates);
   const outputCards = stage.output?.top.slice(0, 8) ?? [];
-  const rankChanges = stage.rank_changes?.slice(0, 12) ?? [];
 
   return (
     <details
       className={`search-debug-layer search-debug-layer--${stage.status}`}
-      open={stage.name === "OpenRouter ranking"}
+      open
     >
       <summary>
         <span className="search-debug-layer__number">{index + 1}</span>
@@ -134,28 +136,7 @@ function TraceStage({
           </dl>
         ) : null}
 
-        {rankChanges.length > 0 ? (
-          <section className="search-debug-ranking">
-            <h4>Rank changes</h4>
-            <div>
-              {rankChanges.map((change) => (
-                <span key={change.scryfall_id}>
-                  <strong>{change.name}</strong>
-                  <small>
-                    {change.before_rank === null
-                      ? "new"
-                      : `#${change.before_rank}`}
-                    {" → "}
-                    #{change.after_rank}
-                  </small>
-                  <b className={rankDeltaClass(change.delta)}>
-                    {formatRankDelta(change.delta)}
-                  </b>
-                </span>
-              ))}
-            </div>
-          </section>
-        ) : outputCards.length > 0 ? (
+        {outputCards.length > 0 ? (
           <section className="search-debug-ranking">
             <h4>Top output</h4>
             <div>
@@ -169,21 +150,12 @@ function TraceStage({
           </section>
         ) : null}
 
-        {nameMatches.length > 0 ? (
-          <NameCandidateList
-            candidates={nameMatches}
-            title="Contained name matches"
-          />
-        ) : null}
-
         {fuzzyCandidates.length > 0 ? (
           <NameCandidateList
             candidates={fuzzyCandidates}
-            title="Fuzzy candidates"
+            title="Title candidates"
           />
         ) : null}
-
-        {exchange ? <LlmExchange exchange={exchange} /> : null}
       </div>
     </details>
   );
@@ -201,15 +173,12 @@ function NameCandidateList({
       <h4>{title}</h4>
       <div>
         {candidates.map((candidate, index) => {
-          const accepted = candidate.accepted_by_score;
           const returned = candidate.returned_after_filters;
           const status =
-            accepted === false
-              ? "below cutoff"
-              : returned === false
-                ? "filtered out"
-                : textValue(candidate.match_kind)?.replaceAll("_", " ") ??
-                  "accepted";
+            returned === false
+              ? "filtered out"
+              : textValue(candidate.match_kind)?.replaceAll("_", " ") ??
+                "ranked";
           const alias = textValue(candidate.matched_alias);
           return (
             <span key={`${textValue(candidate.name) ?? "candidate"}-${index}`}>
@@ -218,116 +187,16 @@ function NameCandidateList({
                 {status}
                 {alias ? ` · via "${alias}"` : ""}
               </small>
-              <code>{numberValue(candidate.score)?.toFixed(3) ?? "–"}</code>
+              <code>
+                {numberValue(candidate.score) === null
+                  ? "–"
+                  : `${Math.round(numberValue(candidate.score)! * 100)}%`}
+              </code>
             </span>
           );
         })}
       </div>
     </section>
-  );
-}
-
-function LlmExchange({ exchange }: { exchange: Record<string, unknown> }) {
-  const request = recordValue(exchange.request);
-  const response = recordValue(exchange.response);
-  const requestBody = recordValue(request?.body);
-  const responseBody = recordValue(response?.body);
-  const requestMessages = Array.isArray(requestBody?.messages)
-    ? requestBody.messages.flatMap((message) => {
-        const parsed = recordValue(message);
-        return parsed ? [parsed] : [];
-      })
-    : [];
-  const choices = Array.isArray(responseBody?.choices)
-    ? responseBody.choices.flatMap((choice) => {
-        const parsed = recordValue(choice);
-        return parsed ? [parsed] : [];
-      })
-    : [];
-  const assistantMessage = recordValue(choices[0]?.message);
-  const usage = recordValue(responseBody?.usage);
-
-  return (
-    <div className="search-debug-exchange">
-      <section>
-        <header>
-          <h4>LLM request</h4>
-          <span>{textValue(requestBody?.model) ?? "Unknown model"}</span>
-        </header>
-        <div className="search-debug-exchange__meta">
-          <span>
-            {textValue(recordValue(requestBody?.reasoning)?.effort) ??
-              "default"}{" "}
-            reasoning
-          </span>
-          <span>
-            {numberValue(requestBody?.max_tokens)?.toLocaleString() ?? "?"} max
-            tokens
-          </span>
-          {providerValue(requestBody?.provider) ? (
-            <span>{providerValue(requestBody?.provider)}</span>
-          ) : null}
-        </div>
-        <div className="search-debug-messages">
-          {requestMessages.map((message, index) => (
-            <article key={`${textValue(message.role) ?? "message"}-${index}`}>
-              <strong>{textValue(message.role) ?? "message"}</strong>
-              <pre>{formatMessageContent(message.content)}</pre>
-            </article>
-          ))}
-        </div>
-        <RawJson
-          label="Exact raw request JSON"
-          value={textValue(request?.raw_body)}
-        />
-      </section>
-
-      <section>
-        <header>
-          <h4>LLM response</h4>
-          <span>
-            HTTP {numberValue(response?.status_code) ?? "no response"}
-          </span>
-        </header>
-        <div className="search-debug-exchange__meta">
-          {textValue(responseBody?.provider) ? (
-            <span>{textValue(responseBody?.provider)}</span>
-          ) : null}
-          {numberValue(usage?.total_tokens) !== null ? (
-            <span>
-              {numberValue(usage?.total_tokens)?.toLocaleString()} tokens
-            </span>
-          ) : null}
-          {numberValue(usage?.cost) !== null ? (
-            <span>${numberValue(usage?.cost)?.toFixed(6)}</span>
-          ) : null}
-        </div>
-        {assistantMessage ? (
-          <div className="search-debug-messages">
-            <article>
-              <strong>assistant</strong>
-              <pre>{formatMessageContent(assistantMessage.content)}</pre>
-            </article>
-          </div>
-        ) : null}
-        <RawJson
-          label="Exact raw response JSON"
-          value={textValue(response?.raw_body)}
-        />
-      </section>
-    </div>
-  );
-}
-
-function RawJson({ label, value }: { label: string; value: string | null }) {
-  if (!value) {
-    return null;
-  }
-  return (
-    <details className="search-debug-raw">
-      <summary>{label}</summary>
-      <pre>{prettyJson(value)}</pre>
-    </details>
   );
 }
 
@@ -354,21 +223,6 @@ function displayValue(value: unknown): string {
   return JSON.stringify(value);
 }
 
-function formatMessageContent(value: unknown): string {
-  if (typeof value !== "string") {
-    return JSON.stringify(value, null, 2);
-  }
-  return prettyJson(value);
-}
-
-function prettyJson(value: string): string {
-  try {
-    return JSON.stringify(JSON.parse(value), null, 2);
-  } catch {
-    return value;
-  }
-}
-
 function recordValue(value: unknown): Record<string, unknown> | null {
   return typeof value === "object" && value !== null && !Array.isArray(value)
     ? (value as Record<string, unknown>)
@@ -392,28 +246,13 @@ function numberValue(value: unknown): number | null {
   return typeof value === "number" ? value : null;
 }
 
-function providerValue(value: unknown): string | null {
-  const provider = recordValue(value);
-  const only = provider && Array.isArray(provider.only) ? provider.only : [];
-  return only.filter((item): item is string => typeof item === "string").join(", ") || null;
+function percentageValue(value: unknown): string {
+  const number = numberValue(value);
+  return number === null ? "Automatic" : `${Math.round(number * 100)}%`;
 }
 
 function formatDuration(value: number): string {
   return `${value.toLocaleString(undefined, {
     maximumFractionDigits: 1,
   })}ms`;
-}
-
-function formatRankDelta(delta: number | null): string {
-  if (delta === null || delta === 0) {
-    return "–";
-  }
-  return delta > 0 ? `+${delta}` : String(delta);
-}
-
-function rankDeltaClass(delta: number | null): string {
-  if (delta === null || delta === 0) {
-    return "";
-  }
-  return delta > 0 ? "is-up" : "is-down";
 }

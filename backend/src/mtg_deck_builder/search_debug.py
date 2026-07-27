@@ -112,9 +112,7 @@ class SearchDebugTrace:
                 "completed_at": datetime.now(UTC).isoformat(),
                 "total_duration_ms": _round_ms(total_duration_ms),
                 "result": {
-                    "status": "cancelled"
-                    if isinstance(error, asyncio.CancelledError)
-                    else "error",
+                    "status": "cancelled" if isinstance(error, asyncio.CancelledError) else "error",
                     "error_type": type(error).__name__,
                 },
             }
@@ -160,10 +158,7 @@ class SearchDebugTrace:
         input_cards: list[CardSearchResult],
         output_cards: list[CardSearchResult],
     ) -> list[dict[str, Any]]:
-        before_ranks = {
-            card.scryfall_id: rank
-            for rank, card in enumerate(input_cards, start=1)
-        }
+        before_ranks = {card.scryfall_id: rank for rank, card in enumerate(input_cards, start=1)}
         return [
             {
                 "scryfall_id": str(card.scryfall_id),

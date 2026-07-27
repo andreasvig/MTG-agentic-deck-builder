@@ -1,6 +1,6 @@
 # ADR 0002: Scryfall Authority With A Derived Local Catalog
 
-- Status: Accepted, partially implemented
+- Status: Accepted
 - Date: 2026-07-23
 
 ## Context
@@ -32,17 +32,15 @@ and Cardmarket verification links without separate authentication.
 
 Shipped:
 
-- Live Scryfall provider.
 - Provider-neutral public domain models.
-- Rate-conscious request spacing.
-- Process-cached card-name catalog for fuzzy search.
-- Daily EUR display and Cardmarket links.
+- Streaming `default_cards` importer and atomic SQLite replacement.
+- Local fuzzy-title ranking and structured filters.
+- Daily EUR display and Cardmarket links from the selected bulk printing.
 
 Not shipped:
 
-- SQLite schema and importer.
-- Atomic bulk refresh.
-- Indexed local lexical or vector search.
+- Automatic weekly refresh scheduling.
+- Indexed rules-text or semantic search.
 - Persisted price history.
 
 ## Consequences
@@ -56,9 +54,8 @@ Positive:
 
 Costs:
 
-- Live workflows require network access until the catalog exists.
-- First fuzzy lookup must download the name catalog.
-- Scryfall rate and query semantics affect latency and recall.
+- Initial setup requires a bulk download before search is available.
+- Newly released cards require a catalog refresh.
 - Price values are daily estimates and may not equal a live Cardmarket listing.
 
 ## Rejected Alternatives

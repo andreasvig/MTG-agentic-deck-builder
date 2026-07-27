@@ -3,7 +3,11 @@ import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { ApiClient } from "../lib/api";
-import { cardSearchPage, searchDebugSummary } from "../test/fixtures";
+import {
+  cardSearchPage,
+  searchDebugSummary,
+  solRing,
+} from "../test/fixtures";
 import { SearchDrawer } from "./SearchDrawer";
 
 const idleClient: ApiClient = {
@@ -151,34 +155,26 @@ describe("card search dialog", () => {
     );
 
     expect(await screen.findByText("Search trace")).toBeInTheDocument();
-    expect(screen.getByText("742.3ms")).toBeInTheDocument();
+    expect(screen.getAllByText("83.2ms")).toHaveLength(2);
     await userEvent.click(screen.getByText("Search trace"));
-    expect(screen.getByText("Local semantic ranking")).toBeInTheDocument();
-    expect(screen.getAllByText("175 → 175")).toHaveLength(2);
-    expect(screen.getByText('o:"add" game:paper')).toBeInTheDocument();
-    expect(screen.getByText("LLM request")).toBeInTheDocument();
-    expect(screen.getByText("LLM response")).toBeInTheDocument();
-    expect(
-      screen.getAllByText(
-        /Rank Magic cards for the user's deck-building intent/,
-      ),
-    ).toHaveLength(2);
-    expect(screen.getByText("Exact raw request JSON")).toBeInTheDocument();
-    expect(screen.getByText("Google AI Studio")).toBeInTheDocument();
+    expect(screen.getByText("Local fuzzy title ranking")).toBeInTheDocument();
+    expect(screen.getAllByText("rapidfuzz.WRatio")).toHaveLength(1);
+    expect(screen.getByText("Title candidates")).toBeInTheDocument();
     expect(
       screen.getByText("local-data/search-debug.jsonl"),
     ).toBeInTheDocument();
   });
 
-  it("shows per-card fuzzy scores and every cutoff candidate", async () => {
+  it("shows per-card fuzzy scores and loaded-page candidate evidence", async () => {
+    window.localStorage.setItem("manabase.search-debug", "true");
     const page = cardSearchPage(undefined, "sol rng");
     page.strategy = "fuzzy";
-    page.interpretation = "Closest card names above 0.450";
+    page.interpretation = "Titles ranked locally by fuzzy similarity";
     page.name_match_scores = { "printing-sol-ring": 0.933333 };
     const debug = searchDebugSummary();
     debug.stages = [
       {
-        name: "Fuzzy name lookup",
+        name: "Local fuzzy title ranking",
         status: "ok",
         duration_ms: 83.2,
         input_count: null,
@@ -186,15 +182,16 @@ describe("card search dialog", () => {
       },
     ];
     debug.trace.decision = {
-      input_kind: "card_name",
+      input_kind: "card_title",
       strategy: "fuzzy",
-      fuzzy_cutoff: 0.45,
-      fuzzy_top_score: 0.933333,
-      fuzzy_routing_signal: "accept_name_match",
+      source: "local_sqlite_catalog",
+      top_score: 0.933333,
+      page_start: 0,
+      page_end: 1,
     };
     debug.trace.stages = [
       {
-        name: "Fuzzy name lookup",
+        name: "Local fuzzy title ranking",
         status: "ok",
         duration_ms: 83.2,
         output: {
@@ -208,23 +205,23 @@ describe("card search dialog", () => {
           ],
         },
         details: {
-          fuzzy_cutoff: 0.45,
+          algorithm: "rapidfuzz.WRatio",
+          minimum_score: null,
+          catalog_card_count: 1,
+          filtered_card_count: 1,
+          removed_by_filters: 0,
+          page: 1,
+          page_size: 12,
+          page_start: 0,
+          page_end: 1,
           top_score: 0.933333,
-          routing_signal: "accept_name_match",
           fuzzy_candidates: [
             {
+              rank: 1,
               name: "Sol Ring",
               matched_alias: "sol ring",
               score: 0.933333,
-              accepted_by_score: true,
-              returned_after_filters: true,
-            },
-            {
-              name: "Soul Burn",
-              matched_alias: "soul burn",
-              score: 0.4,
-              accepted_by_score: false,
-              returned_after_filters: false,
+              original_rank: 1,
             },
           ],
         },
@@ -246,13 +243,85 @@ describe("card search dialog", () => {
       />,
     );
 
-    expect(await screen.findByText("Fuzzy 0.933")).toBeInTheDocument();
+    expect(await screen.findByText("Fuzzy match 93%")).toBeInTheDocument();
     await userEvent.click(screen.getByText("Search trace"));
-    await userEvent.click(screen.getByText("Fuzzy name lookup"));
-    expect(screen.getByText("Fuzzy candidates")).toBeInTheDocument();
-    expect(screen.getByText(/below cutoff/)).toBeInTheDocument();
-    expect(screen.getByText("0.933")).toBeInTheDocument();
-    expect(screen.getByText("0.400")).toBeInTheDocument();
+    expect(screen.getByText("Title candidates")).toBeInTheDocument();
+    expect(screen.getAllByText("93%")).not.toHaveLength(0);
+  });
+
+  it("hides fuzzy percentages outside debug mode", async () => {
+    const page = cardSearchPage(undefined, "sol rng");
+    page.name_match_scores = { "printing-sol-ring": 0.933333 };
+
+    render(
+      <SearchDrawer
+        initialQuery="sol rng"
+        entries={[]}
+        client={{
+          getHealth: vi.fn(),
+          searchCards: vi.fn().mockResolvedValue(page),
+        }}
+        onAdd={vi.fn()}
+        onSetQuantity={vi.fn()}
+        onClose={vi.fn()}
+      />,
+    );
+
+    expect(
+      await screen.findByRole("button", { name: "Add Sol Ring to deck" }),
+    ).toBeInTheDocument();
+    expect(screen.queryByText("Fuzzy match 93%")).not.toBeInTheDocument();
+  });
+
+  it("shows 12 results first and appends the next page with Load more", async () => {
+    const cards = Array.from({ length: 13 }, (_, index) => ({
+      ...solRing,
+      oracle_id: `oracle-${index + 1}`,
+      scryfall_id: `printing-${index + 1}`,
+      name: `Forest Match ${index + 1}`,
+    }));
+    const searchCards = vi.fn<ApiClient["searchCards"]>().mockImplementation(
+      async (query, page = 1) => {
+        const response = cardSearchPage(
+          page === 1 ? cards.slice(0, 12) : cards.slice(12),
+          query,
+        );
+        response.page = page;
+        response.total_results = cards.length;
+        response.has_more = page === 1;
+        return response;
+      },
+    );
+    const user = userEvent.setup();
+
+    render(
+      <SearchDrawer
+        initialQuery="forest"
+        entries={[]}
+        client={{ getHealth: vi.fn(), searchCards }}
+        onAdd={vi.fn()}
+        onSetQuantity={vi.fn()}
+        onClose={vi.fn()}
+      />,
+    );
+
+    expect(await screen.findAllByRole("article")).toHaveLength(12);
+    expect(screen.getByText("13 ranked cards")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Load more" }));
+
+    await waitFor(() =>
+      expect(screen.getAllByRole("article")).toHaveLength(13),
+    );
+    expect(searchCards).toHaveBeenLastCalledWith(
+      "forest",
+      2,
+      expect.any(AbortSignal),
+      expect.any(Object),
+      false,
+    );
+    expect(
+      screen.queryByRole("button", { name: "Load more" }),
+    ).not.toBeInTheDocument();
   });
 
   it("keeps the trace available when a search returns no cards", async () => {

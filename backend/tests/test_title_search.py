@@ -1,0 +1,187 @@
+import asyncio
+import json
+from decimal import Decimal
+from pathlib import Path
+from uuid import UUID, uuid5
+
+from mtg_deck_builder.card_catalog import CatalogEntry, card_title_aliases
+from mtg_deck_builder.domain import (
+    CardPrices,
+    CardSearchFilters,
+    CardSearchQuery,
+    CardSearchResult,
+)
+from mtg_deck_builder.search import FuzzyTitleSearchProvider
+from mtg_deck_builder.search_debug import JsonlSearchDebugLogger
+
+_UUID_NAMESPACE = UUID("f3c7af78-93ea-4d1b-8873-0eac5b4f6c5f")
+
+
+def make_card(
+    name: str,
+    *,
+    colors: list[str] | None = None,
+    mana_value: float = 0,
+    price_eur: str | None = "0.12",
+) -> CardSearchResult:
+    identity = colors or []
+    return CardSearchResult(
+        oracle_id=uuid5(_UUID_NAMESPACE, f"oracle:{name}"),
+        scryfall_id=uuid5(_UUID_NAMESPACE, f"printing:{name}"),
+        name=name,
+        layout="normal",
+        mana_cost=None,
+        mana_value=mana_value,
+        type_line="Card",
+        oracle_text=None,
+        colors=identity,
+        color_identity=identity,
+        image_uris=None,
+        card_faces=[],
+        set_code="tst",
+        set_name="Test",
+        collector_number="1",
+        rarity="common",
+        prices=CardPrices(eur=Decimal(price_eur) if price_eur else None),
+        legalities={"commander": "legal"},
+        finishes=["nonfoil"],
+        scryfall_url="https://scryfall.com/card/tst/1/test",
+    )
+
+
+FOREST = make_card("Forest", colors=["G"])
+FOREST_BEAR = make_card("Forest Bear", colors=["G"], mana_value=2)
+MISTY_RAINFOREST = make_card("Misty Rainforest", colors=["G", "U"])
+FESTIVAL = make_card("Festival", colors=["W"], mana_value=1, price_eur="0.40")
+COLORLESS = make_card("Forest Compass", price_eur=None)
+
+
+class StubCatalog:
+    path = Path("test-cards.sqlite3")
+
+    def __init__(self, cards: list[CardSearchResult]) -> None:
+        self._entries = tuple(
+            CatalogEntry(card=card, aliases=card_title_aliases(card)) for card in cards
+        )
+        self.calls = 0
+
+    async def entries(self) -> tuple[CatalogEntry, ...]:
+        self.calls += 1
+        return self._entries
+
+
+def test_every_query_ranks_the_complete_local_catalog_and_exact_title_stays_first() -> None:
+    catalog = StubCatalog([MISTY_RAINFOREST, FESTIVAL, FOREST_BEAR, FOREST])
+    provider = FuzzyTitleSearchProvider(catalog)  # type: ignore[arg-type]
+
+    result = asyncio.run(provider.search(CardSearchQuery(q="forest")))
+
+    assert catalog.calls == 1
+    assert [card.name for card in result.cards[:3]] == [
+        "Forest",
+        "Forest Bear",
+        "Misty Rainforest",
+    ]
+    assert result.name_match_scores[FOREST.scryfall_id] == 1.0
+    assert result.total_results == 4
+    assert result.strategy == "fuzzy"
+    assert result.interpretation == "Titles ranked locally by fuzzy similarity"
+    assert result.reranked is False
+
+
+def test_there_is_no_minimum_match_threshold() -> None:
+    catalog = StubCatalog([FOREST, FESTIVAL])
+    provider = FuzzyTitleSearchProvider(catalog)  # type: ignore[arg-type]
+
+    result = asyncio.run(provider.search(CardSearchQuery(q="completely unrelated")))
+
+    assert len(result.cards) == 2
+    assert result.total_results == 2
+    assert all(score >= 0 for score in result.name_match_scores.values())
+
+
+def test_results_use_simple_twelve_card_pages_without_a_candidate_cap() -> None:
+    cards = [make_card(f"Forest Match {index}") for index in range(1, 15)]
+    catalog = StubCatalog(cards)
+    provider = FuzzyTitleSearchProvider(catalog)  # type: ignore[arg-type]
+
+    first = asyncio.run(provider.search(CardSearchQuery(q="forest", page=1)))
+    second = asyncio.run(provider.search(CardSearchQuery(q="forest", page=2)))
+
+    assert len(first.cards) == 12
+    assert first.total_results == 14
+    assert first.has_more is True
+    assert len(second.cards) == 2
+    assert second.total_results == 14
+    assert second.has_more is False
+    assert {card.scryfall_id for card in first.cards}.isdisjoint(
+        card.scryfall_id for card in second.cards
+    )
+
+
+def test_structured_filters_are_applied_locally_after_fuzzy_ranking() -> None:
+    catalog = StubCatalog(
+        [FOREST, FOREST_BEAR, MISTY_RAINFOREST, FESTIVAL, COLORLESS]
+    )
+    provider = FuzzyTitleSearchProvider(catalog)  # type: ignore[arg-type]
+
+    subset = asyncio.run(
+        provider.search(
+            CardSearchQuery(
+                q="forest",
+                filters=CardSearchFilters(
+                    colors=["G"],
+                    mana_value_min=1,
+                    mana_value_max=3,
+                    price_eur_max=Decimal("0.20"),
+                ),
+            )
+        )
+    )
+    exact_or_colorless = asyncio.run(
+        provider.search(
+            CardSearchQuery(
+                q="forest",
+                filters=CardSearchFilters(
+                    colors=["G"],
+                    color_mode="exact",
+                    include_colorless=True,
+                ),
+            )
+        )
+    )
+
+    assert [card.name for card in subset.cards] == ["Forest Bear"]
+    assert {card.name for card in exact_or_colorless.cards} == {
+        "Forest",
+        "Forest Bear",
+        "Forest Compass",
+    }
+
+
+def test_debug_trace_explains_local_catalog_counts_and_fuzzy_scores(
+    tmp_path: Path,
+) -> None:
+    log_path = tmp_path / "search.jsonl"
+    catalog = StubCatalog([FOREST, FESTIVAL])
+    provider = FuzzyTitleSearchProvider(  # type: ignore[arg-type]
+        catalog,
+        debug_logger=JsonlSearchDebugLogger(log_path),
+    )
+
+    result = asyncio.run(
+        provider.search(CardSearchQuery(q="forest", debug=True))
+    )
+
+    assert result.debug is not None
+    assert [stage.name for stage in result.debug.stages] == [
+        "Local fuzzy title ranking"
+    ]
+    record = json.loads(log_path.read_text(encoding="utf-8"))
+    details = record["stages"][0]["details"]
+    assert details["catalog_card_count"] == 2
+    assert details["filtered_card_count"] == 2
+    assert details["minimum_score"] is None
+    assert details["fuzzy_candidates"][0]["name"] == "Forest"
+    assert details["fuzzy_candidates"][0]["score"] == 1.0
+    assert "provider_queries" not in details

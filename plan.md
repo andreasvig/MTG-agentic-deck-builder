@@ -28,8 +28,8 @@ for shipped, partial, and planned behavior and
 - Frontend: React, TypeScript, and Vite. Shipped.
 - Backend: FastAPI and Python. Search API shipped; deck API planned.
 - Storage: SQLite. Planned.
-- Card data: Scryfall authority with a derived local SQLite catalog. Live
-  provider shipped; local catalog planned.
+- Card data: Scryfall authority with a derived local SQLite catalog. Bulk
+  synchronization and local title search shipped.
 - Pricing: Scryfall daily EUR estimates, cached per printing. Current display
   shipped; persistent cache/history planned.
 - Development URLs:
@@ -54,17 +54,13 @@ for shipped, partial, and planned behavior and
 
 ### Card Discovery
 
-- Search by exact card name, fuzzy card name, natural deck-building intent, or
-  explicit Scryfall syntax.
-- Compile common intents such as ramp, card draw, cheap creature types,
-  finishers, untap effects, and +1/+1 counter multiplication into broad
-  Scryfall candidate queries.
-- Rank intent candidates locally with a small Hugging Face embedding model.
-- Optionally apply a bounded OpenRouter rerank with
-  `google/gemini-3.5-flash-lite` at minimal reasoning effort.
+- Search every input as an exact, partial, segmented, or misspelled card title.
+- Score the local SQLite title catalog with RapidFuzz `WRatio`.
+- Rank the complete catalog without a score threshold or candidate cap.
+- Apply local filters, then page canonical card results.
+- Show the per-result fuzzy percentage while search debug mode is enabled.
 - Filter every search by color identity using can-include or exact matching,
   including colorless, plus minimum/maximum mana value and EUR estimate.
-- Support useful Scryfall-style filters.
 - Show card image, mana cost, type, rules text, color identity, and legality.
 - Filter results to the commander's color identity by default.
 - Preserve the selected printing so its image and price are deterministic.
@@ -81,8 +77,8 @@ for shipped, partial, and planned behavior and
   value, keywords, sets, and finishes for local search.
 - Refresh gameplay metadata weekly and after set releases.
 - Perform imports atomically so an interrupted refresh keeps the prior catalog.
-- Use live Scryfall calls for new cards, advanced queries not supported locally,
-  and fallback when a local lookup misses.
+- Refresh explicitly from Scryfall bulk data; advanced live-query fallback is
+  deferred until there is a concrete product need.
 - Keep Scryfall-specific access behind a provider so the UI, rules service, and
   agent do not depend on transport details.
 
@@ -163,7 +159,7 @@ React UI
    |
 FastAPI routes
    |
-Deck and rules services ----- Scryfall provider/cache
+Deck and rules services ----- derived Scryfall SQLite catalog
    |
 SQLite
 
@@ -180,9 +176,10 @@ validation, history, and tests.
 ### Phase 1: Manual Editor Foundation - Shipped
 
 - React/FastAPI runtime on uncommon ports.
-- Live provider-neutral Scryfall search.
-- Exact, fuzzy, intent, and syntax routing with filters and score traces.
-- Local embeddings and optional OpenRouter intent reranking.
+- Provider-neutral local SQLite title search.
+- One fuzzy title path with filters, percentages, and a one-stage trace.
+- Uncapped, threshold-free fuzzy-title ranking with local filters and numbered
+  12-card **Load more** pages.
 - Browser-local multi-deck library, custom groups, quantities, and undo.
 - Visual/list layouts, derived card types, card dialog, desktop/mobile shells.
 - Singleton and color-identity warnings.
@@ -204,13 +201,15 @@ validation, history, and tests.
 - Separate errors, warnings, and explicit Rule Zero overrides.
 - Use the same validation from UI and future agent tools.
 
-### Phase 4: Local Card Catalog And Search Recall
+### Phase 4: Local Card Catalog And Title Recall - Partially Shipped
 
-- Stream Scryfall `default_cards` into a derived SQLite read model.
-- Import atomically and refresh weekly.
-- Add indexed lexical search and complete-corpus semantic embeddings.
-- Retain live Scryfall syntax and new-card fallback.
-- Build a name/intent routing evaluation corpus.
+- Shipped: stream Scryfall `default_cards` into a derived SQLite read model.
+- Shipped: atomic timestamp-aware import and explicit refresh command.
+- Shipped: preserve the same fuzzy scoring contract against the local catalog.
+- Next: schedule weekly refreshes.
+- Build a title-query evaluation corpus for a later semantic-routing threshold.
+- Use that evidence to define a later weak-fuzzy-to-semantic fallback; do not
+  impose a minimum score on the current title-ranking phase.
 
 ### Phase 5: Portability, Printing, Pricing, And Insight
 
@@ -241,9 +240,9 @@ The full current ledger lives in
 boundary is:
 
 ```text
-Shipped: live card discovery and browser-local manual editing
-Planned: backend deck persistence, local full card catalog, complete rules,
-         import/export, analytics, and agent chat
+Shipped: local-catalog card discovery and browser-local manual editing
+Planned: backend deck persistence, complete rules, import/export, analytics,
+         automatic catalog scheduling, and agent chat
 ```
 
 ## Out of Scope for MVP
@@ -265,7 +264,5 @@ Planned: backend deck persistence, local full card catalog, complete rules,
 - Exact Sonar web-search provider and API
 - Permitted source for commander-specific recommendation data
 - Desired power-level or Commander-bracket model for the later phase
-- Fuzzy confidence threshold that should hand unsupported queries to the
-  general intent planner
 - Conflict semantics when an agent patch is applied to a deck that changed
   after the proposal

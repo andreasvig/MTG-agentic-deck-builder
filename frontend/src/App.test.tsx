@@ -53,7 +53,7 @@ describe("deck workspace", () => {
       screen.queryByPlaceholderText("Filter this deck"),
     ).not.toBeInTheDocument();
 
-    const searchTrigger = screen.getByRole("button", { name: "Card search" });
+    const searchTrigger = screen.getByRole("button", { name: "Add cards" });
     await user.click(searchTrigger);
     const dialog = screen.getByRole("dialog", { name: "Find cards" });
     const input = screen.getByRole("textbox", {
@@ -116,7 +116,7 @@ describe("deck workspace", () => {
     );
     expect(screen.getByRole("heading", { name: "Ramp" })).toBeInTheDocument();
 
-    await user.click(screen.getByRole("button", { name: "Card search" }));
+    await user.click(screen.getByRole("button", { name: "Add cards" }));
     await user.type(
       screen.getByRole("textbox", {
         name: "Search cards",
@@ -207,22 +207,19 @@ describe("deck workspace", () => {
     ).toBeInTheDocument();
   });
 
-  it("opens full search from the toolbar instead of auto-adding", async () => {
+  it("replaces the toolbar search field with an Add cards button", async () => {
     const user = userEvent.setup();
     render(<App />);
 
-    await user.type(
-      screen.getByRole("textbox", { name: "Search cards from toolbar" }),
-      "Sol Ring",
-    );
-    await user.keyboard("{Enter}");
+    expect(
+      screen.queryByRole("textbox", { name: "Search cards from toolbar" }),
+    ).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Add cards" }));
 
     expect(
       await screen.findByRole("dialog", { name: "Find cards" }),
     ).toBeInTheDocument();
-    expect(
-      await screen.findByRole("button", { name: "Add Sol Ring to deck" }),
-    ).toBeInTheDocument();
+    expect(screen.getByRole("textbox", { name: "Search cards" })).toHaveFocus();
     expect(
       screen.queryByRole("button", { name: "Inspect Sol Ring" }),
     ).not.toBeInTheDocument();
@@ -261,7 +258,7 @@ describe("deck workspace", () => {
         name: "Ghalta, Primal Hunger commander",
       }),
     ).toBeInTheDocument();
-    await user.click(screen.getByRole("button", { name: "Card search" }));
+    await user.click(screen.getByRole("button", { name: "Add cards" }));
     await user.type(
       screen.getByRole("textbox", {
         name: "Search cards",
