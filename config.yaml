@@ -1,7 +1,7 @@
 search:
   title_match:
     # Return this many locally ranked cards before showing "Load more".
-    page_size: 12
+    page_size: 6
     # Only this stricter score controls the immediate-preview phase.
     # The complete fuzzy ranking still has no result threshold.
     preview_min_confidence: 0.75

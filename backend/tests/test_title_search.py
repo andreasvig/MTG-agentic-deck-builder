@@ -116,23 +116,50 @@ def test_preview_confidence_keeps_title_segments_and_typos_but_rejects_intent() 
     assert preview_confidence_score("big green creatures", "Green Dragon") < 0.75
 
 
-def test_results_use_simple_twelve_card_pages_without_a_candidate_cap() -> None:
+def test_results_use_simple_six_card_pages_without_a_candidate_cap() -> None:
     cards = [make_card(f"Forest Match {index}") for index in range(1, 15)]
     catalog = StubCatalog(cards)
     provider = FuzzyTitleSearchProvider(catalog)  # type: ignore[arg-type]
 
     first = asyncio.run(provider.search(CardSearchQuery(q="forest", page=1)))
     second = asyncio.run(provider.search(CardSearchQuery(q="forest", page=2)))
+    third = asyncio.run(provider.search(CardSearchQuery(q="forest", page=3)))
 
-    assert len(first.cards) == 12
+    assert len(first.cards) == 6
     assert first.total_results == 14
     assert first.has_more is True
-    assert len(second.cards) == 2
+    assert len(second.cards) == 6
     assert second.total_results == 14
-    assert second.has_more is False
+    assert second.has_more is True
+    assert len(third.cards) == 2
+    assert third.total_results == 14
+    assert third.has_more is False
     assert {card.scryfall_id for card in first.cards}.isdisjoint(
         card.scryfall_id for card in second.cards
     )
+    assert {card.scryfall_id for card in second.cards}.isdisjoint(
+        card.scryfall_id for card in third.cards
+    )
+
+
+def test_agentic_handoff_requires_six_high_confidence_title_hits() -> None:
+    six_cards = [make_card(f"Forest Match {index}") for index in range(1, 7)]
+    six_hit_provider = FuzzyTitleSearchProvider(  # type: ignore[arg-type]
+        StubCatalog(six_cards),
+        agentic_enabled=True,
+    )
+    five_hit_provider = FuzzyTitleSearchProvider(  # type: ignore[arg-type]
+        StubCatalog(six_cards[:5]),
+        agentic_enabled=True,
+    )
+
+    complete_page = asyncio.run(six_hit_provider.search(CardSearchQuery(q="forest")))
+    incomplete_page = asyncio.run(five_hit_provider.search(CardSearchQuery(q="forest")))
+
+    assert len(complete_page.cards) == 6
+    assert complete_page.agentic_required is False
+    assert len(incomplete_page.cards) == 5
+    assert incomplete_page.agentic_required is True
 
 
 def test_structured_filters_are_applied_locally_after_fuzzy_ranking() -> None:

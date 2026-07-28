@@ -6,6 +6,8 @@ All notable changes to this project will be documented in this file.
 
 ### Added
 
+- Enlarged search-result cards with bigger artwork, roomier content, and more
+  readable confidence, price, and action controls across desktop and mobile.
 - Implemented ADR 0009 progressive one-tool agentic card search: confident
   fuzzy previews return immediately, one structured local catalog tool runs,
   and the same model context returns a validated relevant-subset
@@ -48,7 +50,7 @@ All notable changes to this project will be documented in this file.
   command, atomic SQLite installation, and local catalog reload after swaps.
 - Added canonical Oracle-card search rows while retaining every eligible paper
   printing in the derived database.
-- Added root `config.yaml` with a 12-card display page size.
+- Added root `config.yaml` with a six-card display page size.
 - Ranked the complete title catalog without a score threshold or
   candidate-pool cap.
 - Added simple numbered **Load more** pagination over locally filtered cards.
@@ -156,6 +158,9 @@ All notable changes to this project will be documented in this file.
 
 ### Changed
 
+- Reduced search pages from 12 cards to six. Agentic search now starts whenever
+  fewer than six first-page fuzzy matches clear the 75% title-confidence
+  boundary.
 - Preserved fuzzy title confidence through agentic reranking by scoring every
   final card against the same complete, face, and pre-comma title aliases.
 - Kept WRatio for broad fuzzy ordering but stopped presenting it as title

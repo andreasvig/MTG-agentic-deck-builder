@@ -96,14 +96,14 @@ Non-secret matching values live in `config.yaml`:
 ```yaml
 search:
   title_match:
-    page_size: 12
+    page_size: 6
 ```
 
 Temporary environment overrides use nested names:
 
 | Variable | Default | Purpose |
 | --- | ---: | --- |
-| `MTG_SEARCH__TITLE_MATCH__PAGE_SIZE` | `12` | Cards returned per page |
+| `MTG_SEARCH__TITLE_MATCH__PAGE_SIZE` | `6` | Cards returned per page and confident fuzzy hits required to skip agentic search |
 | `MTG_SEARCH_DEBUG_ENABLED` | `false` | Trace every request by default |
 | `MTG_SEARCH_DEBUG_LOG_PATH` | `local-data/search-debug.jsonl` | JSONL output |
 | `MTG_SEARCH_DEBUG_RESULT_LIMIT` | `25` | Cards retained per snapshot |

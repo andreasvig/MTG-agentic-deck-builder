@@ -627,7 +627,7 @@ export function SearchDrawer({
 
             {state.phase === "loading" && cards.length === 0 ? (
               <div className="search-skeletons" aria-label="Searching cards">
-                {Array.from({ length: 8 }, (_, index) => (
+                {Array.from({ length: 6 }, (_, index) => (
                   <span className="search-skeleton" key={index} />
                 ))}
               </div>
@@ -659,7 +659,7 @@ export function SearchDrawer({
                 className="search-skeletons"
                 aria-label="Agentic search is ranking cards"
               >
-                {Array.from({ length: 12 }, (_, index) => (
+                {Array.from({ length: 6 }, (_, index) => (
                   <span className="search-skeleton" key={index} />
                 ))}
               </div>

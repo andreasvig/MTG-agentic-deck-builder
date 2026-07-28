@@ -312,11 +312,11 @@ test("desktop deck-building flow remains fast and reversible", async ({
   ).toBeVisible();
 });
 
-test("search loads 12 fuzzy results before appending the next page", async ({
+test("search loads six fuzzy results before appending the next page", async ({
   page,
 }, testInfo) => {
   await page.setViewportSize({ width: 1440, height: 900 });
-  const cards = Array.from({ length: 13 }, (_, index) => ({
+  const cards = Array.from({ length: 7 }, (_, index) => ({
     ...solRing,
     oracle_id: `pagination-oracle-${index + 1}`,
     scryfall_id: `pagination-printing-${index + 1}`,
@@ -330,7 +330,7 @@ test("search loads 12 fuzzy results before appending the next page", async ({
     requestedPages.push(requestedPage);
     const response = searchPage(
       query,
-      requestedPage === 1 ? cards.slice(0, 12) : cards.slice(12),
+      requestedPage === 1 ? cards.slice(0, 6) : cards.slice(6),
     );
     response.page = requestedPage;
     response.total_results = cards.length;
@@ -342,19 +342,19 @@ test("search loads 12 fuzzy results before appending the next page", async ({
   await openSearch(page);
   await page.getByRole("textbox", { name: "Search cards" }).fill("forest");
 
-  await expect(page.getByRole("article")).toHaveCount(12);
+  await expect(page.getByRole("article")).toHaveCount(6);
   await expect(
-    page.getByText("13 ranked cards", { exact: true }),
+    page.getByText("7 ranked cards", { exact: true }),
   ).toBeVisible();
   const loadMore = page.getByRole("button", { name: "Load more" });
   await expect(loadMore).toBeVisible();
   await page.screenshot({
-    path: testInfo.outputPath("desktop-first-12.png"),
+    path: testInfo.outputPath("desktop-first-6.png"),
     fullPage: true,
   });
   await loadMore.click();
 
-  await expect(page.getByRole("article")).toHaveCount(13);
+  await expect(page.getByRole("article")).toHaveCount(7);
   await expect(loadMore).toHaveCount(0);
   expect(requestedPages).toEqual([1, 2]);
   await page.screenshot({
@@ -500,9 +500,11 @@ test("search filters shape requests without crowding the results", async ({
   expect(requestedUrl?.searchParams.get("debug")).toBe("true");
   await expect(page.getByText("Search trace")).toBeVisible();
   await page.getByText("Search trace").click();
-  await expect(
-    page.getByText("Local fuzzy title ranking", { exact: true }),
-  ).toBeVisible();
+  const fuzzyStage = page.getByText("Local fuzzy title ranking", {
+    exact: true,
+  });
+  await expect(fuzzyStage).toBeVisible();
+  await fuzzyStage.click();
   await expect(page.getByText("Title candidates")).toBeVisible();
   await expect(
     page.getByText("rapidfuzz.WRatio", { exact: true }),
@@ -671,9 +673,11 @@ test("mobile keeps primary deck actions reachable and contained", async ({
     fullPage: true,
   });
   await page.getByText("Search trace").click();
-  await expect(
-    page.getByText("Local fuzzy title ranking", { exact: true }),
-  ).toBeVisible();
+  const fuzzyStage = page.getByText("Local fuzzy title ranking", {
+    exact: true,
+  });
+  await expect(fuzzyStage).toBeVisible();
+  await fuzzyStage.click();
   await expect(page.getByText("Title candidates")).toBeVisible();
   const traceBounds = await page.locator(".search-debug").boundingBox();
   expect(traceBounds).not.toBeNull();

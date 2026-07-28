@@ -215,7 +215,7 @@ describe("card search dialog", () => {
           filtered_card_count: 1,
           removed_by_filters: 0,
           page: 1,
-          page_size: 12,
+          page_size: 6,
           page_start: 0,
           page_end: 1,
           top_score: 0.933333,

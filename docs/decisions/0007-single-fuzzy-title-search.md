@@ -49,8 +49,8 @@ Positive:
 
 - Search behavior has one explainable control flow.
 - No title is silently discarded by a score threshold or candidate-pool cap.
-- Scryfall loads the initial 12-title batch and only the additional titles
-  needed to fill the 12-card display page.
+- The display-page size remains a YAML-owned product value; it is now six cards
+  per page.
 - Exact, typo, word, and segment matches share one scale.
 - Search no longer needs model downloads, API keys, prompts, or model-specific
   failure handling.

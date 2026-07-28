@@ -3020,18 +3020,18 @@ select {
 .search-skeletons {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 8px;
+  gap: 12px;
 }
 
 .search-card {
   display: grid;
-  grid-template-columns: 76px minmax(0, 1fr);
+  grid-template-columns: 102px minmax(0, 1fr);
   min-width: 0;
-  min-height: 122px;
+  min-height: 154px;
   overflow: hidden;
   background: var(--surface);
   border: 1px solid var(--line);
-  border-radius: 5px;
+  border-radius: 7px;
 }
 
 .search-card:hover {
@@ -3044,7 +3044,7 @@ select {
 }
 
 .search-card__preview {
-  width: 76px;
+  width: 102px;
   aspect-ratio: 488 / 680;
   align-self: start;
   padding: 0;
@@ -3065,8 +3065,8 @@ select {
   display: flex;
   min-width: 0;
   flex-direction: column;
-  gap: 3px;
-  padding: 8px 8px 7px;
+  gap: 5px;
+  padding: 11px 12px 10px;
 }
 
 .search-card__name {
@@ -3084,7 +3084,7 @@ select {
 
 .search-card__name strong {
   overflow: hidden;
-  font-size: 10px;
+  font-size: 13px;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -3096,14 +3096,20 @@ select {
 
 .search-card__match-score {
   align-self: flex-start;
-  padding: 2px 4px;
+  padding: 3px 6px;
   color: #355d40;
-  font-size: 8px;
+  font-size: 10px;
   font-weight: 760;
   font-variant-numeric: tabular-nums;
   background: #e4eee7;
   border: 1px solid #c6d8ca;
   border-radius: 3px;
+}
+
+.search-card .mana-line,
+.search-card .type-line,
+.search-card .printing-line {
+  font-size: 11px;
 }
 
 .printing-line {
@@ -3115,7 +3121,7 @@ select {
 .search-card__footer {
   display: flex;
   min-width: 0;
-  min-height: 29px;
+  min-height: 34px;
   align-items: center;
   justify-content: space-between;
   gap: 5px;
@@ -3123,18 +3129,18 @@ select {
 }
 
 .search-card__footer > strong {
-  font-size: 10px;
+  font-size: 13px;
   font-variant-numeric: tabular-nums;
 }
 
 .add-printing-button {
   display: inline-flex;
-  min-height: 29px;
+  min-height: 34px;
   align-items: center;
   gap: 4px;
-  padding: 0 7px;
+  padding: 0 10px;
   color: var(--accent-dark);
-  font-size: 9px;
+  font-size: 11px;
   font-weight: 760;
   background: var(--accent-soft);
   border: 1px solid #bad8c2;
@@ -3243,7 +3249,7 @@ select {
 
 .search-skeleton {
   display: block;
-  height: 122px;
+  height: 154px;
   background: #e4e8e4;
   border: 1px solid #dde2dd;
   border-radius: 5px;
@@ -3579,12 +3585,12 @@ select {
   }
 
   .search-card {
-    grid-template-columns: 82px minmax(0, 1fr);
-    min-height: 132px;
+    grid-template-columns: 96px minmax(0, 1fr);
+    min-height: 146px;
   }
 
   .search-card__preview {
-    width: 82px;
+    width: 96px;
   }
 
   .search-card__preview .card-art {
@@ -3822,12 +3828,12 @@ select {
   }
 
   .search-card {
-    grid-template-columns: 94px minmax(0, 1fr);
-    min-height: 144px;
+    grid-template-columns: 108px minmax(0, 1fr);
+    min-height: 160px;
   }
 
   .search-card__preview {
-    width: 94px;
+    width: 108px;
   }
 
   .search-card__preview .card-art {
@@ -3835,11 +3841,11 @@ select {
   }
 
   .search-card__content {
-    padding: 8px 9px;
+    padding: 10px 11px;
   }
 
   .search-card__name strong {
-    font-size: 11px;
+    font-size: 13px;
   }
 
   .search-card__footer {

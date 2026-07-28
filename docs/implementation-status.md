@@ -27,7 +27,7 @@ not the intended end state.
 - RapidFuzz `WRatio` scores normalized to `0..1`.
 - Exact title first, followed by partial and typo matches in score order.
 - Complete-catalog fuzzy ranking with no score threshold or candidate cap.
-- Local filtering followed by full 12-card numbered pages and **Load more**.
+- Local filtering followed by full six-card numbered pages and **Load more**.
 - No network requests during normal search.
 - Search filters for subset/exact color identity, colorless, mana-value range,
   and EUR-price range.

@@ -47,7 +47,7 @@ class FuzzyTitleSearchProvider:
         *,
         debug_logger: JsonlSearchDebugLogger | None = None,
         debug_default_enabled: bool = False,
-        page_size: int = 12,
+        page_size: int = 6,
         preview_min_confidence: float = 0.75,
         agentic_enabled: bool = False,
     ) -> None:

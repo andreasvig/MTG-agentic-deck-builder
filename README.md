@@ -133,7 +133,7 @@ contracts, data identities, failure behavior, and the migration target.
 Every query uses one local fuzzy card-title matcher. It compares the normalized
 input against the SQLite catalog with RapidFuzz `WRatio`, ranks every canonical
 card without a score threshold or candidate cap, applies local filters, and
-returns the requested 12-card page. **Load more** requests the next numbered
+returns the requested six-card page. **Load more** requests the next numbered
 page. Normal search makes no Scryfall request.
 
 For example, `forest` returns Forest first at 100%, followed by partial-title
@@ -145,7 +145,7 @@ The values live in [`config.yaml`](config.yaml):
 ```yaml
 search:
   title_match:
-    page_size: 12
+    page_size: 6
 ```
 
 The full scoring contract is in [`docs/search.md`](docs/search.md) and

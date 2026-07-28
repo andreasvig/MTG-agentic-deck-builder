@@ -71,7 +71,7 @@ def test_settings_load_prefixed_environment_variables(monkeypatch: MonkeyPatch) 
 def test_settings_load_repository_search_yaml() -> None:
     settings = Settings()
 
-    assert settings.search.title_match.page_size == 12
+    assert settings.search.title_match.page_size == 6
     assert settings.search.title_match.preview_min_confidence == 0.75
     assert settings.search.semantic.enabled is False
     assert settings.search.agentic.enabled is True

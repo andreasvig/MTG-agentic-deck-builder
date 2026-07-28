@@ -20,13 +20,13 @@ FastAPI (127.0.0.1:43127/api/v1)
   | FuzzyTitleSearchProvider
   | - local SQLite cards and title aliases
   | - RapidFuzz WRatio scores
-  | - threshold-free, numbered 12-card pages
+  | - threshold-free, numbered six-card pages
   | - local structured filters
   | - debug tracing
   |
   +--> local-data/cards.sqlite3
   |
-  | when fewer than 12 titles clear preview confidence
+  | when fewer than six titles clear preview confidence
   v
 AgenticCardSearchService
   |-- OpenRouter initial tool selection

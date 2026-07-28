@@ -23,8 +23,8 @@ fully observable in debug mode.
   - if the complete normalized query occurs in a title alias, retain its WRatio;
   - otherwise use whole-string RapidFuzz edit similarity without token
     shortcuts.
-- On the first 12-card page, show only candidates whose preview confidence is
-  at least `0.75`. If fewer than 12 qualify, keep those cards visible while one
+- On the first six-card page, show only candidates whose preview confidence is
+  at least `0.75`. If fewer than six qualify, keep those cards visible while one
   agentic search runs.
 - Run one bounded agent with memory only inside that search request.
 - The agent must call exactly one tool: `search_local_cards`. Do not expose a
@@ -55,7 +55,7 @@ fully observable in debug mode.
 - Give `must_contain_all` multiset semantics. Duplicate values are meaningful:
   `["{X}", "{X}"]` requires two `{X}` symbols.
 - Default the local tool to 24 candidates and cap it at 60. The 24-card default
-  gives the final ranker useful alternatives beyond the 12-card display page.
+  gives the final ranker useful alternatives beyond the six-card display page.
 - Preserve canonical symbols such as `{T}`, `{Q}`, and `{X}`. Classify X spells
   from mana cost rather than an X appearing in Oracle text.
 - Persist power/toughness from the bulk card record and execute numeric

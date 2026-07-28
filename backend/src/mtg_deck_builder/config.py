@@ -33,7 +33,7 @@ class TitleMatchSettings(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    page_size: Annotated[int, Field(ge=1, le=30)] = 12
+    page_size: Annotated[int, Field(ge=1, le=30)] = 6
     preview_min_confidence: Annotated[float, Field(ge=0, le=1)] = 0.75
 
 

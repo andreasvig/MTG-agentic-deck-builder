@@ -1,7 +1,7 @@
 # Progressive Card Search
 
 The application starts every query with local fuzzy card-title matching. There
-is no fuzzy minimum score or candidate-pool cap. When fewer than 12 titles
+is no fuzzy minimum score or candidate-pool cap. When fewer than six titles
 clear the stricter 75% preview-confidence boundary, the drawer keeps those
 confident cards visible and starts one bounded agentic search.
 
@@ -50,8 +50,8 @@ user query
   -> score every card title with RapidFuzz WRatio
   -> sort the complete catalog (no cutoff)
   -> apply local color, mana-value, and EUR filters
-  -> compute stricter preview confidence for the first 12
-  -> if all 12 clear 75%: return the normal fuzzy page
+  -> compute stricter preview confidence for the first six
+  -> if all six clear 75%: return the normal fuzzy page
   -> otherwise: return only confident previews immediately
        -> model selects exactly one tool
        -> execute search_local_cards against the local catalog
@@ -60,7 +60,7 @@ user query
        -> reuse the preview ID for an exact duplicate Oracle card
        -> send a concise URL-free card list back to the same model context
        -> model ranks the relevant subset and may omit weak candidates
-       -> return 12 agent-ranked cards and store the selected ranking
+       -> return six agent-ranked cards and store the selected ranking
        -> Load more reads the stored ranking without another model call
 ```
 
@@ -121,7 +121,7 @@ Search behavior lives in root [`config.yaml`](../config.yaml):
 ```yaml
 search:
   title_match:
-    page_size: 12
+    page_size: 6
     preview_min_confidence: 0.75
 
   semantic:
@@ -143,7 +143,7 @@ page. It does not limit how many cards are scored. An environment override can
 use:
 
 ```dotenv
-MTG_SEARCH__TITLE_MATCH__PAGE_SIZE=12
+MTG_SEARCH__TITLE_MATCH__PAGE_SIZE=6
 ```
 
 `preview_min_confidence` does not truncate or cap the complete fuzzy ranking.

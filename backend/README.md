@@ -113,7 +113,7 @@ Title matching loads from root `config.yaml`:
 ```yaml
 search:
   title_match:
-    page_size: 12
+    page_size: 6
     preview_min_confidence: 0.75
   semantic:
     enabled: false
@@ -133,7 +133,7 @@ the `MTG_` prefix.
 | `MTG_SCRYFALL_BULK_TIMEOUT_SECONDS` | `900` |
 | `OPENROUTER_API_KEY` | unset |
 | `MTG_CARD_CATALOG_PATH` | `local-data/cards.sqlite3` |
-| `MTG_SEARCH__TITLE_MATCH__PAGE_SIZE` | `12` |
+| `MTG_SEARCH__TITLE_MATCH__PAGE_SIZE` | `6` |
 | `MTG_SEARCH__TITLE_MATCH__PREVIEW_MIN_CONFIDENCE` | `0.75` |
 | `MTG_SEARCH_DEBUG_ENABLED` | `false` |
 | `MTG_SEARCH_DEBUG_LOG_PATH` | `local-data/search-debug.jsonl` |
