@@ -46,7 +46,7 @@ The runner requires both default ports to be free.
 | `npm run dev` | Start Vite and reload-enabled Uvicorn |
 | `npm test` | Backend tests, frontend tests, and process smoke test |
 | `npm run build` | Type-check and build the frontend |
-| `npm run test:e2e` | Run six Chrome Playwright workflows |
+| `npm run test:e2e` | Run the Chrome Playwright workflows |
 | `npm run test:smoke` | Verify alternate-port startup and clean shutdown |
 
 ## Focused Commands

@@ -137,10 +137,11 @@ Implemented:
 - Accepted one-tool progressive-search decision in ADR 0009.
 - Stricter substring-or-whole-string preview confidence with a configurable
   75% phase boundary returned per card and recorded in current fuzzy traces.
-- Validated YAML settings and system prompt for semantic and agentic search.
+- Validated YAML settings and system prompt for agentic search, with semantic
+  retrieval explicitly disabled.
 - Strict all-optional `search_local_cards` input with merged mana fields,
-  semantic Oracle-text query, exact conditions, structured filters, and
-  bounded candidate counts.
+  exact Oracle-text conditions, structured filters, bounded candidate counts,
+  and a reserved disabled semantic field.
 - Multiset `must_contain_all` semantics for duplicate symbols such as two
   `{X}` values.
 - Strict final interpretation/ranked-ID output using temporary integers,
@@ -169,7 +170,8 @@ Implemented:
 
 Missing:
 
-- Embedding model, semantic index, and local-tool execution.
+- Embedding model, semantic index, and embedding-backed ranking inside the
+  local tool.
 - Trace retention and size policy.
 
 `search.agentic.enabled` is `true`. `search.semantic.enabled` remains `false`;
@@ -186,12 +188,10 @@ matching is an embedding result.
 - Mana curve, color production, probability, and functional analytics.
 - Multi-select and bulk editing.
 - Named deck snapshots and persisted mutation history.
-- Pydantic AI deck assistant beyond the card-search contract foundation.
+- Deck assistant beyond the shipped card-search agent.
 - Agent chat interface in the reserved right workspace.
 - Typed agent tools for inspect, validate, search, propose patch, confirm, apply,
   and undo.
-- Sonar web search and fetch-page tools.
-- A permitted, stable EDHREC provider.
 
 ## Deferred
 

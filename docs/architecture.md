@@ -31,7 +31,7 @@ FastAPI (127.0.0.1:43127/api/v1)
 AgenticCardSearchService
   |-- OpenRouter initial tool selection
   |-- exactly one structured local-catalog tool call
-  |-- OpenRouter structured complete ranking
+  |-- OpenRouter structured relevant-subset ranking
   `-- in-memory ranked batches and user-triggered Load more continuations
   |
   +--> local-data/search-debug.jsonl (debug only)
@@ -59,9 +59,9 @@ The runner:
 7. Forwards termination and stops both children.
 
 Uvicorn's FastAPI lifespan creates one shared `SQLiteCardCatalog`, the fuzzy
-provider, local and Scryfall agent tools, an optional secret-backed OpenRouter
-client, the agentic service/session store, and JSONL trace writers. The
-separate `catalog:sync` command still owns bulk network access.
+provider, one local agent search tool, an optional secret-backed OpenRouter
+client, the agentic service/session store, and JSONL trace writers. Only the
+separate `catalog:sync` command performs Scryfall bulk network access.
 
 ## Backend Modules
 
@@ -85,11 +85,11 @@ and reflected in the frontend runtime validator.
 ### `domain/agentic_search.py`
 
 Strict contracts for the active progressive agentic-search phase:
-all-optional local tool fields, semantic and exact Oracle-text conditions,
-merged mana filters, candidate evidence, final ranked IDs, and the versioned
-internal audit trace. The public debug summary projects it into the seven
-valuable agent steps. `AgenticCardSearchRequest` and the additional page
-metadata form the public progressive HTTP contract.
+all-optional local tool fields, exact Oracle-text conditions, merged mana
+filters, a reserved disabled semantic field, candidate evidence, final ranked
+IDs, and the versioned internal audit trace. The public debug summary projects
+it into the seven valuable agent steps. `AgenticCardSearchRequest` and the
+additional page metadata form the public progressive HTTP contract.
 
 ### `domain/deck.py`
 
@@ -166,10 +166,10 @@ omitted.
 
 ### `agentic_card_search.py`
 
-Executes exact local conditions, bounded paced Scryfall queries, the two-call
-OpenRouter conversation with one intervening tool, temporary numeric candidate
-IDs, relevant-subset validation, debug adaptation, cached ranked batches,
-canonical continuation exclusions, and user-triggered session expansion.
+Executes local structured search, the two-call OpenRouter conversation with one
+intervening tool, temporary numeric candidate IDs, relevant-subset validation,
+debug adaptation, cached ranked batches, canonical continuation exclusions,
+and user-triggered session expansion.
 
 ### `agentic_search_debug.py`
 

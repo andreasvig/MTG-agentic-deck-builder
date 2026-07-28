@@ -5,10 +5,9 @@
 
 ## Context
 
-The planned Pydantic AI assistant should inspect decks, explain suggestions,
-and edit them. Direct database writes or UI automation would bypass validation,
-make changes difficult to review, and create different behavior from manual
-editing.
+The future deck assistant should inspect decks, explain suggestions, and edit
+them. Direct database writes or UI automation would bypass validation, make
+changes difficult to review, and create different behavior from manual editing.
 
 ## Proposed Decision
 
@@ -21,7 +20,7 @@ editing.
 - Apply a patch atomically.
 - Record enough history to undo the complete patch as one operation.
 - Let agent tools inspect and validate but never write SQLite directly.
-- Keep Scryfall, web search, page fetch, and future EDHREC access behind typed
+- Keep local card search and any future external evidence behind typed
   tool/provider boundaries.
 
 ## Consequences
@@ -54,4 +53,3 @@ Costs:
 - Whether suggestions can be grouped into independently confirmable chunks.
 - How provenance and external evidence are attached to suggestions.
 - How Rule Zero overrides are represented.
-- What EDHREC access method is permitted and stable.

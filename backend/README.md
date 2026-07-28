@@ -25,7 +25,8 @@ The backend currently owns:
 - Natural model-facing prompts with temporary numeric candidate IDs and no
   image/provider URLs.
 - Relevant-subset ranking that permits weak candidates to be omitted.
-- Stored agent-ranked pagination that does not repeat model calls.
+- Stored agent-ranked pagination that serves cached batches without a model
+  call and starts one continuation round only after exhaustion.
 
 The backend does not currently own:
 

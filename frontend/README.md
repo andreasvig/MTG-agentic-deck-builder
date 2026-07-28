@@ -101,7 +101,9 @@ The browser validates every fuzzy and agentic search response at runtime in
 the confident preview cards, shows an animated agentic-loading banner, and
 POSTs the same query and immutable filters to `/cards/search/agentic`. The
 final response replaces the preview. Later pages include `search_session_id`,
-so Load more reads the stored ranking without a new model run.
+so **Load more** first reads stored ranking batches without a new model run.
+After those batches are exhausted, the next explicit click starts one
+continuation round with every visible card supplied as **Already showing**.
 
 `Title confidence N%` from `title_confidence_scores` appears only while debug
 mode is enabled. `name_match_scores` remains the broad WRatio evidence. Both

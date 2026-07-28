@@ -56,7 +56,8 @@ were also inspected with Playwright at desktop and mobile viewport sizes.
 
 ## Current Acceptance Slice
 
-- Live Scryfall-backed card search through the FastAPI provider boundary.
+- Local SQLite card search through the FastAPI provider boundary, using a
+  Scryfall-derived bulk catalog.
 - One fuzzy title path with structured filters, percentages in debug mode, and
   inline deck membership.
 - Persistent local deck state with add, remove, quantity, move, and undo.

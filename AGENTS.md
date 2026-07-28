@@ -22,14 +22,18 @@ the documentation in the same change when drift is found.
 
 - The frontend is React 19, TypeScript, and Vite.
 - The backend is FastAPI with Pydantic domain contracts.
-- Scryfall is the live card-data authority.
-- Every search uses one fuzzy card-title path over Scryfall's cached name
-  catalog.
+- Scryfall is the bulk card-data authority; normal search reads derived local
+  SQLite data.
+- Every search starts with one fuzzy card-title path. Weak-title and
+  natural-language requests continue through the one-tool OpenRouter search
+  agent.
 - RapidFuzz `WRatio` handles exact titles, typos, words, and partial segments.
-- `config.yaml` owns the title-match page size.
+- `config.yaml` owns the six-card page size, 75% preview boundary, agent model,
+  one-tool prompt, and continuation values.
 - Deck libraries are currently browser-local and persisted in `localStorage`.
 - There is no deck CRUD API or SQLite persistence yet.
-- The planned agent does not exist yet.
+- Progressive card-search agent execution is shipped. The separate deck chat
+  and mutation agent does not exist yet.
 - Development uses uncommon loopback ports:
   - Frontend: `127.0.0.1:41737`
   - Backend: `127.0.0.1:43127`
@@ -64,6 +68,10 @@ Do not change these without an explicit product decision and ADR update:
   `backend/src/mtg_deck_builder/search.py`.
 - Append-only diagnostics live in
   `backend/src/mtg_deck_builder/search_debug.py`.
+- Agent orchestration, local tool execution, sessions, and continuation live in
+  `backend/src/mtg_deck_builder/agentic_card_search.py`.
+- Complete agent traces live in
+  `backend/src/mtg_deck_builder/agentic_search_debug.py`.
 - Runtime dependency construction lives in
   `backend/src/mtg_deck_builder/main.py`.
 - Settings are validated in `backend/src/mtg_deck_builder/config.py`.
@@ -88,7 +96,7 @@ Do not mutate deck state directly inside presentation components. Extend
 
 ## Search Invariants
 
-- Every query is treated as a complete or partial card title.
+- Every query starts as a complete or partial card title.
 - Normalize case and punctuation before matching.
 - Score against full names, card faces, and the text before a comma.
 - Use RapidFuzz `WRatio` on a normalized `0..1` scale.
@@ -99,6 +107,17 @@ Do not mutate deck state directly inside presentation components. Extend
   `has_more` accurate for the **Load more** action.
 - Apply color, mana-value, and EUR filters locally before slicing numbered
   result pages.
+- Use coverage-aware title confidence only for the progressive phase boundary.
+  If fewer than six first-page cards reach `0.75`, return those previews and
+  start the agentic phase.
+- The search agent may call only `search_local_cards`, exactly once per round.
+  It may rank previews plus tool candidates and omit irrelevant cards.
+- Serve cached agent-ranked batches before running another model call. After
+  exhaustion, one explicit **Load more** click authorizes one continuation
+  round with all visible cards excluded.
+- Keep semantic retrieval disabled until a real embedding model, index, and
+  evaluation exist. Exact Oracle-text and structured local conditions remain
+  available.
 - Normal search must not call Scryfall; refresh the derived SQLite catalog from
   `default_cards` through the explicit sync command.
 - Expose every returned score through `name_match_scores`.
@@ -106,8 +125,11 @@ Do not mutate deck state directly inside presentation components. Extend
   `title_confidence_scores`; this is the percentage shown in debug mode.
 - The trace must include the algorithm, catalog and filtered counts, current
   page, page size, aliases, original ranks, and scores.
-- Do not add intent, embedding, LLM, or Scryfall-syntax routing without a new
-  product decision and ADR.
+- Agent traces shown in the UI must contain exactly the seven accepted steps;
+  complete redacted raw evidence belongs in JSONL.
+- Do not restore direct Scryfall-syntax routing, live agent Scryfall queries, or
+  the superseded layered embedding/reranker pipeline without a new product
+  decision and ADR.
 
 When the `CardSearchPage` contract changes, update all of:
 
@@ -129,9 +151,8 @@ When the `CardSearchPage` contract changes, update all of:
   `command_zone` group ID.
 - Unknown, deleted, legacy, or maybeboard placement migrates to Not assigned.
 
-Do not add a second persistence path without a migration plan. The later SQLite
-catalog and backend deck store must treat browser-local state as importable
-legacy data.
+Do not add a second deck-persistence path without a migration plan. The future
+backend deck store must treat browser-local state as importable legacy data.
 
 ## Development Commands
 
@@ -166,8 +187,9 @@ The smoke test uses `41738` and `43128`.
 - User-visible workflow or responsive changes require Playwright.
 - Development-runner changes require the smoke test.
 - Frontend changes must pass a production build.
-- Search changes should include a live Scryfall sanity check when network access
-  is available, but committed tests must remain deterministic.
+- Catalog-import changes should include a live Scryfall sanity check when
+  network access is available. Normal search tests must use local deterministic
+  data.
 - Visual changes should be checked at desktop and `390x844` mobile widths for
   clipping, overlap, keyboard access, and horizontal overflow.
 

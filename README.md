@@ -2,9 +2,9 @@
 
 A private, local-first Commander deck builder with a React frontend and a
 FastAPI card-discovery backend. The shipped product is a fast manual deck
-editor. A later Pydantic AI assistant will inspect decks, explain suggestions,
-and propose confirmed, undoable edits through the same domain operations as the
-UI.
+editor with progressive agentic card search. A later deck assistant may inspect
+decks, explain suggestions, and propose confirmed, undoable edits through the
+same domain operations as the UI.
 
 ## Project Status
 
@@ -112,6 +112,7 @@ FastAPI
   |- strict provider-neutral contracts
   |- local SQLite card catalog
   |- uncapped RapidFuzz title scoring and local filters
+  |- one-tool OpenRouter search continuation
   |- append-only search diagnostics
   |
   +--> Scryfall default_cards (refresh command only)
@@ -226,9 +227,8 @@ npm test --prefix frontend
 npm run build --prefix frontend
 ```
 
-`npm test` runs 48 backend tests, 26 frontend tests, and the paired-process
-smoke test at the time of this documentation update. Test counts may grow; a
-passing result matters more than preserving these exact numbers.
+`npm test` runs the backend and frontend suites plus the paired-process smoke
+test.
 
 `npm run test:e2e` starts the app on the default ports and requires them to be
 free. Stop a running development session first.
@@ -289,7 +289,8 @@ recorded in
 - No complete Commander partner/background/companion validation.
 - No persisted price history or true Cardmarket trend integration.
 - No full printing/finish chooser.
-- No rules-text or semantic search index beyond the local title catalog.
+- No embedding-backed semantic index. Agentic search can still apply exact
+  Oracle-text and structured local-catalog conditions.
 - No plaintext import/export.
 - No deck analytics.
 - No agent chat, tools, or confirmed patch workflow.
