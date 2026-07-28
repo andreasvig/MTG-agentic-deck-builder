@@ -6,6 +6,12 @@ All notable changes to this project will be documented in this file.
 
 ### Added
 
+- Kept **Load more** available after fuzzy and agentic result exhaustion. Each
+  explicit exhausted-state click now starts one continuation round, sends full
+  **Already showing** card details, excludes displayed and previously examined
+  Oracle cards, appends only new results, and retains per-round debug traces.
+- Added configurable agentic continuation controls, explicit partial-page
+  batches, retryable empty rounds, and per-session continuation serialization.
 - Fixed provider shorthand such as `{"types":"Elf","oracle_text":"untap"}` so
   exact Oracle-text requests run locally instead of being misclassified as
   disabled semantic search.
@@ -19,7 +25,7 @@ All notable changes to this project will be documented in this file.
   and the same model context returns a validated relevant-subset
   ranking.
 - Added `POST /api/v1/cards/search/agentic` and in-memory ranked sessions so
-  **Load more** never repeats the model/tool run.
+  cached **Load more** pages do not repeat a model/tool run.
 - Added bounded local exact-condition and numeric power/toughness execution
   with immutable UI filters.
 - Added progressive drawer loading/fallback behavior and a focused seven-step

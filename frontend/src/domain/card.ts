@@ -95,6 +95,7 @@ export interface CardSearchPage {
   agentic_required: boolean;
   search_session_id: string | null;
   debug: SearchDebugSummary | null;
+  debug_runs: SearchDebugSummary[];
 }
 
 export interface SearchDebugStage {

@@ -141,6 +141,7 @@ export function searchPage(
     agentic_required: false,
     search_session_id: null,
     debug: null,
+    debug_runs: [],
   };
 }
 

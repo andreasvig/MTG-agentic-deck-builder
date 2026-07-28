@@ -104,12 +104,16 @@ export function SearchTracePanel({ debug }: SearchTracePanelProps) {
   const query = textValue(trace.request.query);
   const isAgentic = strategy === "agentic";
   const hasFailed = trace.stages.some((stage) => stage.status === "error");
+  const roundNumber = numberValue(trace.request.round_number);
 
   return (
     <details className="search-debug" open={hasFailed ? true : undefined}>
       <summary>
         <Bug aria-hidden="true" size={14} />
-        <span>Search trace</span>
+        <span>
+          Search trace
+          {isAgentic && roundNumber ? ` · Round ${roundNumber}` : ""}
+        </span>
         <span className="search-debug__route">{strategy}</span>
         <strong>{formatDuration(debug.total_duration_ms)}</strong>
         <ChevronDown

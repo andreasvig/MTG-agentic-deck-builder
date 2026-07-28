@@ -127,10 +127,16 @@ export function SearchDrawer({
       activeRequest.current = controller;
       const existingPage = stateRef.current.page;
       let retainedPage = append ? existingPage : null;
-      setState((current) => ({
-        phase: "loading",
-        page: append ? current.page : null,
-      }));
+      const needsAgenticContinuation =
+        append && existingPage !== null && !existingPage.has_more;
+      setState((current) =>
+        needsAgenticContinuation && current.page
+          ? { phase: "agentic", page: current.page }
+          : {
+              phase: "loading",
+              page: append ? current.page : null,
+            },
+      );
       try {
         const storedAgentSession =
           append &&
@@ -138,7 +144,11 @@ export function SearchDrawer({
           existingPage.search_session_id
             ? existingPage.search_session_id
             : null;
-        const result = storedAgentSession
+        const shownOracleIds =
+          append && existingPage
+            ? existingPage.cards.map((card) => card.oracle_id)
+            : [];
+        const result = storedAgentSession || needsAgenticContinuation
           ? await client.searchCardsAgentic?.(
               normalized,
               page,
@@ -146,6 +156,7 @@ export function SearchDrawer({
               filtersRef.current,
               debugEnabledRef.current,
               storedAgentSession,
+              shownOracleIds,
             )
           : await client.searchCards(
               normalized,
@@ -175,6 +186,8 @@ export function SearchDrawer({
             controller.signal,
             filtersRef.current,
             debugEnabledRef.current,
+            null,
+            result.cards.map((card) => card.oracle_id),
           );
           if (activeRequest.current !== controller) {
             return;
@@ -193,7 +206,15 @@ export function SearchDrawer({
               phase: "success",
               page: {
                 ...result,
-                cards: [...current.page.cards, ...result.cards],
+                cards: [
+                  ...current.page.cards,
+                  ...result.cards.filter(
+                    (candidate) =>
+                      !current.page?.cards.some(
+                        (shown) => shown.oracle_id === candidate.oracle_id,
+                      ),
+                  ),
+                ],
                 debug: result.debug ?? current.page.debug,
                 name_match_scores: {
                   ...current.page.name_match_scores,
@@ -225,7 +246,16 @@ export function SearchDrawer({
             phase: "error",
             page:
               previousPage && failedDebug
-                ? { ...previousPage, debug: failedDebug }
+                ? {
+                    ...previousPage,
+                    debug: failedDebug,
+                    debug_runs: [
+                      ...previousPage.debug_runs.filter(
+                        (run) => run.trace_id !== failedDebug.trace_id,
+                      ),
+                      failedDebug,
+                    ],
+                  }
                 : previousPage,
             message:
               error instanceof Error
@@ -695,9 +725,13 @@ export function SearchDrawer({
               </div>
             ) : null}
 
-            {state.page?.debug ? (
-              <SearchTracePanel debug={state.page.debug} />
-            ) : null}
+            {state.page?.debug_runs.length
+              ? state.page.debug_runs.map((debug) => (
+                  <SearchTracePanel debug={debug} key={debug.trace_id} />
+                ))
+              : state.page?.debug
+                ? <SearchTracePanel debug={state.page.debug} />
+                : null}
 
             {state.phase === "success" && cards.length === 0 ? (
               <div className="search-state">
@@ -846,7 +880,7 @@ export function SearchDrawer({
                 </div>
               </>
             ) : null}
-            {state.page?.has_more ? (
+            {state.page ? (
               <button
                 className="secondary-button load-more"
                 type="button"
@@ -861,7 +895,9 @@ export function SearchDrawer({
                   )
                 }
               >
-                {state.phase === "loading" ? "Loading…" : "Load more"}
+                {state.phase === "loading" || state.phase === "agentic"
+                  ? "Loading…"
+                  : "Load more"}
               </button>
             ) : null}
           </div>

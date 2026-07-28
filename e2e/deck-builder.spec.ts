@@ -356,7 +356,7 @@ test("search loads six fuzzy results before appending the next page", async ({
   await loadMore.click();
 
   await expect(page.getByRole("article")).toHaveCount(7);
-  await expect(loadMore).toHaveCount(0);
+  await expect(loadMore).toBeVisible();
   expect(requestedPages).toEqual([1, 2]);
   await page.screenshot({
     path: testInfo.outputPath("desktop-loaded-more.png"),

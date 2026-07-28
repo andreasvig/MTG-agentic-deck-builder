@@ -38,6 +38,13 @@ search:
       default_max_results: 24
       hard_max_results: 60
 
+    continuation:
+      enabled: true
+      exclude_already_shown: true
+      exclude_previously_considered: true
+      include_full_card_details_in_prompt: true
+      max_rounds: null
+
     system_prompt: |
       You are a Magic: The Gathering card-search agent.
 

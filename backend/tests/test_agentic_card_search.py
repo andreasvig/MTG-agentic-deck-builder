@@ -106,6 +106,15 @@ GIGANTOSAURUS = make_card(
     power="10",
     toughness="10",
 )
+KALONIAN_TWINGROVE = make_card(
+    "Kalonian Twingrove",
+    mana_cost="{5}{G}",
+    mana_value=6,
+    type_line="Creature — Treefolk Warrior",
+    colors=["G"],
+    power="6",
+    toughness="6",
+)
 
 
 class StubCatalog:
@@ -159,6 +168,28 @@ def test_local_tool_filters_numeric_power_and_toughness() -> None:
     )
 
     assert [candidate.card.name for candidate in result.candidates] == ["Ghalta, Primal Hunger"]
+
+
+def test_local_tool_excludes_previously_considered_oracle_cards() -> None:
+    tool = LocalCardSearchTool(  # type: ignore[arg-type]
+        StubCatalog([GHALTA, GIGANTOSAURUS]),
+        default_max_results=10,
+        hard_max_results=60,
+        semantic_enabled=False,
+    )
+
+    result = asyncio.run(
+        tool.search(
+            LocalCardSearchRequest(power={"minimum": 4}),  # type: ignore[arg-type]
+            immutable_filters=CardSearchFilters(),
+            excluded_oracle_ids=frozenset({GHALTA.oracle_id}),
+        )
+    )
+
+    assert [candidate.card.name for candidate in result.candidates] == [
+        "Gigantosaurus"
+    ]
+    assert result.payload["compiled_query"]["excluded_oracle_card_count"] == 1
 
 
 def test_provider_shorthand_is_normalized_before_strict_validation() -> None:
@@ -221,14 +252,17 @@ class StubTool:
     def __init__(self, candidates: list[CardSearchResult]) -> None:
         self.calls = 0
         self._candidates = candidates
+        self.exclusions: list[frozenset[UUID]] = []
 
     async def search(
         self,
         request: object,
         *,
         immutable_filters: CardSearchFilters,
+        excluded_oracle_ids: frozenset[UUID] = frozenset(),
     ) -> ExecutedSearchTool:
         self.calls += 1
+        self.exclusions.append(excluded_oracle_ids)
         candidates = tuple(
             AgentSearchCandidate(
                 card=card,
@@ -236,6 +270,7 @@ class StubTool:
                 filter_decisions={"immutable_ui_filters": True},
             )
             for card in self._candidates
+            if card.oracle_id not in excluded_oracle_ids
         )
         return ExecutedSearchTool(
             name="search_local_cards",
@@ -253,6 +288,107 @@ class StubTool:
                 "candidates": [candidate.model_dump(mode="json") for candidate in candidates],
             },
         )
+
+    async def cards_by_oracle_ids(
+        self,
+        oracle_ids: list[UUID],
+    ) -> tuple[CardSearchResult, ...]:
+        cards = {card.oracle_id: card for card in self._candidates}
+        return tuple(cards[oracle_id] for oracle_id in oracle_ids)
+
+
+class RoundStubTool(StubTool):
+    def __init__(self, rounds: list[list[CardSearchResult]]) -> None:
+        super().__init__([card for round_cards in rounds for card in round_cards])
+        self._rounds = rounds
+
+    async def search(
+        self,
+        request: object,
+        *,
+        immutable_filters: CardSearchFilters,
+        excluded_oracle_ids: frozenset[UUID] = frozenset(),
+    ) -> ExecutedSearchTool:
+        round_cards = self._rounds[self.calls]
+        self.calls += 1
+        self.exclusions.append(excluded_oracle_ids)
+        candidates = tuple(
+            AgentSearchCandidate(
+                card=card,
+                exact_match_evidence=["stub query matched"],
+                filter_decisions={"immutable_ui_filters": True},
+            )
+            for card in round_cards
+            if card.oracle_id not in excluded_oracle_ids
+        )
+        return ExecutedSearchTool(
+            name="search_local_cards",
+            arguments={"power": {"minimum": 4}},
+            candidates=candidates,
+            payload={
+                "compiled_query": {
+                    "engine": "local_sqlite_catalog",
+                    "result_limit": 24,
+                },
+                "candidates": [
+                    candidate.model_dump(mode="json") for candidate in candidates
+                ],
+            },
+        )
+
+
+class SequentialModelClient:
+    def __init__(self, ranked_ids_by_round: list[list[int]]) -> None:
+        self.payloads: list[dict[str, object]] = []
+        self._ranked_ids_by_round = ranked_ids_by_round
+
+    async def chat_completion(
+        self,
+        payload: dict[str, object],
+    ) -> dict[str, object]:
+        call_index = len(self.payloads)
+        self.payloads.append(payload)
+        round_index = call_index // 2
+        if call_index % 2 == 0:
+            return {
+                "choices": [
+                    {
+                        "message": {
+                            "role": "assistant",
+                            "content": None,
+                            "tool_calls": [
+                                {
+                                    "id": f"tool-call-{round_index + 1}",
+                                    "type": "function",
+                                    "function": {
+                                        "name": "search_local_cards",
+                                        "arguments": json.dumps(
+                                            {"power": {"minimum": 4}}
+                                        ),
+                                    },
+                                }
+                            ],
+                        }
+                    }
+                ]
+            }
+        return {
+            "choices": [
+                {
+                    "message": {
+                        "role": "assistant",
+                        "content": json.dumps(
+                            {
+                                "interpretation": (
+                                    f"Additional large creatures, round {round_index + 1}."
+                                ),
+                                "ranked_ids": self._ranked_ids_by_round[round_index],
+                            }
+                        ),
+                    }
+                }
+            ]
+        }
 
 
 class StubModelClient:
@@ -520,6 +656,156 @@ def test_agent_runs_one_tool_then_reuses_the_ranked_session(
     assert second.has_more is False
     assert local_tool.calls == 1
     assert len(model.payloads) == 2
+
+
+def test_exhausted_session_runs_one_continuation_with_already_shown_cards(
+    tmp_path: Path,
+) -> None:
+    model = SequentialModelClient([[1], [2]])
+    local_tool = RoundStubTool([[GHALTA], [GIGANTOSAURUS]])
+    trace_path = tmp_path / "search.jsonl"
+    service = AgenticCardSearchService(
+        fuzzy_provider=StubFuzzyProvider(),  # type: ignore[arg-type]
+        local_tool=local_tool,  # type: ignore[arg-type]
+        model_client=model,  # type: ignore[arg-type]
+        settings=AgenticSearchSettings(enabled=True),
+        page_size=6,
+        trace_logger=JsonlAgentSearchTraceLogger(trace_path),
+        trace_log_path=str(trace_path),
+        debug_default_enabled=False,
+    )
+
+    first = asyncio.run(
+        service.search(
+            AgenticCardSearchRequest(
+                q="green big creature",
+                debug=True,
+            )
+        )
+    )
+    assert first.cards == [GHALTA]
+    assert first.has_more is False
+    assert first.search_session_id is not None
+
+    second = asyncio.run(
+        service.search(
+            AgenticCardSearchRequest(
+                q="green big creature",
+                page=2,
+                debug=True,
+                search_session_id=first.search_session_id,
+                already_shown_oracle_ids=[GHALTA.oracle_id],
+            )
+        )
+    )
+
+    assert second.cards == [GIGANTOSAURUS]
+    assert second.total_results == 2
+    assert second.has_more is False
+    assert local_tool.calls == 2
+    assert GHALTA.oracle_id in local_tool.exclusions[1]
+    continuation_messages = model.payloads[2]["messages"]
+    assert isinstance(continuation_messages, list)
+    continuation_prompt = continuation_messages[1]["content"]
+    assert isinstance(continuation_prompt, str)
+    assert "Please find additional Magic" in continuation_prompt
+    assert "Already showing" in continuation_prompt
+    assert "Ghalta, Primal Hunger" in continuation_prompt
+    assert "Power/Toughness: 12/12" in continuation_prompt
+    assert "Oracle text:" in continuation_prompt
+    assert "continuation round 2" in continuation_prompt
+    assert second.debug is not None
+    assert second.debug.trace["request"]["round_number"] == 2
+
+
+def test_empty_continuation_is_successful_and_can_be_retried(
+    tmp_path: Path,
+) -> None:
+    model = SequentialModelClient([[1], [], [2]])
+    local_tool = RoundStubTool([[GHALTA], [], [KALONIAN_TWINGROVE]])
+    service = AgenticCardSearchService(
+        fuzzy_provider=StubFuzzyProvider(),  # type: ignore[arg-type]
+        local_tool=local_tool,  # type: ignore[arg-type]
+        model_client=model,  # type: ignore[arg-type]
+        settings=AgenticSearchSettings(enabled=True),
+        page_size=6,
+        trace_logger=JsonlAgentSearchTraceLogger(tmp_path / "search.jsonl"),
+        trace_log_path=str(tmp_path / "search.jsonl"),
+        debug_default_enabled=False,
+    )
+
+    first = asyncio.run(
+        service.search(AgenticCardSearchRequest(q="green big creature"))
+    )
+    assert first.search_session_id is not None
+    empty = asyncio.run(
+        service.search(
+            AgenticCardSearchRequest(
+                q="green big creature",
+                page=2,
+                search_session_id=first.search_session_id,
+                already_shown_oracle_ids=[GHALTA.oracle_id],
+            )
+        )
+    )
+    assert empty.cards == []
+    assert empty.warnings == ["No additional matches found in this pass."]
+
+    retried = asyncio.run(
+        service.search(
+            AgenticCardSearchRequest(
+                q="green big creature",
+                page=3,
+                search_session_id=first.search_session_id,
+                already_shown_oracle_ids=[GHALTA.oracle_id],
+            )
+        )
+    )
+    assert retried.cards == [KALONIAN_TWINGROVE]
+    assert retried.total_results == 2
+    assert local_tool.calls == 3
+
+
+def test_empty_initial_result_can_start_a_continuation(
+    tmp_path: Path,
+) -> None:
+    model = SequentialModelClient([[], [1]])
+    local_tool = RoundStubTool([[], [GIGANTOSAURUS]])
+    service = AgenticCardSearchService(
+        fuzzy_provider=StubFuzzyProvider(),  # type: ignore[arg-type]
+        local_tool=local_tool,  # type: ignore[arg-type]
+        model_client=model,  # type: ignore[arg-type]
+        settings=AgenticSearchSettings(enabled=True),
+        page_size=6,
+        trace_logger=JsonlAgentSearchTraceLogger(tmp_path / "search.jsonl"),
+        trace_log_path=str(tmp_path / "search.jsonl"),
+        debug_default_enabled=False,
+    )
+
+    first = asyncio.run(
+        service.search(AgenticCardSearchRequest(q="green big creature"))
+    )
+    assert first.cards == []
+    assert first.search_session_id is not None
+
+    second = asyncio.run(
+        service.search(
+            AgenticCardSearchRequest(
+                q="green big creature",
+                page=2,
+                search_session_id=first.search_session_id,
+                already_shown_oracle_ids=[],
+            )
+        )
+    )
+    assert second.cards == [GIGANTOSAURUS]
+    continuation_messages = model.payloads[2]["messages"]
+    assert isinstance(continuation_messages, list)
+    prompt = continuation_messages[1]["content"]
+    assert isinstance(prompt, str)
+    assert "Please find additional Magic" in prompt
+    assert "Already showing" in prompt
+    assert "- None" in prompt
 
 
 def test_agentic_results_keep_short_title_alias_confidence(

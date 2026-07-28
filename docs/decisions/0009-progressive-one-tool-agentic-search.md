@@ -72,6 +72,19 @@ fully observable in debug mode.
   trace in the typed error response. Keep all seven visible steps, mark the
   broken step as an error, mark later steps skipped, and open the failed step
   automatically in the drawer.
+- Keep **Load more** visible after every search response. If another ranked
+  batch is cached, return it without a model call. Once cached results are
+  exhausted, the next user click authorizes exactly one new agent round.
+- Carry every displayed card into continuation prompts under an
+  **Already showing** section with its full ranking-relevant details. Previously
+  displayed cards are not eligible for the continuation's final ranking.
+- Exclude displayed and previously examined canonical `oracle_id` values inside
+  the local tool before applying its candidate limit. This guarantees fresh
+  candidates and prevents different printings of the same card from repeating.
+- Preserve explicit per-round page batches so partial pages do not create
+  offset gaps. Empty continuation rounds are successful and retryable.
+- Retain each continuation's seven-step debug trace and serialize concurrent
+  continuation requests per search session so replaying a page is idempotent.
 - Enable agentic execution only after model calls, progressive API behavior,
   tool execution, session pagination, and tests land. Keep semantic embeddings
   independently disabled until a real index is implemented.
@@ -96,6 +109,8 @@ Costs:
 
 - A semantic model and index still need to be selected and built.
 - The progressive UI has two observable response phases.
+- Repeated **Load more** clicks may incur additional model cost, but each click
+  is bounded to one agent round and no continuation starts automatically.
 - Complete debug traces can be large and require a retention policy.
 - New cards and metadata require a catalog refresh before the agent can find
   them.

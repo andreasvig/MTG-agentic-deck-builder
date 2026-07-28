@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 from collections import Counter
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from decimal import Decimal
 from time import monotonic, perf_counter
 from typing import Any
@@ -82,16 +82,23 @@ class _StoredAgentSearch:
     query: str
     filters: CardSearchFilters
     cards: tuple[CardSearchResult, ...]
+    page_batches: dict[int, tuple[CardSearchResult, ...]]
+    prefix_count: int
     name_match_scores: dict[UUID, float]
     title_confidence_scores: dict[UUID, float]
     interpretation: str
     warnings: tuple[str, ...]
     debug: SearchDebugSummary | None
+    debug_runs: tuple[SearchDebugSummary, ...]
+    debug_page: int
+    considered_oracle_ids: frozenset[UUID]
+    next_candidate_id: int
+    round_number: int
     created_at: float
 
 
 class AgenticSearchSessionStore:
-    """Keep a completed ranking so Load more never starts another model run."""
+    """Keep ranked cards and continuation state for one progressive search."""
 
     def __init__(self, *, ttl_seconds: float = 900) -> None:
         self._ttl_seconds = ttl_seconds
@@ -140,6 +147,7 @@ class LocalCardSearchTool:
         request: LocalCardSearchRequest,
         *,
         immutable_filters: CardSearchFilters,
+        excluded_oracle_ids: frozenset[UUID] = frozenset(),
     ) -> ExecutedSearchTool:
         limit = resolve_local_tool_limit(
             request,
@@ -163,6 +171,7 @@ class LocalCardSearchTool:
             request,
             immutable_filters,
             limit,
+            excluded_oracle_ids,
         )
         return ExecutedSearchTool(
             name="search_local_cards",
@@ -170,6 +179,21 @@ class LocalCardSearchTool:
             candidates=tuple(result.candidates),
             payload=result.model_dump(mode="json"),
         )
+
+    async def cards_by_oracle_ids(
+        self,
+        oracle_ids: list[UUID],
+    ) -> tuple[CardSearchResult, ...]:
+        """Resolve canonical local cards in the order supplied by the client."""
+
+        if not oracle_ids:
+            return ()
+        entries = await self._catalog.entries()
+        cards_by_id = {entry.card.oracle_id: entry.card for entry in entries}
+        try:
+            return tuple(cards_by_id[oracle_id] for oracle_id in oracle_ids)
+        except KeyError as exc:
+            raise CardSearchQueryError from exc
 
 
 class AgenticCardSearchService:
@@ -197,40 +221,128 @@ class AgenticCardSearchService:
         self._trace_log_path = trace_log_path
         self._debug_default_enabled = debug_default_enabled
         self._sessions = sessions or AgenticSearchSessionStore()
+        self._session_locks: dict[UUID, asyncio.Lock] = {}
 
     async def search(self, request: AgenticCardSearchRequest) -> CardSearchPage:
-        """Start a new agent run or page through a stored completed ranking."""
+        """Start, page, or continue one progressive agentic search session."""
 
         if request.search_session_id is not None:
             return await self._page_stored_search(request)
-        if request.page != 1:
-            raise CardSearchQueryError
 
-        preview = await self._fuzzy_provider.search(
-            CardSearchQuery(
-                q=request.q,
-                filters=request.filters,
-                debug=False,
+        if request.already_shown_oracle_ids:
+            shown_cards = list(
+                await self._local_tool.cards_by_oracle_ids(
+                    request.already_shown_oracle_ids
+                )
             )
+        else:
+            preview = await self._fuzzy_provider.search(
+                CardSearchQuery(
+                    q=request.q,
+                    filters=request.filters,
+                    debug=False,
+                )
+            )
+            shown_cards = preview.cards
+        is_continuation = request.page != 1
+        if is_continuation and not self._settings.continuation.enabled:
+            raise CardSearchQueryError
+        selectable_preview = [] if is_continuation else shown_cards
+        already_shown = shown_cards if is_continuation else []
+        completed, debug = await self._execute_agent_round(
+            request,
+            selectable_preview=selectable_preview,
+            already_shown=already_shown,
+            excluded_oracle_ids=(
+                frozenset(card.oracle_id for card in already_shown)
+                if self._settings.continuation.exclude_already_shown
+                else frozenset()
+            ),
+            candidate_id_start=(len(already_shown) + 1 if is_continuation else 1),
+            round_number=1,
         )
+        session_id = uuid4()
+        cards = _deduplicate_cards(completed.cards)
+        title_scores = {
+            card.scryfall_id: _card_title_scores(request.q, card) for card in cards
+        }
+        batches = _page_batches(
+            cards,
+            first_page=request.page,
+            page_size=self._page_size,
+        )
+        stored = _StoredAgentSearch(
+            session_id=session_id,
+            query=request.q,
+            filters=request.filters,
+            cards=cards,
+            page_batches=batches,
+            prefix_count=len(already_shown),
+            name_match_scores={
+                card.scryfall_id: title_scores[card.scryfall_id][0] for card in cards
+            },
+            title_confidence_scores={
+                card.scryfall_id: title_scores[card.scryfall_id][1] for card in cards
+            },
+            interpretation=completed.output.interpretation,
+            warnings=(
+                ("No additional matches found in this pass.",)
+                if is_continuation and not cards
+                else ()
+            ),
+            debug=debug,
+            debug_runs=(debug,) if debug is not None else (),
+            debug_page=request.page,
+            considered_oracle_ids=frozenset(
+                candidate.card.oracle_id for candidate in completed.tool.candidates
+            ),
+            next_candidate_id=completed.next_candidate_id,
+            round_number=1,
+            created_at=monotonic(),
+        )
+        await self._sessions.put(stored)
+        return _page_from_stored(stored, page=request.page)
+
+    async def _execute_agent_round(
+        self,
+        request: AgenticCardSearchRequest,
+        *,
+        selectable_preview: list[CardSearchResult],
+        already_shown: list[CardSearchResult],
+        excluded_oracle_ids: frozenset[UUID],
+        candidate_id_start: int,
+        round_number: int,
+    ) -> tuple[_CompletedAgentRun, SearchDebugSummary | None]:
         trace_enabled = self._debug_default_enabled or request.debug
         trace = AgentSearchTraceBuilder(
             {
                 "query": request.q,
                 "filters": request.filters.model_dump(mode="json"),
                 "debug": request.debug,
+                "round_number": round_number,
                 "preview_candidates": [
                     _numbered_candidate_payload(
                         candidate_id,
                         card,
                         already_shown=True,
                     )
-                    for candidate_id, card in enumerate(preview.cards, start=1)
+                    for candidate_id, card in enumerate(
+                        [*already_shown, *selectable_preview],
+                        start=1,
+                    )
                 ],
             }
         )
         try:
-            completed = await self._run_agent(request, preview, trace)
+            completed = await self._run_agent(
+                request,
+                selectable_preview=selectable_preview,
+                already_shown=already_shown,
+                excluded_oracle_ids=excluded_oracle_ids,
+                candidate_id_start=candidate_id_start,
+                round_number=round_number,
+                trace=trace,
+            )
         except asyncio.CancelledError as exc:
             await self._persist_failed_trace(trace, exc, trace_enabled)
             raise
@@ -260,33 +372,17 @@ class AgenticCardSearchService:
             if trace_enabled
             else None
         )
-        session_id = uuid4()
-        title_scores = {
-            card.scryfall_id: _card_title_scores(request.q, card) for card in completed.cards
-        }
-        stored = _StoredAgentSearch(
-            session_id=session_id,
-            query=request.q,
-            filters=request.filters,
-            cards=completed.cards,
-            name_match_scores={
-                card.scryfall_id: title_scores[card.scryfall_id][0] for card in completed.cards
-            },
-            title_confidence_scores={
-                card.scryfall_id: title_scores[card.scryfall_id][1] for card in completed.cards
-            },
-            interpretation=completed.output.interpretation,
-            warnings=(),
-            debug=debug,
-            created_at=monotonic(),
-        )
-        await self._sessions.put(stored)
-        return _page_from_stored(stored, page=1, page_size=self._page_size)
+        return completed, debug
 
     async def _run_agent(
         self,
         request: AgenticCardSearchRequest,
-        preview: CardSearchPage,
+        *,
+        selectable_preview: list[CardSearchResult],
+        already_shown: list[CardSearchResult],
+        excluded_oracle_ids: frozenset[UUID],
+        candidate_id_start: int,
+        round_number: int,
         trace: AgentSearchTraceBuilder,
     ) -> _CompletedAgentRun:
         tools = _tool_definitions()
@@ -305,7 +401,15 @@ class AgenticCardSearchService:
             },
             {
                 "role": "user",
-                "content": _render_initial_user_message(request, preview.cards),
+                "content": _render_agent_user_message(
+                    request,
+                    selectable_preview=selectable_preview,
+                    already_shown=already_shown,
+                    round_number=round_number,
+                    include_full_card_details=(
+                        self._settings.continuation.include_full_card_details_in_prompt
+                    ),
+                ),
             },
         ]
         initial_payload = {
@@ -349,18 +453,25 @@ class AgenticCardSearchService:
         executed = await self._local_tool.search(
             tool_call.arguments,
             immutable_filters=request.filters,
+            excluded_oracle_ids=excluded_oracle_ids,
         )
         tool_duration_ms = _elapsed_ms(started)
 
-        union = _candidate_union(preview.cards, executed.candidates)
-        preview_oracle_ids = {card.oracle_id for card in preview.cards}
+        union = _candidate_union(selectable_preview, executed.candidates)
+        preview_oracle_ids = {card.oracle_id for card in selectable_preview}
+        numbered_cards = list(
+            enumerate(
+                union,
+                start=candidate_id_start,
+            )
+        )
         numbered_candidates = [
             _numbered_candidate_payload(
                 candidate_id,
                 card,
                 already_shown=card.oracle_id in preview_oracle_ids,
             )
-            for candidate_id, card in enumerate(union, start=1)
+            for candidate_id, card in numbered_cards
         ]
         tool_message_content = _render_tool_result_message(
             executed,
@@ -409,13 +520,15 @@ class AgenticCardSearchService:
             duration_ms=_elapsed_ms(started),
         )
         output = _parse_final_output(final_response)
+        candidates_by_id = dict(numbered_cards)
+        candidate_ids = tuple(candidates_by_id)
         ranked_ids = validate_final_ranking(
             output,
-            candidate_ids=range(1, len(union) + 1),
+            candidate_ids=candidate_ids,
             max_candidate_count=self._page_size + self._settings.max_tool_results,
         )
-        ranked_cards = tuple(union[candidate_id - 1] for candidate_id in ranked_ids)
-        omitted_ids = sorted(set(range(1, len(union) + 1)) - set(ranked_ids))
+        ranked_cards = tuple(candidates_by_id[candidate_id] for candidate_id in ranked_ids)
+        omitted_ids = sorted(set(candidate_ids) - set(ranked_ids))
         trace.add_stage(
             "validation",
             {
@@ -431,6 +544,7 @@ class AgenticCardSearchService:
             output=output,
             tool=executed,
             cards=ranked_cards,
+            next_candidate_id=candidate_id_start + len(union),
         )
 
     async def _page_stored_search(
@@ -438,10 +552,116 @@ class AgenticCardSearchService:
         request: AgenticCardSearchRequest,
     ) -> CardSearchPage:
         assert request.search_session_id is not None
+        lock = self._session_locks.setdefault(
+            request.search_session_id,
+            asyncio.Lock(),
+        )
+        async with lock:
+            return await self._page_stored_search_locked(request)
+
+    async def _page_stored_search_locked(
+        self,
+        request: AgenticCardSearchRequest,
+    ) -> CardSearchPage:
+        assert request.search_session_id is not None
         stored = await self._sessions.get(request.search_session_id)
         if stored is None or stored.query != request.q or stored.filters != request.filters:
             raise CardSearchQueryError
-        return _page_from_stored(stored, page=request.page, page_size=self._page_size)
+        if request.page in stored.page_batches:
+            return _page_from_stored(stored, page=request.page)
+        if request.page != max(stored.page_batches) + 1:
+            raise CardSearchQueryError
+        continuation = self._settings.continuation
+        if not continuation.enabled:
+            raise CardSearchQueryError
+        if (
+            continuation.max_rounds is not None
+            and stored.round_number >= continuation.max_rounds
+        ):
+            raise CardSearchQueryError
+
+        already_shown = list(
+            await self._local_tool.cards_by_oracle_ids(
+                request.already_shown_oracle_ids
+            )
+        )
+        completed, debug = await self._execute_agent_round(
+            request,
+            selectable_preview=[],
+            already_shown=already_shown,
+            excluded_oracle_ids=(
+                (
+                    stored.considered_oracle_ids
+                    if continuation.exclude_previously_considered
+                    else frozenset()
+                )
+                | (
+                    frozenset(card.oracle_id for card in already_shown)
+                    if continuation.exclude_already_shown
+                    else frozenset()
+                )
+            ),
+            candidate_id_start=stored.next_candidate_id,
+            round_number=stored.round_number + 1,
+        )
+        existing_ids = {
+            *(card.oracle_id for card in already_shown),
+            *(card.oracle_id for card in stored.cards),
+        }
+        new_cards = tuple(
+            card for card in _deduplicate_cards(completed.cards)
+            if card.oracle_id not in existing_ids
+        )
+        new_batches = _page_batches(
+            new_cards,
+            first_page=request.page,
+            page_size=self._page_size,
+        )
+        new_scores = {
+            card.scryfall_id: _card_title_scores(request.q, card) for card in new_cards
+        }
+        updated = replace(
+            stored,
+            cards=(*stored.cards, *new_cards),
+            page_batches={**stored.page_batches, **new_batches},
+            name_match_scores={
+                **stored.name_match_scores,
+                **{
+                    card.scryfall_id: new_scores[card.scryfall_id][0]
+                    for card in new_cards
+                },
+            },
+            title_confidence_scores={
+                **stored.title_confidence_scores,
+                **{
+                    card.scryfall_id: new_scores[card.scryfall_id][1]
+                    for card in new_cards
+                },
+            },
+            interpretation=completed.output.interpretation,
+            warnings=(
+                ("No additional matches found in this pass.",)
+                if not new_cards
+                else ()
+            ),
+            debug=debug,
+            debug_runs=(
+                *stored.debug_runs,
+                *((debug,) if debug is not None else ()),
+            ),
+            debug_page=request.page,
+            considered_oracle_ids=(
+                stored.considered_oracle_ids
+                | frozenset(
+                    candidate.card.oracle_id for candidate in completed.tool.candidates
+                )
+            ),
+            next_candidate_id=completed.next_candidate_id,
+            round_number=stored.round_number + 1,
+            created_at=monotonic(),
+        )
+        await self._sessions.put(updated)
+        return _page_from_stored(updated, page=request.page)
 
     async def _persist_failed_trace(
         self,
@@ -481,6 +701,7 @@ class _CompletedAgentRun:
     output: AgentRankedSearchOutput
     tool: ExecutedSearchTool
     cards: tuple[CardSearchResult, ...]
+    next_candidate_id: int
 
 
 def _execute_local_search(
@@ -488,10 +709,13 @@ def _execute_local_search(
     request: LocalCardSearchRequest,
     immutable_filters: CardSearchFilters,
     limit: int,
+    excluded_oracle_ids: frozenset[UUID] = frozenset(),
 ) -> LocalCardSearchResult:
     matches: list[tuple[float, AgentSearchCandidate]] = []
     for entry in entries:
         card = entry.card
+        if card.oracle_id in excluded_oracle_ids:
+            continue
         if not matches_card_filters(card, immutable_filters):
             continue
         evidence: list[str] = []
@@ -592,6 +816,7 @@ def _execute_local_search(
             "engine": "local_sqlite_catalog",
             "semantic_mode": "disabled",
             "immutable_filters": immutable_filters.model_dump(mode="json"),
+            "excluded_oracle_card_count": len(excluded_oracle_ids),
             "result_limit": limit,
         },
     )
@@ -897,23 +1122,58 @@ def _numbered_candidate_payload(
     }
 
 
-def _render_initial_user_message(
+def _render_agent_user_message(
     request: AgenticCardSearchRequest,
-    preview_cards: list[CardSearchResult],
+    *,
+    selectable_preview: list[CardSearchResult],
+    already_shown: list[CardSearchResult],
+    round_number: int,
+    include_full_card_details: bool,
 ) -> str:
     """Render the user's search as short natural text without provider fields."""
 
+    is_continuation = request.page != 1 or round_number > 1
     lines = [
-        "Please find Magic: The Gathering cards for this request:",
+        (
+            "Please find additional Magic: The Gathering cards for this request:"
+            if is_continuation
+            else "Please find Magic: The Gathering cards for this request:"
+        ),
         f'"{request.q}"',
         "",
         "Filters already chosen in the interface:",
         *_render_filter_lines(request.filters),
         "",
     ]
-    if preview_cards:
+    if is_continuation:
+        lines.append(
+            "Already showing — these cards must not be returned or ranked again:"
+        )
+        if already_shown:
+            for candidate_id, card in enumerate(already_shown, start=1):
+                if include_full_card_details:
+                    lines.extend(_render_preview_candidate(candidate_id, card))
+                else:
+                    lines.append(
+                        f"{candidate_id}. {card.name} — {_card_type_line(card)}"
+                    )
+        else:
+            lines.append("- None")
+        lines.extend(
+            [
+                (
+                    "The local tool will also exclude cards examined during earlier "
+                    "rounds. Find genuinely new candidates."
+                ),
+                (
+                    f"This is continuation round {round_number}. Broaden or "
+                    "reinterpret the request when the earlier approach may be exhausted."
+                ),
+            ]
+        )
+    elif selectable_preview:
         lines.append("The fuzzy title search has already shown these selectable cards to the user:")
-        for candidate_id, card in enumerate(preview_cards, start=1):
+        for candidate_id, card in enumerate(selectable_preview, start=1):
             lines.extend(_render_preview_candidate(candidate_id, card))
         lines.extend(
             [
@@ -1046,20 +1306,47 @@ def _card_title_scores(
     )
 
 
+def _deduplicate_cards(
+    cards: tuple[CardSearchResult, ...],
+) -> tuple[CardSearchResult, ...]:
+    unique: list[CardSearchResult] = []
+    seen: set[UUID] = set()
+    for card in cards:
+        if card.oracle_id in seen:
+            continue
+        seen.add(card.oracle_id)
+        unique.append(card)
+    return tuple(unique)
+
+
+def _page_batches(
+    cards: tuple[CardSearchResult, ...],
+    *,
+    first_page: int,
+    page_size: int,
+) -> dict[int, tuple[CardSearchResult, ...]]:
+    if not cards:
+        return {first_page: ()}
+    return {
+        first_page + offset // page_size: cards[offset : offset + page_size]
+        for offset in range(0, len(cards), page_size)
+    }
+
+
 def _page_from_stored(
     stored: _StoredAgentSearch,
     *,
     page: int,
-    page_size: int,
 ) -> CardSearchPage:
-    start = (page - 1) * page_size
-    end = min(start + page_size, len(stored.cards))
-    cards = list(stored.cards[start:end])
+    try:
+        cards = list(stored.page_batches[page])
+    except KeyError as exc:
+        raise CardSearchQueryError from exc
     return CardSearchPage(
         query=stored.query,
         page=page,
-        total_results=len(stored.cards),
-        has_more=end < len(stored.cards),
+        total_results=stored.prefix_count + len(stored.cards),
+        has_more=(page + 1) in stored.page_batches,
         cards=cards,
         name_match_scores={
             card.scryfall_id: stored.name_match_scores[card.scryfall_id] for card in cards
@@ -1072,7 +1359,8 @@ def _page_from_stored(
         interpretation=stored.interpretation,
         reranked=True,
         search_session_id=stored.session_id,
-        debug=stored.debug if page == 1 else None,
+        debug=stored.debug if page == stored.debug_page else None,
+        debug_runs=list(stored.debug_runs),
     )
 
 

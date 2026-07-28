@@ -150,6 +150,12 @@ class AgenticCardSearchRequest(CardModel):
     filters: CardSearchFilters = Field(default_factory=CardSearchFilters)
     debug: bool = False
     search_session_id: UUID | None = None
+    already_shown_oracle_ids: list[UUID] = Field(default_factory=list, max_length=10_000)
+
+    @field_validator("already_shown_oracle_ids")
+    @classmethod
+    def already_shown_ids_must_be_unique(cls, value: list[UUID]) -> list[UUID]:
+        return list(dict.fromkeys(value))
 
 
 class SearchDebugStage(CardModel):
@@ -196,3 +202,4 @@ class CardSearchPage(CardModel):
     agentic_required: bool = False
     search_session_id: UUID | None = None
     debug: SearchDebugSummary | None = None
+    debug_runs: list[SearchDebugSummary] = Field(default_factory=list)

@@ -134,7 +134,9 @@ Every query uses one local fuzzy card-title matcher. It compares the normalized
 input against the SQLite catalog with RapidFuzz `WRatio`, ranks every canonical
 card without a score threshold or candidate cap, applies local filters, and
 returns the requested six-card page. **Load more** requests the next numbered
-page. Normal search makes no Scryfall request.
+page. It remains available at the end of fuzzy or agent-ranked results; the
+next explicit click then runs one continuation agent round with all displayed
+cards excluded. Normal search makes no Scryfall request.
 
 For example, `forest` returns Forest first at 100%, followed by partial-title
 matches such as Forest Bear and Misty Rainforest at about 90%. A typo such as

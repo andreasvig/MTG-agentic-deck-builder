@@ -39,6 +39,7 @@ export interface ApiClient {
     filters?: CardSearchFilters,
     debug?: boolean,
     searchSessionId?: string | null,
+    alreadyShownOracleIds?: string[],
   ): Promise<CardSearchPage>;
 }
 
@@ -121,6 +122,7 @@ export function createApiClient(
       },
       debug = false,
       searchSessionId = null,
+      alreadyShownOracleIds = [],
     ) {
       const response = await fetcher(
         `${normalizedBaseUrl}/cards/search/agentic`,
@@ -144,6 +146,7 @@ export function createApiClient(
             },
             debug,
             search_session_id: searchSessionId,
+            already_shown_oracle_ids: alreadyShownOracleIds,
           }),
           signal,
         },
@@ -215,7 +218,9 @@ function isCardSearchPage(value: unknown): value is CardSearchPage {
     typeof value.agentic_required === "boolean" &&
     (value.search_session_id === null ||
       typeof value.search_session_id === "string") &&
-    (value.debug === null || isSearchDebugSummary(value.debug))
+    (value.debug === null || isSearchDebugSummary(value.debug)) &&
+    Array.isArray(value.debug_runs) &&
+    value.debug_runs.every(isSearchDebugSummary)
   );
 }
 

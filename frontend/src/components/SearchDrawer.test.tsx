@@ -433,8 +433,73 @@ describe("card search dialog", () => {
       false,
     );
     expect(
-      screen.queryByRole("button", { name: "Load more" }),
-    ).not.toBeInTheDocument();
+      screen.getByRole("button", { name: "Load more" }),
+    ).toBeInTheDocument();
+  });
+
+  it("starts an agentic continuation after cached results are exhausted", async () => {
+    const first = cardSearchPage([solRing], "mana rocks");
+    first.has_more = false;
+    let resolveContinuation: (page: ReturnType<typeof cardSearchPage>) => void =
+      () => undefined;
+    const continuation = new Promise<ReturnType<typeof cardSearchPage>>(
+      (resolve) => {
+        resolveContinuation = resolve;
+      },
+    );
+    const searchCardsAgentic = vi
+      .fn<NonNullable<ApiClient["searchCardsAgentic"]>>()
+      .mockReturnValue(continuation);
+    const user = userEvent.setup();
+
+    render(
+      <SearchDrawer
+        initialQuery="mana rocks"
+        entries={[]}
+        client={{
+          getHealth: vi.fn(),
+          searchCards: vi.fn().mockResolvedValue(first),
+          searchCardsAgentic,
+        }}
+        onAdd={vi.fn()}
+        onSetQuantity={vi.fn()}
+        onClose={vi.fn()}
+      />,
+    );
+
+    expect(
+      await screen.findByRole("button", { name: "Load more" }),
+    ).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Load more" }));
+
+    expect(
+      await screen.findByText("Agentic search loading"),
+    ).toBeInTheDocument();
+    expect(screen.getAllByText("Sol Ring")).not.toHaveLength(0);
+    expect(searchCardsAgentic).toHaveBeenCalledWith(
+      "mana rocks",
+      2,
+      expect.any(AbortSignal),
+      expect.any(Object),
+      false,
+      null,
+      ["oracle-sol-ring"],
+    );
+
+    const additional = cardSearchPage([ghalta], "mana rocks");
+    additional.page = 2;
+    additional.total_results = 2;
+    additional.strategy = "agentic";
+    additional.reranked = true;
+    additional.search_session_id = "search-session-1";
+    resolveContinuation(additional);
+
+    await waitFor(() =>
+      expect(screen.getAllByRole("article")).toHaveLength(2),
+    );
+    expect(
+      screen.getByRole("button", { name: "Load more" }),
+    ).toBeInTheDocument();
   });
 
   it("keeps the trace available when a search returns no cards", async () => {

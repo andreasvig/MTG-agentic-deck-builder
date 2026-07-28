@@ -61,7 +61,11 @@ user query
        -> send a concise URL-free card list back to the same model context
        -> model ranks the relevant subset and may omit weak candidates
        -> return six agent-ranked cards and store the selected ranking
-       -> Load more reads the stored ranking without another model call
+       -> Load more reads every cached ranked batch without another model call
+       -> when the cache is exhausted, the next click starts one continuation
+          -> include every displayed card under "Already showing"
+          -> exclude displayed and previously examined Oracle cards locally
+          -> append only newly ranked cards and retain the next six-card batch
 ```
 
 Every query follows this flow, including exact names, partial words, title
@@ -136,6 +140,12 @@ search:
     local_tool:
       default_max_results: 24
       hard_max_results: 60
+    continuation:
+      enabled: true
+      exclude_already_shown: true
+      exclude_previously_considered: true
+      include_full_card_details_in_prompt: true
+      max_rounds: null
 ```
 
 `page_size` accepts `1..30` and controls the number of cards returned per API
@@ -167,6 +177,19 @@ compatibility layer repairs obvious string shorthand before strict validation:
 for example, `types: "Elf"` becomes a required Elf type and
 `oracle_text: "untap"` becomes an exact Oracle-text alternative. It never
 promotes shorthand into semantic search while embeddings are disabled.
+
+**Load more** is always available after a search response. `has_more: true`
+means the next ranked batch is already cached. `has_more: false` means the
+next click explicitly authorizes one additional two-call/one-tool agent round.
+The existing cards remain visible while that round runs.
+
+Every continuation prompt includes the complete displayed-card list with
+temporary IDs, mana, type, power/toughness, EUR estimate, and Oracle text.
+Displayed `oracle_id` values and every local candidate examined by an earlier
+round are excluded before the local result limit is applied. This prevents
+duplicates and forces later rounds to inspect fresh catalog candidates. A
+round that finds nothing returns an empty successful batch and a warning; the
+button remains available for another, potentially broader round.
 
 The local catalog path is configured separately:
 
@@ -201,6 +224,8 @@ Debug mode:
   matched aliases, original ranks, WRatio scores, and title confidence.
 - Renders exactly seven agentic steps: system prompt, user input prompt,
   thinking, tool call, tool response, final thinking, and output response.
+- Retains one separately labelled seven-step trace for every continuation
+  round while the drawer remains open.
 - Keeps the same seven-step trace on agentic failure: completed steps stay
   visible, the broken step opens automatically with sanitized provider
   evidence, and later steps are marked skipped.
@@ -240,10 +265,13 @@ POST /api/v1/cards/search/agentic
 
 The GET returns the fuzzy page or immediate confident preview plus
 `agentic_required`. The POST starts the one-tool agent run, or accepts
-`search_session_id` with a later page to reuse a completed ranking.
+`search_session_id` with a later page to reuse a cached batch or start one
+continuation. `already_shown_oracle_ids` contains the cards currently visible
+in the drawer and is required when an exhausted search is expanded.
 
-`total_results` is the number of results in the active fuzzy ranking or the
-agent-selected relevant subset. `has_more` means a later numbered page exists.
+`total_results` is the number of results discovered so far in the active fuzzy
+ranking or progressive agentic session. `has_more` means a later ranked batch
+is already cached; it does not control whether **Load more** is rendered.
 `name_match_scores`
 maps each returned
 `scryfall_id` to its broad normalized WRatio score.
@@ -257,8 +285,8 @@ in debug mode and used by the progressive preview phase.
 - A missing OpenRouter key or unavailable model/provider returns a safe HTTP
   503 for the agentic phase; any confident fuzzy previews remain visible.
 - An invalid or expired agentic session returns a safe HTTP 400.
-- An empty filtered result or page beyond the end returns an empty successful
-  page.
+- An agent round with no new relevant cards returns an empty successful batch,
+  keeps prior cards visible, and leaves the continuation button available.
 - A failed refresh leaves the previously installed SQLite database untouched.
 
 ## Tests
@@ -273,6 +301,7 @@ in debug mode and used by the progressive preview phase.
   completeness, full raw JSON persistence, and secret redaction.
 - `test_agentic_card_search.py`: one-tool orchestration, duplicate mana-symbol
   execution, natural prompts, raw/simplified tool trace payloads, candidate
-  omission, alias-aware confidence preservation, and session pagination.
+  omission, alias-aware confidence preservation, cached pagination, exclusions,
+  empty continuation retries, and multi-round agent sessions.
 - Frontend component and browser tests: progressive preview, animated agent
   handoff, readable seven-step traces, scores, filters, and Load more.

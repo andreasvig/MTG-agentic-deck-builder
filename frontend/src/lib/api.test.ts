@@ -89,6 +89,7 @@ describe("API client", () => {
       },
       true,
       "search-session-1",
+      ["oracle-ghalta"],
     );
 
     expect(fetcher).toHaveBeenCalledWith(
@@ -116,6 +117,7 @@ describe("API client", () => {
       },
       debug: true,
       search_session_id: "search-session-1",
+      already_shown_oracle_ids: ["oracle-ghalta"],
     });
   });
 

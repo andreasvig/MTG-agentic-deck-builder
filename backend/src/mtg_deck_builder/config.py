@@ -101,6 +101,18 @@ class AgentLocalToolSettings(BaseModel):
         return self
 
 
+class AgentContinuationSettings(BaseModel):
+    """User-triggered search-expansion behavior."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = True
+    exclude_already_shown: bool = True
+    exclude_previously_considered: bool = True
+    include_full_card_details_in_prompt: bool = True
+    max_rounds: Annotated[int | None, Field(default=None, ge=1, le=100)] = None
+
+
 class AgenticSearchSettings(BaseModel):
     """Configuration for the bounded one-tool agentic search phase."""
 
@@ -114,6 +126,9 @@ class AgenticSearchSettings(BaseModel):
     timeout_seconds: Annotated[float, Field(gt=0, le=120)] = 20
     debug: AgentDebugSettings = Field(default_factory=AgentDebugSettings)
     local_tool: AgentLocalToolSettings = Field(default_factory=AgentLocalToolSettings)
+    continuation: AgentContinuationSettings = Field(
+        default_factory=AgentContinuationSettings
+    )
     system_prompt: str = "You are a Magic: The Gathering card-search agent."
 
     @field_validator("model", "system_prompt")

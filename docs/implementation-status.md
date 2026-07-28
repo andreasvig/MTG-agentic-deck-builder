@@ -156,8 +156,11 @@ Implemented:
   call and structured final output.
 - Progressive fuzzy-preview and agentic POST endpoints.
 - Drawer handoff that keeps confident previews visible while the agent runs.
-- In-memory ranked search sessions so **Load more** does not call the model
-  again.
+- In-memory ranked search sessions that serve cached **Load more** batches
+  without a model call and run one user-triggered continuation after exhaustion.
+- Continuation prompts with full **Already showing** details, canonical
+  displayed/considered-card exclusions, retryable empty rounds, and per-round
+  seven-step traces.
 - Focused seven-step inline agent trace with system prompt, user input,
   provider-returned thinking, tool call/response, final thinking, and output.
 - Natural URL-free user prompts with selectable, non-overlapping fuzzy IDs plus

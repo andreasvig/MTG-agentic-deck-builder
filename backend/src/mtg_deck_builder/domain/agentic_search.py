@@ -197,7 +197,7 @@ class AgentRankedSearchOutput(AgentSearchModel):
     """Final structured output after the single allowed tool call."""
 
     interpretation: BoundedString
-    ranked_ids: list[Annotated[int, Field(ge=1, le=90)]] = Field(max_length=90)
+    ranked_ids: list[Annotated[int, Field(ge=1, le=1_000_000)]] = Field(max_length=90)
 
     @field_validator("ranked_ids")
     @classmethod

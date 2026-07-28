@@ -32,7 +32,7 @@ AgenticCardSearchService
   |-- OpenRouter initial tool selection
   |-- exactly one structured local-catalog tool call
   |-- OpenRouter structured complete ranking
-  `-- in-memory ranked session for Load more
+  `-- in-memory ranked batches and user-triggered Load more continuations
   |
   +--> local-data/search-debug.jsonl (debug only)
 
@@ -168,8 +168,8 @@ omitted.
 
 Executes exact local conditions, bounded paced Scryfall queries, the two-call
 OpenRouter conversation with one intervening tool, temporary numeric candidate
-IDs, relevant-subset validation, debug adaptation, and in-memory ranked-session
-pagination.
+IDs, relevant-subset validation, debug adaptation, cached ranked batches,
+canonical continuation exclusions, and user-triggered session expansion.
 
 ### `agentic_search_debug.py`
 
