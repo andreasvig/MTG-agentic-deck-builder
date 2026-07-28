@@ -20,7 +20,8 @@ The backend currently owns:
 - Local structured filters and simple numbered pages.
 - Structured debug traces and JSONL persistence.
 - Strict local-tool, final-ranking, and complete agent-trace contracts.
-- One-tool OpenRouter orchestration with local and live Scryfall search tools.
+- One-tool OpenRouter orchestration with only the structured local catalog
+  search tool.
 - Natural model-facing prompts with temporary numeric candidate IDs and no
   image/provider URLs.
 - Relevant-subset ranking that permits weak candidates to be omitted.
@@ -157,7 +158,7 @@ Test ownership:
 - `test_deck_models.py`: backend deck contract validation.
 
 Committed tests use small in-memory bulk fixtures and remain independent from
-live Scryfall.
+live provider queries.
 
 ## Extension Notes
 

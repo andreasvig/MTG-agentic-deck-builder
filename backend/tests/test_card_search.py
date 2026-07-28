@@ -47,6 +47,8 @@ def make_card_payload() -> dict[str, Any]:
                 "mana_cost": "{U}",
                 "type_line": "Creature — Human Wizard",
                 "oracle_text": "At the beginning of your upkeep, look at the top card.",
+                "power": "1",
+                "toughness": "1",
                 "colors": ["U"],
                 "image_uris": {
                     "small": "https://cards.scryfall.io/small/front/example.jpg",
@@ -58,6 +60,8 @@ def make_card_payload() -> dict[str, Any]:
                 "mana_cost": "",
                 "type_line": "Creature — Human Insect",
                 "oracle_text": "Flying",
+                "power": "3",
+                "toughness": "2",
                 "colors": ["U"],
                 "image_uris": {
                     "small": "https://cards.scryfall.io/small/back/example.jpg",
@@ -147,6 +151,10 @@ def test_scryfall_card_mapper_preserves_printing_and_face_data() -> None:
     assert card.finishes == ["nonfoil", "foil"]
     assert card.image_uris is None
     assert len(card.card_faces) == 2
+    assert card.power == "1"
+    assert card.toughness == "1"
+    assert card.card_faces[1].power == "3"
+    assert card.card_faces[1].toughness == "2"
     assert str(card.card_faces[0].image_uris.normal).endswith("/front/example.jpg")
     assert str(card.cardmarket_url).startswith("https://www.cardmarket.com/")
 

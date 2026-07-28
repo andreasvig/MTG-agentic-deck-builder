@@ -7,13 +7,13 @@ All notable changes to this project will be documented in this file.
 ### Added
 
 - Implemented ADR 0009 progressive one-tool agentic card search: confident
-  fuzzy previews return immediately, one OpenRouter-selected local or Scryfall
-  tool runs, and the same model context returns a validated relevant-subset
+  fuzzy previews return immediately, one structured local catalog tool runs,
+  and the same model context returns a validated relevant-subset
   ranking.
 - Added `POST /api/v1/cards/search/agentic` and in-memory ranked sessions so
   **Load more** never repeats the model/tool run.
-- Added bounded local exact-condition execution and a paced paper-only live
-  Scryfall tool with immutable UI filters.
+- Added bounded local exact-condition and numeric power/toughness execution
+  with immutable UI filters.
 - Added progressive drawer loading/fallback behavior and a focused seven-step
   agent trace in the existing debug explorer.
 - Added a stricter substring-or-whole-string preview-confidence score and trace
@@ -39,6 +39,11 @@ All notable changes to this project will be documented in this file.
 - Added natural URL-free agent user prompts, temporary numeric candidate IDs,
   explicit already-shown fuzzy markers, and a readable exact tool message
   stored beside the untouched raw tool result.
+- Added price, Oracle text, and power/toughness to fuzzy-preview prompt cards.
+  Preview IDs remain selectable, new local-tool cards receive non-overlapping
+  IDs, and exact Oracle-card duplicates reuse the preview ID.
+- Removed live Scryfall query generation from the agent; its only available
+  search tool is the structured local catalog tool.
 - Added a streaming Scryfall `default_cards` importer, timestamp-aware refresh
   command, atomic SQLite installation, and local catalog reload after swaps.
 - Added canonical Oracle-card search rows while retaining every eligible paper
@@ -174,7 +179,7 @@ All notable changes to this project will be documented in this file.
 - Selected a hybrid card-data architecture: a local SQLite catalog synchronized
   from Scryfall `default_cards`, with Scryfall remaining authoritative.
 - Set weekly gameplay-data synchronization, daily active-deck price refreshes,
-  remote card images, and live Scryfall fallback behavior.
+  remote card images, and local-only per-query search behavior.
 - Corrected the root development runner so Vite serves from the frontend
   workspace, and made the paired-server smoke test assert startup, health,
   frontend HTML, the local HTTP-origin guard, and clean shutdown.

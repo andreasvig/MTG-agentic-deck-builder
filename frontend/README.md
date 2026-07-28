@@ -108,6 +108,11 @@ mode is enabled. `name_match_scores` remains the broad WRatio evidence. Both
 scores stay alias-aware after agentic reranking, including short pre-comma
 aliases such as `Ghalta`.
 
+The agent user prompt treats already-visible fuzzy cards as selectable
+candidates. Their reserved IDs do not overlap with later local-tool cards,
+except that the same Oracle card deliberately reuses its preview ID. Each
+preview includes mana, type, power/toughness, Oracle text, and EUR price.
+
 The debug viewer presents agentic execution as exactly seven chronological,
 color-coded stages: system prompt, user input prompt, thinking, tool call, tool
 response, final thinking, and output response. It omits duplicated request

@@ -4,17 +4,12 @@ from __future__ import annotations
 
 import asyncio
 import json
-import re
 from collections import Counter
-from collections.abc import Callable
 from contextlib import suppress
 from dataclasses import dataclass
 from decimal import Decimal
 from time import monotonic, perf_counter
 from typing import Any
-from urllib.error import HTTPError, URLError
-from urllib.parse import urlencode
-from urllib.request import Request, urlopen
 from uuid import UUID, uuid4
 
 from pydantic import TypeAdapter, ValidationError
@@ -46,14 +41,12 @@ from mtg_deck_builder.domain import (
     CardSearchResult,
     LocalCardSearchRequest,
     LocalCardSearchResult,
-    ScryfallCardSearchRequest,
     SearchDebugStage,
     SearchDebugSummary,
 )
 from mtg_deck_builder.providers import (
     CardSearchQueryError,
     CardSearchUnavailable,
-    map_scryfall_card,
     name_similarity_score,
 )
 from mtg_deck_builder.providers.openrouter import OpenRouterClient, OpenRouterError
@@ -152,13 +145,7 @@ class LocalCardSearchTool:
             and request.oracle_text.semantic_query
             and not self._semantic_enabled
         ):
-            raise AgentSearchContractError(
-                "semantic Oracle-text retrieval is not enabled; use search_scryfall"
-            )
-        if request.power is not None or request.toughness is not None:
-            raise AgentSearchContractError(
-                "power and toughness are not indexed locally; use search_scryfall"
-            )
+            raise AgentSearchContractError("semantic Oracle-text retrieval is not enabled")
         if request.legality is not None and request.format is None:
             raise AgentSearchContractError("legality requires a format")
 
@@ -178,140 +165,6 @@ class LocalCardSearchTool:
         )
 
 
-class ScryfallCardSearchTool:
-    """Execute one bounded live Scryfall search selected by the agent."""
-
-    def __init__(
-        self,
-        *,
-        base_url: str,
-        user_agent: str,
-        timeout_seconds: float,
-        request_interval_seconds: float,
-        default_max_results: int,
-        hard_max_results: int,
-        open_url: Callable[..., Any] = urlopen,
-    ) -> None:
-        self._base_url = base_url.rstrip("/")
-        self._user_agent = user_agent
-        self._timeout_seconds = timeout_seconds
-        self._request_interval_seconds = request_interval_seconds
-        self._default_max_results = default_max_results
-        self._hard_max_results = hard_max_results
-        self._open_url = open_url
-
-    async def search(
-        self,
-        request: ScryfallCardSearchRequest,
-        *,
-        immutable_filters: CardSearchFilters,
-    ) -> ExecutedSearchTool:
-        limit = request.max_results or self._default_max_results
-        if limit > self._hard_max_results:
-            raise AgentSearchContractError("Scryfall max_results exceeds the hard maximum")
-        return await asyncio.to_thread(
-            self._search_sync,
-            request,
-            immutable_filters,
-            limit,
-        )
-
-    def _search_sync(
-        self,
-        request: ScryfallCardSearchRequest,
-        immutable_filters: CardSearchFilters,
-        limit: int,
-    ) -> ExecutedSearchTool:
-        compiled_query = _ensure_paper_query(request.query)
-        next_url: str | None = f"{self._base_url}/cards/search?" + urlencode(
-            {
-                "q": compiled_query,
-                "unique": "cards",
-                "order": "edhrec",
-                "dir": "asc",
-            }
-        )
-        candidates: list[AgentSearchCandidate] = []
-        seen_oracle_ids: set[UUID] = set()
-        provider_pages = 0
-        provider_total: int | None = None
-
-        while next_url is not None and len(candidates) < limit:
-            if provider_pages and self._request_interval_seconds:
-                import time
-
-                time.sleep(self._request_interval_seconds)
-            payload = self._get_page(next_url)
-            provider_pages += 1
-            provider_total_value = payload.get("total_cards")
-            if isinstance(provider_total_value, int):
-                provider_total = provider_total_value
-            data = payload.get("data")
-            if not isinstance(data, list):
-                raise CardSearchUnavailable
-            for raw_card in data:
-                try:
-                    card = map_scryfall_card(raw_card)
-                except (ValidationError, ValueError, TypeError):
-                    continue
-                if card.oracle_id in seen_oracle_ids:
-                    continue
-                seen_oracle_ids.add(card.oracle_id)
-                if not matches_card_filters(card, immutable_filters):
-                    continue
-                candidates.append(
-                    AgentSearchCandidate(
-                        card=card,
-                        exact_match_evidence=[f"Scryfall query: {compiled_query}"],
-                        filter_decisions={"immutable_ui_filters": True},
-                    )
-                )
-                if len(candidates) >= limit:
-                    break
-            next_page = payload.get("next_page")
-            next_url = next_page if isinstance(next_page, str) else None
-
-        tool_payload = {
-            "request": request.model_dump(mode="json"),
-            "compiled_query": compiled_query,
-            "provider": "scryfall",
-            "provider_pages": provider_pages,
-            "provider_total_cards": provider_total,
-            "returned_candidates": len(candidates),
-            "candidates": [candidate.model_dump(mode="json") for candidate in candidates],
-        }
-        return ExecutedSearchTool(
-            name="search_scryfall",
-            arguments=request.model_dump(mode="json", exclude_none=True),
-            candidates=tuple(candidates),
-            payload=tool_payload,
-        )
-
-    def _get_page(self, url: str) -> dict[str, Any]:
-        request = Request(
-            url,
-            headers={
-                "Accept": "application/json",
-                "User-Agent": self._user_agent,
-            },
-        )
-        try:
-            with self._open_url(request, timeout=self._timeout_seconds) as response:
-                payload = json.loads(response.read())
-        except HTTPError as exc:
-            body = _load_json_response(exc.read())
-            if exc.code == 404:
-                return {"data": [], "has_more": False, "provider_error": body}
-            if exc.code == 400:
-                raise CardSearchQueryError from exc
-            raise CardSearchUnavailable from exc
-        except (OSError, URLError, json.JSONDecodeError) as exc:
-            raise CardSearchUnavailable from exc
-        if not isinstance(payload, dict):
-            raise CardSearchUnavailable
-        return payload
-
-
 class AgenticCardSearchService:
     """Coordinate fuzzy preview, one model-selected tool, and final ranking."""
 
@@ -320,7 +173,6 @@ class AgenticCardSearchService:
         *,
         fuzzy_provider: FuzzyTitleSearchProvider,
         local_tool: LocalCardSearchTool,
-        scryfall_tool: ScryfallCardSearchTool,
         model_client: OpenRouterClient | None,
         settings: AgenticSearchSettings,
         page_size: int,
@@ -331,7 +183,6 @@ class AgenticCardSearchService:
     ) -> None:
         self._fuzzy_provider = fuzzy_provider
         self._local_tool = local_tool
-        self._scryfall_tool = scryfall_tool
         self._model_client = model_client
         self._settings = settings
         self._page_size = page_size
@@ -420,11 +271,7 @@ class AgenticCardSearchService:
                 card.scryfall_id: title_scores[card.scryfall_id][1] for card in completed.cards
             },
             interpretation=completed.output.interpretation,
-            warnings=(
-                ("Agent used live Scryfall search.",)
-                if completed.tool.name == "search_scryfall"
-                else ()
-            ),
+            warnings=(),
             debug=debug,
             created_at=monotonic(),
         )
@@ -445,11 +292,11 @@ class AgenticCardSearchService:
                 "content": (
                     self._settings.system_prompt
                     + "\n\nIMPORTANT RUNTIME CAPABILITIES: semantic embeddings are "
-                    "disabled. Do not use semantic_query. The local catalog cannot "
-                    "filter power or toughness. You MUST use search_scryfall for "
-                    'descriptions such as "big", "large", or "high power"; encode '
-                    'them with Scryfall syntax such as pow>=4. Local "types" and '
-                    '"colors" are nested objects, never strings.'
+                    "disabled. Do not use semantic_query. search_local_cards is the "
+                    "only available tool. It supports structured name, Oracle text, "
+                    "mana, type, color, power, toughness, price, format, set, and "
+                    'rarity filters. "types" and "colors" are nested objects, never '
+                    "strings."
                 ),
             },
             {
@@ -493,16 +340,10 @@ class AgenticCardSearchService:
         )
 
         started = perf_counter()
-        if tool_call.name == "search_local_cards":
-            executed = await self._local_tool.search(
-                tool_call.arguments,
-                immutable_filters=request.filters,
-            )
-        else:
-            executed = await self._scryfall_tool.search(
-                tool_call.arguments,
-                immutable_filters=request.filters,
-            )
+        executed = await self._local_tool.search(
+            tool_call.arguments,
+            immutable_filters=request.filters,
+        )
         tool_duration_ms = _elapsed_ms(started)
 
         union = _candidate_union(preview.cards, executed.candidates)
@@ -677,6 +518,16 @@ def _execute_local_search(
                 continue
             decisions["colors"] = True
             evidence.append("color identity matched")
+        if request.power is not None:
+            if not _matches_numeric_characteristic(card, "power", request.power):
+                continue
+            decisions["power"] = True
+            evidence.append("power range matched")
+        if request.toughness is not None:
+            if not _matches_numeric_characteristic(card, "toughness", request.toughness):
+                continue
+            decisions["toughness"] = True
+            evidence.append("toughness range matched")
         if request.price_eur is not None:
             eur = card.prices.eur
             if not _decimal_in_range(
@@ -767,6 +618,26 @@ def _card_type_line(card: CardSearchResult) -> str:
     )
 
 
+def _card_power_toughness(card: CardSearchResult) -> str:
+    if card.card_faces:
+        pairs = [
+            f"{face.power or '?'}/{face.toughness or '?'}"
+            for face in card.card_faces
+            if face.power is not None or face.toughness is not None
+        ]
+    else:
+        pairs = (
+            [f"{card.power or '?'}/{card.toughness or '?'}"]
+            if card.power is not None or card.toughness is not None
+            else []
+        )
+    return " // ".join(pairs)
+
+
+def _card_price_eur(card: CardSearchResult) -> str:
+    return f"€{card.prices.eur}" if card.prices.eur is not None else "unavailable"
+
+
 def _matches_agent_colors(card: CardSearchResult, search: Any) -> bool:
     selected = set(search.identity or [])
     identity = set(card.color_identity)
@@ -775,6 +646,30 @@ def _matches_agent_colors(card: CardSearchResult, search: Any) -> bool:
     if not identity:
         return search.include_colorless
     return identity == selected if search.mode == "exact" else identity.issubset(selected)
+
+
+def _matches_numeric_characteristic(
+    card: CardSearchResult,
+    field: str,
+    search: Any,
+) -> bool:
+    raw_values = [
+        getattr(card, field),
+        *(getattr(face, field) for face in card.card_faces),
+    ]
+    values: list[float] = []
+    for raw_value in raw_values:
+        if raw_value is None:
+            continue
+        try:
+            values.append(float(raw_value))
+        except ValueError:
+            continue
+    return any(
+        (search.minimum is None or value >= search.minimum)
+        and (search.maximum is None or value <= search.maximum)
+        for value in values
+    )
 
 
 def _decimal_in_range(
@@ -789,13 +684,6 @@ def _decimal_in_range(
     )
 
 
-def _ensure_paper_query(query: str) -> str:
-    stripped = query.strip()
-    if re.search(r"(?:^|\s)game\s*:\s*paper(?:\s|$)", stripped, re.IGNORECASE):
-        return stripped
-    return f"({stripped}) game:paper"
-
-
 def _tool_definitions() -> list[dict[str, Any]]:
     return [
         {
@@ -805,26 +693,13 @@ def _tool_definitions() -> list[dict[str, Any]]:
                 "description": (
                     "Search the complete local MTG catalog with exact structured "
                     "conditions. All fields are optional. Duplicate exact values "
-                    "to require multiple occurrences. Do not use this tool for "
-                    "power, toughness, big/large creatures, or semantic meaning "
-                    "while embeddings are disabled. types and colors must be "
-                    "nested objects, never strings."
+                    "to require multiple occurrences. Use numeric power and "
+                    "toughness ranges for descriptions such as big, large, or "
+                    "high power. Semantic Oracle-text search is unavailable while "
+                    "embeddings are disabled; use exact Oracle-text conditions. "
+                    "types and colors must be nested objects, never strings."
                 ),
                 "parameters": LocalCardSearchRequest.model_json_schema(),
-                "strict": True,
-            },
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "search_scryfall",
-                "description": (
-                    "Run one bounded Scryfall syntax query. Use this for power, "
-                    "toughness, big/large creatures and other descriptive searches "
-                    "while embeddings are disabled, or live Scryfall-only "
-                    "capabilities. Example: id:g t:creature pow>=4."
-                ),
-                "parameters": ScryfallCardSearchRequest.model_json_schema(),
                 "strict": True,
             },
         },
@@ -912,6 +787,19 @@ def _normalize_tool_arguments(
         normalized["colors"] = {"identity": [_normalize_magic_color(item) for item in colors]}
         changes.append("colors list -> colors.identity")
 
+    for key in ("power", "toughness"):
+        value = normalized.get(key)
+        if isinstance(value, int | float) and not isinstance(value, bool):
+            normalized[key] = {"minimum": value}
+            changes.append(f"{key} number -> {key}.minimum")
+        elif isinstance(value, str):
+            try:
+                minimum = float(value)
+            except ValueError:
+                continue
+            normalized[key] = {"minimum": minimum}
+            changes.append(f"{key} numeric string -> {key}.minimum")
+
     for key in ("sets", "rarities"):
         value = normalized.get(key)
         if isinstance(value, str):
@@ -987,6 +875,8 @@ def _numbered_candidate_payload(
             "mana_value": card.mana_value,
             "type_line": _card_type_line(card),
             "oracle_text": _card_oracle_text(card) or None,
+            "power_toughness": _card_power_toughness(card) or None,
+            "price_eur": str(card.prices.eur) if card.prices.eur is not None else None,
             "color_identity": card.color_identity,
         },
     }
@@ -1007,20 +897,19 @@ def _render_initial_user_message(
         "",
     ]
     if preview_cards:
+        lines.append("The fuzzy title search has already shown these selectable cards to the user:")
+        for candidate_id, card in enumerate(preview_cards, start=1):
+            lines.extend(_render_preview_candidate(candidate_id, card))
         lines.extend(
             [
-                "The fuzzy title search has already shown these cards to the user:",
-                *[
-                    (
-                        f"{candidate_id}. {card.name} — "
-                        f"{_card_mana_cost(card) or 'no mana cost'} — "
-                        f"{_card_type_line(card)}"
-                    )
-                    for candidate_id, card in enumerate(preview_cards, start=1)
-                ],
                 (
-                    "Keep these temporary IDs when the same cards appear in the "
-                    "final candidate list."
+                    "These IDs are already valid final choices, even if the tool "
+                    "does not return the cards again."
+                ),
+                (
+                    "New tool results receive later, non-overlapping IDs. If the "
+                    "tool returns the exact same Oracle card, it keeps the existing "
+                    "ID instead of becoming a duplicate."
                 ),
             ]
         )
@@ -1036,6 +925,22 @@ def _render_initial_user_message(
         ]
     )
     return "\n".join(lines)
+
+
+def _render_preview_candidate(
+    candidate_id: int,
+    card: CardSearchResult,
+) -> list[str]:
+    return [
+        f"ID {candidate_id} [ALREADY SHOWN]",
+        f"Name: {card.name}",
+        (f"Mana: {_card_mana_cost(card) or 'no mana cost'} (mana value {card.mana_value:g})"),
+        f"Type: {_card_type_line(card)}",
+        f"Power/Toughness: {_card_power_toughness(card) or 'not applicable'}",
+        f"EUR price estimate: {_card_price_eur(card)}",
+        f"Oracle text: {_card_oracle_text(card) or 'No Oracle text'}",
+        "",
+    ]
 
 
 def _render_filter_lines(filters: CardSearchFilters) -> list[str]:
@@ -1091,6 +996,11 @@ def _render_tool_result_message(
                     f"(mana value {card['mana_value']:g})"
                 ),
                 f"Type: {card['type_line']}",
+                f"Power/Toughness: {card['power_toughness'] or 'not applicable'}",
+                (
+                    "EUR price estimate: "
+                    + (f"€{card['price_eur']}" if card["price_eur"] else "unavailable")
+                ),
                 f"Color identity: {colors}",
                 f"Rules: {card['oracle_text'] or 'No rules text'}",
                 "",
@@ -1332,13 +1242,6 @@ def _thinking_trace_payload(
         "reasoning": message.get("reasoning"),
         "reasoning_details": message.get("reasoning_details"),
     }
-
-
-def _load_json_response(body: bytes) -> object:
-    try:
-        return json.loads(body)
-    except (json.JSONDecodeError, UnicodeDecodeError):
-        return body.decode("utf-8", errors="replace")
 
 
 def _elapsed_ms(started: float) -> float:

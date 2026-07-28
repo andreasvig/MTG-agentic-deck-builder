@@ -5,10 +5,11 @@ is no fuzzy minimum score or candidate-pool cap. When fewer than 12 titles
 clear the stricter 75% preview-confidence boundary, the drawer keeps those
 confident cards visible and starts one bounded agentic search.
 
-The agent makes exactly one local or Scryfall tool call, sees the result in the
-same conversation, and makes one final structured call that ranks the relevant
-candidate IDs. Semantic embeddings remain disabled; descriptive constraints
-that the local catalog cannot execute, such as power or toughness, use Scryfall.
+The agent makes exactly one structured local-catalog tool call, sees the result
+in the same conversation, and makes one final structured call that ranks the
+relevant candidate IDs. The agent has no live Scryfall-query tool. Semantic
+embeddings remain disabled; name, exact Oracle text, mana, type, color,
+power/toughness, price, format, set, and rarity filters execute locally.
 See
 [`ADR 0009`](decisions/0009-progressive-one-tool-agentic-search.md).
 
@@ -25,8 +26,9 @@ The importer:
 4. Keeps eligible English paper printings.
 5. Stores every printing and selects one representative printing per
    `oracle_id` for search results.
-6. Validates a temporary SQLite database.
-7. Atomically replaces the installed database only after a successful import.
+6. Retains Oracle text, EUR price, and power/toughness in the local card record.
+7. Validates a temporary SQLite database.
+8. Atomically replaces the installed database only after a successful import.
 
 Images remain remote Scryfall URLs. The SQLite file and temporary files are
 ignored by Git.
@@ -52,8 +54,10 @@ user query
   -> if all 12 clear 75%: return the normal fuzzy page
   -> otherwise: return only confident previews immediately
        -> model selects exactly one tool
-       -> execute search_local_cards or bounded live Scryfall
-       -> assign temporary IDs 1..N, preserving preview IDs and "already shown"
+       -> execute search_local_cards against the local catalog
+       -> keep preview IDs selectable even if the tool does not return them
+       -> assign later non-overlapping IDs to new tool cards
+       -> reuse the preview ID for an exact duplicate Oracle card
        -> send a concise URL-free card list back to the same model context
        -> model ranks the relevant subset and may omit weak candidates
        -> return 12 agent-ranked cards and store the selected ranking
@@ -151,6 +155,12 @@ overlap does not masquerade as title confidence.
 The agentic system prompt, semantic indexed fields, one-tool limit, candidate
 bounds, and full debug-capture switches also live in `config.yaml`. Agentic
 search is enabled; semantic embeddings remain disabled.
+
+The initial user prompt gives every already-visible fuzzy card a selectable ID
+and includes its mana, type, power/toughness, EUR estimate, and Oracle text.
+Those preview IDs are reserved at the front of the candidate union. The local
+tool cannot overwrite them: a new card receives the next available ID, while
+the same `oracle_id` reuses the existing preview ID.
 
 The local catalog path is configured separately:
 

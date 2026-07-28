@@ -22,7 +22,7 @@ from mtg_deck_builder.domain import CardSearchResult
 from mtg_deck_builder.providers.cards import CardSearchUnavailable
 from mtg_deck_builder.providers.scryfall import map_scryfall_card
 
-_SCHEMA_VERSION = 1
+_SCHEMA_VERSION = 2
 _BULK_TYPE = "default_cards"
 
 

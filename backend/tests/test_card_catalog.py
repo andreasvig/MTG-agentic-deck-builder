@@ -39,6 +39,8 @@ def card_payload(
         "cmc": 1,
         "type_line": "Creature — Test",
         "oracle_text": "Test.",
+        "power": "2",
+        "toughness": "3",
         "colors": ["G"],
         "color_identity": ["G"],
         "image_uris": {
@@ -173,6 +175,8 @@ def test_bulk_import_keeps_printings_and_selects_one_searchable_oracle_card(
         )
     )
     assert "forest friend" in forest.aliases
+    assert forest.card.power == "2"
+    assert forest.card.toughness == "3"
     assert catalog.metadata()["source_updated_at"] == "2026-07-27T09:09:45+00:00"
 
 

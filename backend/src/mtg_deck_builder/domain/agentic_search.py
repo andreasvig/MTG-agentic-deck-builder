@@ -26,7 +26,7 @@ BoundedString = Annotated[
     str,
     StringConstraints(strip_whitespace=True, min_length=1, max_length=4_000),
 ]
-SearchToolName = Literal["search_local_cards", "search_scryfall"]
+SearchToolName = Literal["search_local_cards"]
 AgentTraceStatus = Literal["ok", "error", "cancelled"]
 AgentTraceStageName = Literal[
     "request_context",
@@ -165,13 +165,6 @@ class LocalCardSearchRequest(AgentSearchModel):
         return any(value not in ({}, []) for value in payload.values())
 
 
-class ScryfallCardSearchRequest(AgentSearchModel):
-    """Bounded Scryfall syntax selected only when the local schema is insufficient."""
-
-    query: BoundedString
-    max_results: Annotated[int | None, Field(default=None, ge=1, le=60)] = None
-
-
 class LocalSearchToolCall(AgentSearchModel):
     """Discriminated call to the structured local card tool."""
 
@@ -179,17 +172,7 @@ class LocalSearchToolCall(AgentSearchModel):
     arguments: LocalCardSearchRequest
 
 
-class ScryfallSearchToolCall(AgentSearchModel):
-    """Discriminated call to the bounded live Scryfall fallback."""
-
-    name: Literal["search_scryfall"]
-    arguments: ScryfallCardSearchRequest
-
-
-AgentSearchToolCall = Annotated[
-    LocalSearchToolCall | ScryfallSearchToolCall,
-    Field(discriminator="name"),
-]
+AgentSearchToolCall = LocalSearchToolCall
 
 
 class AgentSearchCandidate(AgentSearchModel):

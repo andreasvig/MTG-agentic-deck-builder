@@ -13,6 +13,8 @@ export const solRing: CardSearchResult = {
   mana_value: 1,
   type_line: "Artifact",
   oracle_text: "{T}: Add {C}{C}.",
+  power: null,
+  toughness: null,
   colors: [],
   color_identity: [],
   image_uris: {
@@ -51,6 +53,8 @@ export const ghalta: CardSearchResult = {
   mana_value: 12,
   type_line: "Legendary Creature — Elder Dinosaur",
   oracle_text: "Trample",
+  power: "12",
+  toughness: "12",
   colors: ["G"],
   color_identity: ["G"],
   set_code: "rix",

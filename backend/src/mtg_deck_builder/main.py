@@ -10,7 +10,6 @@ from mtg_deck_builder import __version__
 from mtg_deck_builder.agentic_card_search import (
     AgenticCardSearchService,
     LocalCardSearchTool,
-    ScryfallCardSearchTool,
 )
 from mtg_deck_builder.agentic_search_debug import JsonlAgentSearchTraceLogger
 from mtg_deck_builder.api.router import router as api_router
@@ -64,14 +63,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 default_max_results=agentic.local_tool.default_max_results,
                 hard_max_results=agentic.local_tool.hard_max_results,
                 semantic_enabled=runtime_settings.search.semantic.enabled,
-            ),
-            scryfall_tool=ScryfallCardSearchTool(
-                base_url=runtime_settings.scryfall_base_url,
-                user_agent=runtime_settings.scryfall_user_agent,
-                timeout_seconds=agentic.timeout_seconds,
-                request_interval_seconds=(runtime_settings.scryfall_request_interval_seconds),
-                default_max_results=agentic.local_tool.default_max_results,
-                hard_max_results=agentic.max_tool_results,
             ),
             model_client=model_client,
             settings=agentic,

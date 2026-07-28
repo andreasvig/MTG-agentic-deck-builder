@@ -39,6 +39,8 @@ export interface CardFace {
   mana_cost: string | null;
   type_line: string | null;
   oracle_text: string | null;
+  power: string | null;
+  toughness: string | null;
   colors: MagicColor[];
   image_uris: CardImageUris | null;
 }
@@ -61,6 +63,8 @@ export interface CardSearchResult {
   mana_value: number;
   type_line: string;
   oracle_text: string | null;
+  power: string | null;
+  toughness: string | null;
   colors: MagicColor[];
   color_identity: MagicColor[];
   image_uris: CardImageUris | null;

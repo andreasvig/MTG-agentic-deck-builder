@@ -23,8 +23,9 @@ and Cardmarket verification links without separate authentication.
 - Use Scryfall daily EUR values as estimates, not guaranteed offers.
 - Link to Cardmarket for manual verification.
 - Build a derived local SQLite read model from Scryfall `default_cards`.
-- Refresh gameplay data atomically and use live Scryfall for misses, advanced
-  syntax, and newly released cards.
+- Refresh gameplay data atomically. Search the derived local catalog rather
+  than issuing per-query live Scryfall requests; refresh the catalog to pick up
+  newly released cards.
 - Consider MTGJSON later for exact Cardmarket trend history, not as the primary
   gameplay authority.
 

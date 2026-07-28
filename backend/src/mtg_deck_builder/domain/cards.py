@@ -48,6 +48,8 @@ class CardFace(CardModel):
     mana_cost: str | None = None
     type_line: NonEmptyString | None = None
     oracle_text: str | None = None
+    power: str | None = None
+    toughness: str | None = None
     colors: list[MagicColor] = Field(default_factory=list)
     image_uris: CardImageUris | None = None
 
@@ -74,6 +76,8 @@ class CardSearchResult(CardModel):
     mana_value: Annotated[float, Field(ge=0)]
     type_line: NonEmptyString
     oracle_text: str | None = None
+    power: str | None = None
+    toughness: str | None = None
     colors: list[MagicColor] = Field(default_factory=list)
     color_identity: list[MagicColor] = Field(default_factory=list)
     image_uris: CardImageUris | None = None

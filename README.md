@@ -152,10 +152,12 @@ The full scoring contract is in [`docs/search.md`](docs/search.md) and
 [`ADR 0007`](docs/decisions/0007-single-fuzzy-title-search.md).
 
 The progressive agentic phase is active. It keeps confident title matches
-visible, shows an animated ranking state, calls exactly one local or Scryfall
-tool when the first page is under-filled, and ranks only returned candidate
-IDs. Fuzzy previews and tool candidates use small temporary IDs (`1`, `2`,
-`3`), and the model may omit irrelevant results. See
+visible, shows an animated ranking state, calls exactly one structured local
+catalog tool when the first page is under-filled, and ranks only known
+candidate IDs. Fuzzy previews are selectable before the tool call and include
+mana, type, power/toughness, Oracle text, and EUR price. Tool candidates receive
+later temporary IDs (`1`, `2`, `3`, and so on), exact Oracle-card duplicates
+reuse the preview ID, and the model may omit irrelevant results. See
 [`ADR 0009`](docs/decisions/0009-progressive-one-tool-agentic-search.md).
 
 ## Search Debugging

@@ -185,6 +185,8 @@ function isCardSearchPage(value: unknown): value is CardSearchPage {
         typeof card.name === "string" &&
         typeof card.type_line === "string" &&
         typeof card.mana_value === "number" &&
+        (card.power === null || typeof card.power === "string") &&
+        (card.toughness === null || typeof card.toughness === "string") &&
         isRecord(card.prices),
     ) &&
     isRecord(value.name_match_scores) &&

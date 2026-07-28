@@ -35,6 +35,8 @@ def make_card(
     type_line: str = "Artifact Creature — Construct",
     oracle_text: str = "Trample",
     colors: list[str] | None = None,
+    power: str | None = None,
+    toughness: str | None = None,
 ) -> CardSearchResult:
     identity = colors or []
     slug = name.casefold().replace(" ", "-")
@@ -47,6 +49,8 @@ def make_card(
         mana_value=mana_value,
         type_line=type_line,
         oracle_text=oracle_text,
+        power=power,
+        toughness=toughness,
         colors=identity,
         color_identity=identity,
         image_uris=None,
@@ -81,7 +85,13 @@ GHALTA = make_card(
     mana_cost="{10}{G}{G}",
     mana_value=12,
     type_line="Legendary Creature — Elder Dinosaur",
+    oracle_text=(
+        "This spell costs {X} less to cast, where X is the total power "
+        "of creatures you control.\nTrample"
+    ),
     colors=["G"],
+    power="12",
+    toughness="12",
 )
 GIGANTOSAURUS = make_card(
     "Gigantosaurus",
@@ -89,6 +99,8 @@ GIGANTOSAURUS = make_card(
     mana_value=5,
     type_line="Creature — Dinosaur",
     colors=["G"],
+    power="10",
+    toughness="10",
 )
 
 
@@ -122,6 +134,29 @@ def test_local_tool_treats_duplicate_mana_symbols_as_a_multiset() -> None:
     assert [candidate.card.name for candidate in result.candidates] == ["Hangarback Walker"]
 
 
+def test_local_tool_filters_numeric_power_and_toughness() -> None:
+    tool = LocalCardSearchTool(  # type: ignore[arg-type]
+        StubCatalog([HANGARBACK, GHALTA, GIGANTOSAURUS]),
+        default_max_results=10,
+        hard_max_results=60,
+        semantic_enabled=False,
+    )
+
+    result = asyncio.run(
+        tool.search(
+            LocalCardSearchRequest.model_validate(
+                {
+                    "power": {"minimum": 11},
+                    "toughness": {"minimum": 11},
+                }
+            ),
+            immutable_filters=CardSearchFilters(),
+        )
+    )
+
+    assert [candidate.card.name for candidate in result.candidates] == ["Ghalta, Primal Hunger"]
+
+
 def test_provider_shorthand_is_normalized_before_strict_validation() -> None:
     normalized, changes = _normalize_tool_arguments(
         "search_local_cards",
@@ -129,6 +164,7 @@ def test_provider_shorthand_is_normalized_before_strict_validation() -> None:
             "name": "Ghalta",
             "types": "Creature",
             "colors": "green",
+            "power": "5",
         },
     )
 
@@ -136,11 +172,13 @@ def test_provider_shorthand_is_normalized_before_strict_validation() -> None:
         "name": {"query": "Ghalta"},
         "types": {"must_contain_all": ["Creature"]},
         "colors": {"identity": ["G"]},
+        "power": {"minimum": 5.0},
     }
     assert changes == [
         "name string -> name.query",
         "types string -> types.must_contain_all",
         "colors string -> colors.identity",
+        "power numeric string -> power.minimum",
     ]
 
 
@@ -193,11 +231,18 @@ class StubTool:
             for card in self._candidates
         )
         return ExecutedSearchTool(
-            name="search_scryfall",
-            arguments={"query": "id:g t:creature pow>=4"},
+            name="search_local_cards",
+            arguments={
+                "types": {"must_contain_all": ["Creature"]},
+                "colors": {"identity": ["G"]},
+                "power": {"minimum": 4},
+            },
             candidates=candidates,
             payload={
-                "compiled_query": "(id:g t:creature pow>=4) game:paper",
+                "compiled_query": {
+                    "engine": "local_sqlite_catalog",
+                    "result_limit": 24,
+                },
                 "candidates": [candidate.model_dump(mode="json") for candidate in candidates],
             },
         )
@@ -224,7 +269,7 @@ class StubModelClient:
                             "reasoning_details": [
                                 {
                                     "type": "reasoning.summary",
-                                    "summary": "Use Scryfall power filtering.",
+                                    "summary": "Use local structured power filtering.",
                                 }
                             ],
                             "tool_calls": [
@@ -232,10 +277,15 @@ class StubModelClient:
                                     "id": "tool-call-1",
                                     "type": "function",
                                     "function": {
-                                        "name": "search_scryfall",
+                                        "name": "search_local_cards",
                                         "arguments": json.dumps(
                                             {
-                                                "query": ("id:g t:creature pow>=4"),
+                                                "types": {"must_contain_all": ["Creature"]},
+                                                "colors": {
+                                                    "identity": ["G"],
+                                                    "mode": "subset",
+                                                },
+                                                "power": {"minimum": 4},
                                                 "max_results": 24,
                                             }
                                         ),
@@ -280,12 +330,11 @@ def test_agent_runs_one_tool_then_reuses_the_ranked_session(
 ) -> None:
     cards = [GHALTA, GIGANTOSAURUS]
     model = StubModelClient(cards)
-    scryfall_tool = StubTool(cards)
+    local_tool = StubTool(cards)
     trace_path = tmp_path / "search.jsonl"
     service = AgenticCardSearchService(
         fuzzy_provider=StubFuzzyProvider(),  # type: ignore[arg-type]
-        local_tool=StubTool([]),  # type: ignore[arg-type]
-        scryfall_tool=scryfall_tool,  # type: ignore[arg-type]
+        local_tool=local_tool,  # type: ignore[arg-type]
         model_client=model,  # type: ignore[arg-type]
         settings=AgenticSearchSettings(enabled=True),
         page_size=1,
@@ -307,9 +356,12 @@ def test_agent_runs_one_tool_then_reuses_the_ranked_session(
     assert first.cards == [GHALTA]
     assert first.has_more is True
     assert first.search_session_id is not None
-    assert scryfall_tool.calls == 1
+    assert local_tool.calls == 1
     assert len(model.payloads) == 2
     assert model.payloads[0]["tool_choice"] == "required"
+    assert len(model.payloads[0]["tools"]) == 1
+    assert model.payloads[0]["tools"][0]["function"]["name"] == "search_local_cards"
+    assert "search_scryfall" not in json.dumps(model.payloads[0])
     assert "tool_choice" not in model.payloads[1]
     assert "tools" not in model.payloads[1]
     initial_messages = model.payloads[0]["messages"]
@@ -360,7 +412,7 @@ def test_agent_runs_one_tool_then_reuses_the_ranked_session(
     )
     assert second.cards == [GIGANTOSAURUS]
     assert second.has_more is False
-    assert scryfall_tool.calls == 1
+    assert local_tool.calls == 1
     assert len(model.payloads) == 2
 
 
@@ -371,8 +423,7 @@ def test_agentic_results_keep_short_title_alias_confidence(
     trace_path = tmp_path / "search.jsonl"
     service = AgenticCardSearchService(
         fuzzy_provider=GhaltaPreviewProvider(),  # type: ignore[arg-type]
-        local_tool=StubTool([]),  # type: ignore[arg-type]
-        scryfall_tool=StubTool([GHALTA]),  # type: ignore[arg-type]
+        local_tool=StubTool([GHALTA, GIGANTOSAURUS]),  # type: ignore[arg-type]
         model_client=model,  # type: ignore[arg-type]
         settings=AgenticSearchSettings(enabled=True),
         page_size=12,
@@ -387,10 +438,17 @@ def test_agentic_results_keep_short_title_alias_confidence(
     assert result.name_match_scores[GHALTA.scryfall_id] > 0.8
     assert result.title_confidence_scores[GHALTA.scryfall_id] > 0.8
     initial_user_message = model.payloads[0]["messages"][1]["content"]
-    assert "1. Ghalta, Primal Hunger" in initial_user_message
+    assert "ID 1 [ALREADY SHOWN]" in initial_user_message
+    assert "Power/Toughness: 12/12" in initial_user_message
+    assert "EUR price estimate: €0.25" in initial_user_message
+    assert "This spell costs {X} less to cast" in initial_user_message
+    assert "already valid final choices" in initial_user_message
+    assert "non-overlapping IDs" in initial_user_message
     assert "image_uris" not in initial_user_message
     tool_message = model.payloads[1]["messages"][-1]["content"]
     assert "ID 1 [ALREADY SHOWN]" in tool_message
+    assert "ID 2\nName: Gigantosaurus" in tool_message
+    assert tool_message.count("Name: Ghalta, Primal Hunger") == 1
     assert str(GHALTA.scryfall_id) not in tool_message
 
 
@@ -402,8 +460,7 @@ def test_agent_can_omit_irrelevant_candidates(
     trace_path = tmp_path / "search.jsonl"
     service = AgenticCardSearchService(
         fuzzy_provider=StubFuzzyProvider(),  # type: ignore[arg-type]
-        local_tool=StubTool([]),  # type: ignore[arg-type]
-        scryfall_tool=StubTool(cards),  # type: ignore[arg-type]
+        local_tool=StubTool(cards),  # type: ignore[arg-type]
         model_client=model,  # type: ignore[arg-type]
         settings=AgenticSearchSettings(enabled=True),
         page_size=12,

@@ -146,9 +146,10 @@ Implemented:
   candidates.
 - Versioned complete internal agent audit trace, secret redaction, and
   untruncated JSONL persistence contracts.
-- Local exact-condition tool execution against the complete derived catalog.
-- Bounded live Scryfall search tool with paper-only queries, provider pacing,
-  immutable UI-filter enforcement, and validated card mapping.
+- Local exact-condition and numeric power/toughness tool execution against the
+  complete derived catalog.
+- A single agent-visible local search tool; live Scryfall query generation is
+  not exposed to the model.
 - Direct OpenRouter two-call orchestration with exactly one intervening tool
   call and structured final output.
 - Progressive fuzzy-preview and agentic POST endpoints.
@@ -157,7 +158,8 @@ Implemented:
   again.
 - Focused seven-step inline agent trace with system prompt, user input,
   provider-returned thinking, tool call/response, final thinking, and output.
-- Natural URL-free user prompts, explicit already-shown fuzzy IDs, and an exact
+- Natural URL-free user prompts with selectable, non-overlapping fuzzy IDs plus
+  price, Oracle text, and power/toughness, and an exact
   readable tool-role message stored beside the untouched raw tool result.
 
 Missing:
@@ -201,7 +203,7 @@ matching is an embedding result.
 - The local catalog is a derived read model and can be rebuilt from Scryfall.
 - Search is the only product API beyond health.
 - Search always starts locally. Natural-language or weak-title queries can
-  continue through OpenRouter and one bounded local/Scryfall tool call.
+  continue through OpenRouter and one bounded structured local tool call.
 - Scryfall images remain remote.
 - Search returns one representative printing per gameplay card.
 

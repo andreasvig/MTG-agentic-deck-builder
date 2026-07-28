@@ -27,17 +27,17 @@ fully observable in debug mode.
   at least `0.75`. If fewer than 12 qualify, keep those cards visible while one
   agentic search runs.
 - Run one bounded agent with memory only inside that search request.
-- The agent must call exactly one tool: `search_local_cards` or
-  `search_scryfall`. Prefer the local tool; use live Scryfall only for a
-  requirement that the local schema cannot represent or when fresh provider
-  data is explicitly required.
+- The agent must call exactly one tool: `search_local_cards`. Do not expose a
+  live Scryfall-query tool to the agent.
 - Give fuzzy previews stable temporary numeric IDs (`1`, `2`, `3`, and so on)
   and explicitly tell the agent that those cards are already visible to the
-  user. Preserve those IDs when the same cards appear in the deduplicated
-  preview/tool union.
+  user and remain selectable even if the tool does not return them. New tool
+  cards receive later non-overlapping IDs. Preserve the existing ID when the
+  exact same `oracle_id` appears in both sources.
 - Render the model-facing user request as concise natural text. Do not serialize
-  printing IDs, image URLs, provider URLs, prices, legalities, or other
-  presentation-only card fields into the prompt.
+  printing IDs, image URLs, provider URLs, legalities, or other provider-only
+  fields into the prompt. Include ranking-relevant mana, type, power/toughness,
+  Oracle text, and EUR price for every fuzzy preview.
 - After the tool result, send the same agent a concise plain-text candidate
   list using only temporary numeric IDs and ranking-relevant card text. The
   final response contains an interpretation and the relevant IDs in best-first
@@ -58,6 +58,8 @@ fully observable in debug mode.
   gives the final ranker useful alternatives beyond the 12-card display page.
 - Preserve canonical symbols such as `{T}`, `{Q}`, and `{X}`. Classify X spells
   from mana cost rather than an X appearing in Oracle text.
+- Persist power/toughness from the bulk card record and execute numeric
+  power/toughness ranges inside `search_local_cards`.
 - When debug mode is enabled, present exactly seven user-facing steps in order:
   system prompt, user input prompt, thinking, tool call, tool response, final
   thinking, and output response. Keep request envelopes, request context, and
@@ -91,12 +93,13 @@ Costs:
 - A semantic model and index still need to be selected and built.
 - The progressive UI has two observable response phases.
 - Complete debug traces can be large and require a retention policy.
-- Live Scryfall fallback adds network latency and requires provider pacing.
+- New cards and metadata require a catalog refresh before the agent can find
+  them.
 - The stricter confidence formula still needs a larger evaluation corpus.
 
 ## Implementation Status
 
-The YAML settings, preview confidence, strict contracts, local and live
-Scryfall tools, OpenRouter orchestration, progressive endpoints, session
-pagination, complete trace UI/persistence, and tests are implemented. Semantic
-embedding indexing remains intentionally disabled.
+The YAML settings, preview confidence, strict contracts, local tool, OpenRouter
+orchestration, progressive endpoints, session pagination, complete trace
+UI/persistence, and tests are implemented. Semantic embedding indexing remains
+intentionally disabled.

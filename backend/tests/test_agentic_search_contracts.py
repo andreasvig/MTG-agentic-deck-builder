@@ -45,7 +45,7 @@ def test_local_tool_fields_are_optional_and_duplicate_symbols_are_preserved() ->
     assert symbols_only.mana.must_contain_all == ["{X}", "{X}"]
 
 
-def test_tool_call_contract_selects_exactly_one_typed_search_tool() -> None:
+def test_tool_call_contract_allows_only_the_typed_local_search_tool() -> None:
     adapter = TypeAdapter(AgentSearchToolCall)
 
     local = adapter.validate_python(
@@ -54,15 +54,15 @@ def test_tool_call_contract_selects_exactly_one_typed_search_tool() -> None:
             "arguments": {"oracle_text": {"semantic_query": "creates artifact creature tokens"}},
         }
     )
-    scryfall = adapter.validate_python(
-        {
-            "name": "search_scryfall",
-            "arguments": {"query": 'o:"untap" t:creature game:paper'},
-        }
-    )
 
     assert local.name == "search_local_cards"
-    assert scryfall.name == "search_scryfall"
+    with pytest.raises(ValidationError):
+        adapter.validate_python(
+            {
+                "name": "search_scryfall",
+                "arguments": {"query": 'o:"untap" t:creature game:paper'},
+            }
+        )
     with pytest.raises(ValidationError):
         adapter.validate_python(
             {

@@ -50,6 +50,8 @@ class _ScryfallFace(_ScryfallModel):
     cmc: Annotated[float, Field(ge=0)] | None = None
     type_line: str | None = None
     oracle_text: str | None = None
+    power: str | None = None
+    toughness: str | None = None
     colors: list[MagicColor] = Field(default_factory=list)
     image_uris: _ScryfallImageUris | None = None
 
@@ -59,6 +61,8 @@ class _ScryfallFace(_ScryfallModel):
             mana_cost=self.mana_cost,
             type_line=self.type_line,
             oracle_text=self.oracle_text,
+            power=self.power,
+            toughness=self.toughness,
             colors=self.colors,
             image_uris=self.image_uris.to_domain() if self.image_uris else None,
         )
@@ -85,6 +89,8 @@ class _ScryfallCard(_ScryfallModel):
     cmc: Annotated[float, Field(ge=0)] | None = None
     type_line: _NonEmptyString | None = None
     oracle_text: str | None = None
+    power: str | None = None
+    toughness: str | None = None
     colors: list[MagicColor] | None = None
     color_identity: list[MagicColor] = Field(default_factory=list)
     image_uris: _ScryfallImageUris | None = None
@@ -106,6 +112,8 @@ class _ScryfallCard(_ScryfallModel):
         face_mana_value = first_face.cmc if first_face else None
         face_type_line = first_face.type_line if first_face else None
         face_oracle_text = first_face.oracle_text if first_face else None
+        face_power = first_face.power if first_face else None
+        face_toughness = first_face.toughness if first_face else None
         face_colors = first_face.colors if first_face else None
         return CardSearchResult(
             oracle_id=self.oracle_id or face_oracle_id,
@@ -116,6 +124,8 @@ class _ScryfallCard(_ScryfallModel):
             mana_value=self.cmc if self.cmc is not None else face_mana_value,
             type_line=self.type_line or face_type_line,
             oracle_text=(self.oracle_text if self.oracle_text is not None else face_oracle_text),
+            power=self.power if self.power is not None else face_power,
+            toughness=self.toughness if self.toughness is not None else face_toughness,
             colors=self.colors if self.colors is not None else face_colors,
             color_identity=self.color_identity,
             image_uris=self.image_uris.to_domain() if self.image_uris else None,

@@ -30,7 +30,7 @@ FastAPI (127.0.0.1:43127/api/v1)
   v
 AgenticCardSearchService
   |-- OpenRouter initial tool selection
-  |-- exactly one local-catalog or live Scryfall tool call
+  |-- exactly one structured local-catalog tool call
   |-- OpenRouter structured complete ranking
   `-- in-memory ranked session for Load more
   |
