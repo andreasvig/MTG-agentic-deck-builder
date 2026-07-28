@@ -151,10 +151,10 @@ search:
 The full scoring contract is in [`docs/search.md`](docs/search.md) and
 [`ADR 0007`](docs/decisions/0007-single-fuzzy-title-search.md).
 
-The next progressive phase has validated configuration and strict contracts
-but is not active. It will keep confident title matches visible, call exactly
-one local or Scryfall tool when the first page is under-filled, and rank only
-returned candidate IDs. See
+The progressive agentic phase is active. It keeps confident title matches
+visible, shows an animated ranking state, calls exactly one local or Scryfall
+tool when the first page is under-filled, and ranks only returned candidate
+IDs. See
 [`ADR 0009`](docs/decisions/0009-progressive-one-tool-agentic-search.md).
 
 ## Search Debugging
@@ -168,6 +168,9 @@ The inline trace viewer exposes:
 - The matching algorithm, catalog count, filtered count, and page range.
 - Matched aliases, original ranks, WRatio scores, and title confidence for the
   current page.
+- A chronological eight-stage agent trace with model messages, reasoning relay
+  JSON, tool arguments/results, candidate cards, final ranking, and validation.
+- Expandable raw payloads for every stage plus the complete trace JSON.
 
 The backend also appends one complete JSON object per line:
 

@@ -290,7 +290,10 @@ describe("card search dialog", () => {
     );
 
     expect(
-      await screen.findByText("Agentic search is ranking results…"),
+      await screen.findByText("Agentic search loading"),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText("Understanding the request and ranking cards"),
     ).toBeInTheDocument();
     expect(screen.getAllByText("Sol Ring")).not.toHaveLength(0);
     expect(searchCardsAgentic).toHaveBeenCalledTimes(1);
@@ -309,6 +312,9 @@ describe("card search dialog", () => {
     expect(
       screen.getByText("Large green creatures, strongest matches first."),
     ).toBeInTheDocument();
+    await waitFor(() =>
+      expect(screen.queryByText("Agentic search loading")).not.toBeInTheDocument(),
+    );
   });
 
   it("hides fuzzy percentages outside debug mode", async () => {

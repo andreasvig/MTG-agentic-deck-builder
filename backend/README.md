@@ -89,6 +89,9 @@ src/mtg_deck_builder/
 - Routes depend on `CardSearchProvider`, not a concrete HTTP client.
 - `oracle_id` and `scryfall_id` are distinct and both required.
 - Exact titles must score `1.0` and appear before partial matches.
+- Agentic result scores must use the same title aliases as fuzzy previews so a
+  rerank cannot lower confidence merely by switching to the complete card
+  title.
 - Search debug records candidates, WRatio, title confidence, and filter
   outcomes, not secret headers.
 
@@ -141,7 +144,8 @@ Test ownership:
 - `test_card_search.py`: Scryfall mapping and HTTP contract.
 - `test_title_search.py`: uncapped ordering, paging, filters, and debug records.
 - `test_agentic_search_contracts.py`: tool/output guards and complete traces.
-- `test_agentic_card_search.py`: tool execution, orchestration, and sessions.
+- `test_agentic_card_search.py`: tool execution, orchestration, alias-aware
+  result confidence, and sessions.
 - `test_health.py`: health, CORS, settings.
 - `test_deck_models.py`: backend deck contract validation.
 

@@ -158,6 +158,20 @@ class StubFuzzyProvider:
         )
 
 
+class GhaltaPreviewProvider:
+    async def search(self, _query: object) -> CardSearchPage:
+        return CardSearchPage(
+            query="galtha",
+            page=1,
+            total_results=1,
+            has_more=False,
+            cards=[GHALTA],
+            strategy="fuzzy",
+            interpretation=("Confident title matches shown while agentic search continues"),
+            agentic_required=True,
+        )
+
+
 class StubTool:
     def __init__(self, candidates: list[CardSearchResult]) -> None:
         self.calls = 0
@@ -317,3 +331,27 @@ def test_agent_runs_one_tool_then_reuses_the_ranked_session(
     assert second.has_more is False
     assert scryfall_tool.calls == 1
     assert len(model.payloads) == 2
+
+
+def test_agentic_results_keep_short_title_alias_confidence(
+    tmp_path: Path,
+) -> None:
+    model = StubModelClient([GHALTA])
+    trace_path = tmp_path / "search.jsonl"
+    service = AgenticCardSearchService(
+        fuzzy_provider=GhaltaPreviewProvider(),  # type: ignore[arg-type]
+        local_tool=StubTool([]),  # type: ignore[arg-type]
+        scryfall_tool=StubTool([GHALTA]),  # type: ignore[arg-type]
+        model_client=model,  # type: ignore[arg-type]
+        settings=AgenticSearchSettings(enabled=True),
+        page_size=12,
+        trace_logger=JsonlAgentSearchTraceLogger(trace_path),
+        trace_log_path=str(trace_path),
+        debug_default_enabled=False,
+    )
+
+    result = asyncio.run(service.search(AgenticCardSearchRequest(q="galtha")))
+
+    assert result.cards == [GHALTA]
+    assert result.name_match_scores[GHALTA.scryfall_id] > 0.8
+    assert result.title_confidence_scores[GHALTA.scryfall_id] > 0.8

@@ -30,6 +30,11 @@ All notable changes to this project will be documented in this file.
 - Added a versioned eight-stage agent debug trace, provider-reasoning payload
   capture, recursive secret redaction, and untruncated JSONL persistence.
 - Added an expandable full raw JSON view to the inline search debug panel.
+- Added a compact animated agentic-search loading banner that leaves confident
+  fuzzy previews visible while the final ranking runs.
+- Added readable chronological cards for all eight agent trace stages,
+  including prompts, provider usage, reasoning relay JSON, tool
+  arguments/results, candidates, interpretation, and validation.
 - Added a streaming Scryfall `default_cards` importer, timestamp-aware refresh
   command, atomic SQLite installation, and local catalog reload after swaps.
 - Added canonical Oracle-card search rows while retaining every eligible paper
@@ -142,6 +147,8 @@ All notable changes to this project will be documented in this file.
 
 ### Changed
 
+- Preserved fuzzy title confidence through agentic reranking by scoring every
+  final card against the same complete, face, and pre-comma title aliases.
 - Kept WRatio for broad fuzzy ordering but stopped presenting it as title
   confidence. Added descriptors now lower the displayed score unless the
   complete query is a real title segment.

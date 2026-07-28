@@ -103,7 +103,10 @@ Every returned card also has a stricter title-confidence score:
 
 This preserves `forest` → Misty Rainforest and `galta` → Ghalta while making
 `big green creatures` → Green Dragon fall below the 75% preview boundary.
-Debug mode displays this score as `Title confidence N%`.
+Debug mode displays this score as `Title confidence N%`. Agentic results
+recompute both title scores across the same complete-title, face-title, and
+pre-comma aliases, so reranking cannot make a confident `galtha` → `Ghalta`
+preview fall from 83% to a whole-title score near 38%.
 
 ## Configuration
 
@@ -174,8 +177,13 @@ Enable **Search debug log** in Search settings.
 Debug mode:
 
 - Shows `Title confidence N%` beneath every returned result.
+- Keeps that alias-aware confidence stable when fuzzy previews are replaced by
+  agent-ranked results.
 - Reports the local catalog count, filtered count, removed count, page range,
   matched aliases, original ranks, WRatio scores, and title confidence.
+- Renders agentic stages as a chronological trace with readable prompt
+  messages, provider metadata, reasoning relay JSON, normalized tool
+  arguments, candidate cards, final interpretation, and validation checks.
 - Exposes the complete raw trace JSON in an expandable inline panel.
 - Records `minimum_score: null` to make the absence of a threshold explicit.
 - Appends the complete trace to `local-data/search-debug.jsonl`.
@@ -239,6 +247,7 @@ in debug mode and used by the progressive preview phase.
   symbols, result bounds, complete ranked-ID validation, versioned trace
   completeness, full raw JSON persistence, and secret redaction.
 - `test_agentic_card_search.py`: one-tool orchestration, duplicate mana-symbol
-  execution, full trace stages, final ranking, and session pagination.
-- Frontend component and browser tests: progressive preview, agent handoff,
-  scores, filters, debug trace, and Load more.
+  execution, full trace stages, alias-aware confidence preservation, final
+  ranking, and session pagination.
+- Frontend component and browser tests: progressive preview, animated agent
+  handoff, readable eight-stage traces, scores, filters, and Load more.

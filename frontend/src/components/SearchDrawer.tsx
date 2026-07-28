@@ -8,6 +8,7 @@ import {
   RotateCw,
   Search,
   Settings2,
+  Sparkles,
   SlidersHorizontal,
   Trash2,
   X,
@@ -632,6 +633,27 @@ export function SearchDrawer({
               </div>
             ) : null}
 
+            {state.phase === "agentic" ? (
+              <div
+                className="agentic-search-loading"
+                role="status"
+                aria-label="Agentic search is loading"
+              >
+                <span className="agentic-search-loading__icon">
+                  <Sparkles aria-hidden="true" size={15} />
+                </span>
+                <span className="agentic-search-loading__copy">
+                  <strong>Agentic search loading</strong>
+                  <small>Understanding the request and ranking cards</small>
+                </span>
+                <span className="agentic-search-loading__dots" aria-hidden="true">
+                  <i />
+                  <i />
+                  <i />
+                </span>
+              </div>
+            ) : null}
+
             {state.phase === "agentic" && cards.length === 0 ? (
               <div
                 className="search-skeletons"
@@ -684,9 +706,6 @@ export function SearchDrawer({
                     </span>
                   ) : null}
                   {state.phase === "loading" ? <span>Loading more…</span> : null}
-                  {state.phase === "agentic" ? (
-                    <span>Agentic search is ranking results…</span>
-                  ) : null}
                 </div>
                 {state.phase === "error" ? (
                   <p className="search-warning" role="alert">

@@ -28,7 +28,11 @@ from mtg_deck_builder.agentic_search_debug import (
     AgentSearchTraceBuilder,
     JsonlAgentSearchTraceLogger,
 )
-from mtg_deck_builder.card_catalog import CatalogEntry, SQLiteCardCatalog
+from mtg_deck_builder.card_catalog import (
+    CatalogEntry,
+    SQLiteCardCatalog,
+    card_title_aliases,
+)
 from mtg_deck_builder.config import AgenticSearchSettings
 from mtg_deck_builder.domain import (
     AgenticCardSearchRequest,
@@ -394,18 +398,19 @@ class AgenticCardSearchService:
             else None
         )
         session_id = uuid4()
+        title_scores = {
+            card.scryfall_id: _card_title_scores(request.q, card) for card in completed.cards
+        }
         stored = _StoredAgentSearch(
             session_id=session_id,
             query=request.q,
             filters=request.filters,
             cards=completed.cards,
             name_match_scores={
-                card.scryfall_id: name_similarity_score(request.q, card.name)
-                for card in completed.cards
+                card.scryfall_id: title_scores[card.scryfall_id][0] for card in completed.cards
             },
             title_confidence_scores={
-                card.scryfall_id: preview_confidence_score(request.q, card.name)
-                for card in completed.cards
+                card.scryfall_id: title_scores[card.scryfall_id][1] for card in completed.cards
             },
             interpretation=completed.output.interpretation,
             warnings=(
@@ -969,6 +974,19 @@ def _compact_card_for_model(card: CardSearchResult) -> dict[str, Any]:
         "oracle_text": card.oracle_text,
         "color_identity": card.color_identity,
     }
+
+
+def _card_title_scores(
+    query: str,
+    card: CardSearchResult,
+) -> tuple[float, float]:
+    """Match agent results against the same title aliases as fuzzy previews."""
+
+    aliases = card_title_aliases(card)
+    return (
+        max(name_similarity_score(query, alias) for alias in aliases),
+        max(preview_confidence_score(query, alias) for alias in aliases),
+    )
 
 
 def _page_from_stored(

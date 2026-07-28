@@ -98,13 +98,21 @@ Keep mutation announcements meaningful for assistive technology.
 
 The browser validates every fuzzy and agentic search response at runtime in
 `lib/api.ts`. When fuzzy search returns `agentic_required`, the drawer retains
-the confident preview cards, shows agentic loading state, and POSTs the same
-query and immutable filters to `/cards/search/agentic`. The final response
-replaces the preview. Later pages include `search_session_id`, so Load more
-reads the stored ranking without a new model run.
+the confident preview cards, shows an animated agentic-loading banner, and
+POSTs the same query and immutable filters to `/cards/search/agentic`. The
+final response replaces the preview. Later pages include `search_session_id`,
+so Load more reads the stored ranking without a new model run.
 
 `Title confidence N%` from `title_confidence_scores` appears only while debug
-mode is enabled. `name_match_scores` remains the broad WRatio evidence.
+mode is enabled. `name_match_scores` remains the broad WRatio evidence. Both
+scores stay alias-aware after agentic reranking, including short pre-comma
+aliases such as `Ghalta`.
+
+The debug viewer presents agentic execution as eight chronological,
+color-coded stages. Each stage has a readable summary for prompts, provider
+metadata, reasoning relay JSON, tool arguments/results, candidate cards, final
+interpretation, or validation. Raw stage and full-trace JSON remain
+expandable.
 
 When the backend changes `CardSearchPage`, update:
 
@@ -140,7 +148,10 @@ Test ownership:
 
 - `domain/deck.test.ts`: storage validation, migration, placement, warnings.
 - `lib/api.test.ts`: request encoding, errors, runtime response validation.
-- `components/SearchDrawer.test.tsx`: filters, debug, scores, trace.
+- `components/SearchDrawer.test.tsx`: filters, debug, scores, progressive
+  loading.
+- `components/SearchTracePanel.test.tsx`: readable content across all eight
+  agentic trace stages.
 - `App.test.tsx`: primary deck/editor integration behavior.
 - `e2e/deck-builder.spec.ts`: real browser workflows with deterministic API
   fixtures.
