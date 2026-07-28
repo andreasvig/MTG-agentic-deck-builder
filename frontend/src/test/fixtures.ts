@@ -105,10 +105,13 @@ export function cardSearchPage(
     has_more: false,
     cards,
     name_match_scores: {},
+    title_confidence_scores: {},
     warnings: [],
     strategy: "fuzzy",
     interpretation: "Titles ranked locally by fuzzy similarity",
     reranked: false,
+    agentic_required: false,
+    search_session_id: null,
     debug: null,
   };
 }

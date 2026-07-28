@@ -20,6 +20,7 @@ The first manual editing slice is usable and tested.
 | Backend deck persistence | Not implemented |
 | Local SQLite card catalog | Shipped |
 | Import/export and analytics | Not implemented |
+| Progressive one-tool agentic card search | Shipped |
 | Agent chat and deck tools | Not implemented |
 
 Read [`docs/implementation-status.md`](docs/implementation-status.md) before
@@ -34,7 +35,10 @@ The application currently supports:
 - Use commander art as the deck thumbnail.
 - Search exact, partial, segmented, and misspelled card titles through one
   fuzzy workflow.
-- Inspect fuzzy title percentages beneath results in debug mode.
+- Continue weak-title and natural-language queries through one bounded agent
+  tool call and a structured final ranking.
+- Inspect coverage-aware title-confidence percentages beneath results in debug
+  mode.
 - Filter by color identity, colorless, mana value, and Scryfall EUR estimate.
 - Add cards into Command zone, Not assigned, or user-created custom groups.
 - Drag cards between custom groups or onto Add custom group.
@@ -79,7 +83,8 @@ cp .env.example .env
 npm run catalog:sync
 ```
 
-No API key is required.
+Title search works without an API key. Natural-language agentic search requires
+`OPENROUTER_API_KEY` in `.env`.
 
 ### Run
 
@@ -146,6 +151,12 @@ search:
 The full scoring contract is in [`docs/search.md`](docs/search.md) and
 [`ADR 0007`](docs/decisions/0007-single-fuzzy-title-search.md).
 
+The next progressive phase has validated configuration and strict contracts
+but is not active. It will keep confident title matches visible, call exactly
+one local or Scryfall tool when the first page is under-filled, and rank only
+returned candidate IDs. See
+[`ADR 0009`](docs/decisions/0009-progressive-one-tool-agentic-search.md).
+
 ## Search Debugging
 
 Open Search settings and enable **Search debug log**. The browser stores the
@@ -153,9 +164,10 @@ preference locally.
 
 The inline trace viewer exposes:
 
-- The fuzzy percentage beneath each returned card.
+- The title-confidence percentage beneath each returned card.
 - The matching algorithm, catalog count, filtered count, and page range.
-- Matched aliases, original ranks, and scores for the current page.
+- Matched aliases, original ranks, WRatio scores, and title confidence for the
+  current page.
 
 The backend also appends one complete JSON object per line:
 
@@ -202,7 +214,7 @@ npm test --prefix frontend
 npm run build --prefix frontend
 ```
 
-`npm test` runs 34 backend tests, 26 frontend tests, and the paired-process
+`npm test` runs 48 backend tests, 26 frontend tests, and the paired-process
 smoke test at the time of this documentation update. Test counts may grow; a
 passing result matters more than preserving these exact numbers.
 

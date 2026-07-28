@@ -400,6 +400,9 @@ test("search communicates empty and provider-recovery states", async ({
       response.name_match_scores = {
         [ghalta.scryfall_id]: 0.909091,
       };
+      response.title_confidence_scores = {
+        [ghalta.scryfall_id]: 0.909091,
+      };
       await fulfillJson(route, response);
       return;
     }
@@ -422,7 +425,7 @@ test("search communicates empty and provider-recovery states", async ({
   ).toBeVisible();
 
   await searchInput.fill("galta");
-  await expect(page.getByText("Fuzzy match 91%")).toBeVisible();
+  await expect(page.getByText("Title confidence 91%")).toBeVisible();
   await expect(
     page.getByRole("button", { name: "Add Ghalta, Primal Hunger to deck" }),
   ).toBeVisible();
@@ -497,9 +500,13 @@ test("search filters shape requests without crowding the results", async ({
   expect(requestedUrl?.searchParams.get("debug")).toBe("true");
   await expect(page.getByText("Search trace")).toBeVisible();
   await page.getByText("Search trace").click();
-  await expect(page.getByText("Local fuzzy title ranking")).toBeVisible();
+  await expect(
+    page.getByText("Local fuzzy title ranking", { exact: true }),
+  ).toBeVisible();
   await expect(page.getByText("Title candidates")).toBeVisible();
-  await expect(page.getByText("rapidfuzz.WRatio")).toBeVisible();
+  await expect(
+    page.getByText("rapidfuzz.WRatio", { exact: true }),
+  ).toBeVisible();
   await expect(
     page.getByText("local-data/search-debug.jsonl"),
   ).toBeVisible();
@@ -615,6 +622,10 @@ test("mobile keeps primary deck actions reachable and contained", async ({
       [llanowarElves.scryfall_id]: 1,
       [solRing.scryfall_id]: 0.75,
     };
+    response.title_confidence_scores = {
+      [llanowarElves.scryfall_id]: 1,
+      [solRing.scryfall_id]: 0.75,
+    };
     if (requestUrl.searchParams.get("debug") === "true") {
       response.debug = searchDebugSummary();
     }
@@ -654,13 +665,15 @@ test("mobile keeps primary deck actions reachable and contained", async ({
   await expect(
     page.getByRole("button", { name: "Add Llanowar Elves to deck" }),
   ).toBeVisible();
-  await expect(page.getByText("Fuzzy match 100%")).toBeVisible();
+  await expect(page.getByText("Title confidence 100%")).toBeVisible();
   await page.screenshot({
     path: testInfo.outputPath("mobile-search-results.png"),
     fullPage: true,
   });
   await page.getByText("Search trace").click();
-  await expect(page.getByText("Local fuzzy title ranking")).toBeVisible();
+  await expect(
+    page.getByText("Local fuzzy title ranking", { exact: true }),
+  ).toBeVisible();
   await expect(page.getByText("Title candidates")).toBeVisible();
   const traceBounds = await page.locator(".search-debug").boundingBox();
   expect(traceBounds).not.toBeNull();

@@ -11,7 +11,7 @@ from mtg_deck_builder.domain import (
     CardSearchQuery,
     CardSearchResult,
 )
-from mtg_deck_builder.search import FuzzyTitleSearchProvider
+from mtg_deck_builder.search import FuzzyTitleSearchProvider, preview_confidence_score
 from mtg_deck_builder.search_debug import JsonlSearchDebugLogger
 
 _UUID_NAMESPACE = UUID("f3c7af78-93ea-4d1b-8873-0eac5b4f6c5f")
@@ -83,6 +83,7 @@ def test_every_query_ranks_the_complete_local_catalog_and_exact_title_stays_firs
         "Misty Rainforest",
     ]
     assert result.name_match_scores[FOREST.scryfall_id] == 1.0
+    assert result.title_confidence_scores[FOREST.scryfall_id] == 1.0
     assert result.total_results == 4
     assert result.strategy == "fuzzy"
     assert result.interpretation == "Titles ranked locally by fuzzy similarity"
@@ -98,6 +99,21 @@ def test_there_is_no_minimum_match_threshold() -> None:
     assert len(result.cards) == 2
     assert result.total_results == 2
     assert all(score >= 0 for score in result.name_match_scores.values())
+
+
+def test_preview_confidence_keeps_title_segments_and_typos_but_rejects_intent() -> None:
+    assert preview_confidence_score("forest", "Forest") == 1.0
+    assert preview_confidence_score("forest", "Misty Rainforest") == 0.9
+    assert preview_confidence_score("galta", "Ghalta") == 0.909091
+    assert (
+        preview_confidence_score(
+            "creatures that untap elves",
+            "Seeker of Skybreak",
+        )
+        < 0.75
+    )
+    assert preview_confidence_score("cheap blue card draw", "Quick Study") < 0.75
+    assert preview_confidence_score("big green creatures", "Green Dragon") < 0.75
 
 
 def test_results_use_simple_twelve_card_pages_without_a_candidate_cap() -> None:
@@ -120,9 +136,7 @@ def test_results_use_simple_twelve_card_pages_without_a_candidate_cap() -> None:
 
 
 def test_structured_filters_are_applied_locally_after_fuzzy_ranking() -> None:
-    catalog = StubCatalog(
-        [FOREST, FOREST_BEAR, MISTY_RAINFOREST, FESTIVAL, COLORLESS]
-    )
+    catalog = StubCatalog([FOREST, FOREST_BEAR, MISTY_RAINFOREST, FESTIVAL, COLORLESS])
     provider = FuzzyTitleSearchProvider(catalog)  # type: ignore[arg-type]
 
     subset = asyncio.run(
@@ -169,19 +183,35 @@ def test_debug_trace_explains_local_catalog_counts_and_fuzzy_scores(
         debug_logger=JsonlSearchDebugLogger(log_path),
     )
 
-    result = asyncio.run(
-        provider.search(CardSearchQuery(q="forest", debug=True))
-    )
+    result = asyncio.run(provider.search(CardSearchQuery(q="forest", debug=True)))
 
     assert result.debug is not None
-    assert [stage.name for stage in result.debug.stages] == [
-        "Local fuzzy title ranking"
-    ]
+    assert [stage.name for stage in result.debug.stages] == ["Local fuzzy title ranking"]
     record = json.loads(log_path.read_text(encoding="utf-8"))
     details = record["stages"][0]["details"]
     assert details["catalog_card_count"] == 2
     assert details["filtered_card_count"] == 2
     assert details["minimum_score"] is None
+    assert details["preview_min_confidence"] == 0.75
+    assert details["preview_candidate_count"] == 1
+    assert details["agentic_search_required"] is False
     assert details["fuzzy_candidates"][0]["name"] == "Forest"
     assert details["fuzzy_candidates"][0]["score"] == 1.0
+    assert details["fuzzy_candidates"][0]["preview_confidence"] == 1.0
     assert "provider_queries" not in details
+
+
+def test_agentic_mode_returns_only_confident_preview_cards() -> None:
+    catalog = StubCatalog([FOREST, FESTIVAL])
+    provider = FuzzyTitleSearchProvider(  # type: ignore[arg-type]
+        catalog,
+        agentic_enabled=True,
+    )
+
+    result = asyncio.run(provider.search(CardSearchQuery(q="big green creatures")))
+
+    assert result.cards == []
+    assert result.total_results == 0
+    assert result.has_more is False
+    assert result.agentic_required is True
+    assert result.interpretation == ("Confident title matches shown while agentic search continues")

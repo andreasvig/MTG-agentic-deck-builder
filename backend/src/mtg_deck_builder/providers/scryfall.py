@@ -26,6 +26,7 @@ _NonEmptyString = Annotated[str, StringConstraints(min_length=1)]
 _Legality = Literal["legal", "not_legal", "restricted", "banned"]
 _Finish = Literal["nonfoil", "foil", "etched"]
 
+
 class _ScryfallModel(BaseModel):
     model_config = ConfigDict(extra="ignore")
 

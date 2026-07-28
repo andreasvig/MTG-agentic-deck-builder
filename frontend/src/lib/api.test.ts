@@ -62,6 +62,59 @@ describe("API client", () => {
     expect(requestedUrl.searchParams.get("debug")).toBe("true");
   });
 
+  it("posts agentic searches and continues the same ranked session", async () => {
+    const page = cardSearchPage();
+    page.strategy = "agentic";
+    page.reranked = true;
+    page.search_session_id = "search-session-1";
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValue(Response.json(page));
+    const client = createApiClient("http://localhost:9999/api/v1", fetcher);
+
+    await client.searchCardsAgentic?.(
+      " green big creature ",
+      2,
+      undefined,
+      {
+        colors: ["G"],
+        includeColorless: false,
+        colorMode: "subset",
+        manaValueMin: 4,
+        manaValueMax: null,
+        priceEurMin: null,
+        priceEurMax: 10,
+      },
+      true,
+      "search-session-1",
+    );
+
+    expect(fetcher).toHaveBeenCalledWith(
+      "http://localhost:9999/api/v1/cards/search/agentic",
+      expect.objectContaining({
+        method: "POST",
+        headers: {
+          Accept: "application/json",
+          "Content-Type": "application/json",
+        },
+      }),
+    );
+    const request = fetcher.mock.calls[0]?.[1];
+    expect(JSON.parse(String(request?.body))).toEqual({
+      q: "green big creature",
+      page: 2,
+      filters: {
+        colors: ["G"],
+        include_colorless: false,
+        color_mode: "subset",
+        mana_value_min: 4,
+        mana_value_max: null,
+        price_eur_min: null,
+        price_eur_max: 10,
+      },
+      debug: true,
+      search_session_id: "search-session-1",
+    });
+  });
+
   it("surfaces a safe provider message and rejects malformed payloads", async () => {
     const providerFailure = vi
       .fn<typeof fetch>()

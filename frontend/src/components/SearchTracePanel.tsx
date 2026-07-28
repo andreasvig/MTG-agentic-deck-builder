@@ -72,6 +72,11 @@ export function SearchTracePanel({ debug }: SearchTracePanelProps) {
           ))}
         </div>
 
+        <details className="search-debug-raw">
+          <summary>Full raw trace JSON</summary>
+          <pre>{JSON.stringify(trace, null, 2)}</pre>
+        </details>
+
         <footer className="search-debug__footer">
           <span>{debug.log_path}</span>
           <code>{debug.trace_id}</code>

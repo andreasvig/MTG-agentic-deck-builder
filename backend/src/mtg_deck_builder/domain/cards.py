@@ -19,7 +19,7 @@ MagicColor = Literal["W", "U", "B", "R", "G"]
 CardLegality = Literal["legal", "not_legal", "restricted", "banned"]
 CardFinish = Literal["nonfoil", "foil", "etched"]
 ColorMatchMode = Literal["subset", "exact"]
-SearchStrategy = Literal["fuzzy"]
+SearchStrategy = Literal["fuzzy", "agentic"]
 CardSearchOrder = Literal["name"]
 SearchDebugStageStatus = Literal["ok", "skipped", "error"]
 
@@ -135,6 +135,19 @@ class CardSearchQuery(CardModel):
     debug: bool = False
 
 
+class AgenticCardSearchRequest(CardModel):
+    """Start or continue one progressive agentic card search."""
+
+    q: Annotated[
+        str,
+        StringConstraints(strip_whitespace=True, min_length=1, max_length=4_000),
+    ]
+    page: Annotated[int, Field(ge=1, le=1_000)] = 1
+    filters: CardSearchFilters = Field(default_factory=CardSearchFilters)
+    debug: bool = False
+    search_session_id: UUID | None = None
+
+
 class SearchDebugStage(CardModel):
     """Compact timing and cardinality summary for one search layer."""
 
@@ -168,8 +181,14 @@ class CardSearchPage(CardModel):
         UUID,
         Annotated[float, Field(ge=0, le=1)],
     ] = Field(default_factory=dict)
+    title_confidence_scores: dict[
+        UUID,
+        Annotated[float, Field(ge=0, le=1)],
+    ] = Field(default_factory=dict)
     warnings: list[str] = Field(default_factory=list)
     strategy: SearchStrategy = "fuzzy"
     interpretation: str | None = None
     reranked: bool = False
+    agentic_required: bool = False
+    search_session_id: UUID | None = None
     debug: SearchDebugSummary | None = None

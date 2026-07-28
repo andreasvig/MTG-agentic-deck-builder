@@ -2,15 +2,18 @@
 
 from functools import lru_cache
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Literal
 
 from pydantic import (
+    AliasChoices,
     AnyHttpUrl,
     BaseModel,
     ConfigDict,
     Field,
+    SecretStr,
     TypeAdapter,
     field_validator,
+    model_validator,
 )
 from pydantic_settings import (
     BaseSettings,
@@ -31,6 +34,101 @@ class TitleMatchSettings(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     page_size: Annotated[int, Field(ge=1, le=30)] = 12
+    preview_min_confidence: Annotated[float, Field(ge=0, le=1)] = 0.75
+
+
+class SemanticSearchSettings(BaseModel):
+    """Configuration reserved for semantic retrieval inside the local tool."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = False
+    model: str | None = None
+    indexed_fields: list[Literal["name", "type_line", "oracle_text", "keywords", "card_faces"]] = (
+        Field(
+            default_factory=lambda: [
+                "name",
+                "type_line",
+                "oracle_text",
+                "keywords",
+                "card_faces",
+            ]
+        )
+    )
+
+    @field_validator("model")
+    @classmethod
+    def model_must_not_be_blank(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        stripped = value.strip()
+        if not stripped:
+            raise ValueError("semantic model must not be blank")
+        return stripped
+
+    @model_validator(mode="after")
+    def enabled_search_requires_a_model(self) -> "SemanticSearchSettings":
+        if self.enabled and self.model is None:
+            raise ValueError("semantic model is required while semantic search is enabled")
+        return self
+
+
+class AgentDebugSettings(BaseModel):
+    """Observable agent payloads captured only when search debug mode is active."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    capture_raw_requests: bool = True
+    capture_raw_responses: bool = True
+    capture_provider_reasoning: bool = True
+    capture_tool_arguments: bool = True
+    capture_tool_results: bool = True
+    capture_final_validation: bool = True
+
+
+class AgentLocalToolSettings(BaseModel):
+    """Candidate bounds for the local agent search tool."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    default_max_results: Annotated[int, Field(ge=1, le=60)] = 24
+    hard_max_results: Annotated[int, Field(ge=1, le=60)] = 60
+
+    @model_validator(mode="after")
+    def default_must_not_exceed_hard_maximum(self) -> "AgentLocalToolSettings":
+        if self.default_max_results > self.hard_max_results:
+            raise ValueError("default_max_results must not exceed hard_max_results")
+        return self
+
+
+class AgenticSearchSettings(BaseModel):
+    """Configuration for the bounded one-tool agentic search phase."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = False
+    provider: Literal["openrouter"] = "openrouter"
+    model: str = "google/gemini-3.5-flash-lite"
+    max_tool_calls: Literal[1] = 1
+    max_tool_results: Annotated[int, Field(ge=1, le=60)] = 60
+    timeout_seconds: Annotated[float, Field(gt=0, le=120)] = 20
+    debug: AgentDebugSettings = Field(default_factory=AgentDebugSettings)
+    local_tool: AgentLocalToolSettings = Field(default_factory=AgentLocalToolSettings)
+    system_prompt: str = "You are a Magic: The Gathering card-search agent."
+
+    @field_validator("model", "system_prompt")
+    @classmethod
+    def required_text_must_not_be_blank(cls, value: str) -> str:
+        stripped = value.strip()
+        if not stripped:
+            raise ValueError("value must not be blank")
+        return stripped
+
+    @model_validator(mode="after")
+    def tool_bounds_must_agree(self) -> "AgenticSearchSettings":
+        if self.local_tool.hard_max_results > self.max_tool_results:
+            raise ValueError("local_tool.hard_max_results must not exceed max_tool_results")
+        return self
 
 
 class SearchSettings(BaseModel):
@@ -39,6 +137,8 @@ class SearchSettings(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     title_match: TitleMatchSettings = Field(default_factory=TitleMatchSettings)
+    semantic: SemanticSearchSettings = Field(default_factory=SemanticSearchSettings)
+    agentic: AgenticSearchSettings = Field(default_factory=AgenticSearchSettings)
 
 
 class Settings(BaseSettings):
@@ -48,6 +148,7 @@ class Settings(BaseSettings):
         env_file=".env",
         env_prefix="MTG_",
         env_nested_delimiter="__",
+        populate_by_name=True,
         extra="ignore",
     )
 
@@ -60,7 +161,16 @@ class Settings(BaseSettings):
         "(+https://github.com/andreasvig/MTG-agentic-deck-builder)"
     )
     scryfall_bulk_timeout_seconds: Annotated[float, Field(gt=0, le=3_600)] = 900.0
+    scryfall_request_interval_seconds: Annotated[float, Field(ge=0, le=10)] = 0.1
     card_catalog_path: Path = Path("local-data/cards.sqlite3")
+    openrouter_api_key: SecretStr | None = Field(
+        default=None,
+        validation_alias=AliasChoices(
+            "MTG_OPENROUTER_API_KEY",
+            "OPENROUTER_API_KEY",
+        ),
+    )
+    openrouter_base_url: str = "https://openrouter.ai/api/v1"
     search: SearchSettings = Field(default_factory=SearchSettings)
     search_debug_enabled: bool = False
     search_debug_log_path: Path = Path("local-data/search-debug.jsonl")
@@ -88,6 +198,7 @@ class Settings(BaseSettings):
         "frontend_origin",
         "scryfall_base_url",
         "scryfall_user_agent",
+        "openrouter_base_url",
         "card_catalog_path",
         "search_debug_log_path",
         mode="before",
@@ -130,6 +241,20 @@ class Settings(BaseSettings):
             or url.fragment is not None
         ):
             raise ValueError("scryfall_base_url must not contain credentials, query, or fragment")
+        return base_url
+
+    @field_validator("openrouter_base_url")
+    @classmethod
+    def validate_openrouter_base_url(cls, value: str) -> str:
+        base_url = value.rstrip("/")
+        url = _http_url_adapter.validate_python(base_url)
+        if (
+            url.username is not None
+            or url.password is not None
+            or url.query is not None
+            or url.fragment is not None
+        ):
+            raise ValueError("openrouter_base_url must not contain credentials, query, or fragment")
         return base_url
 
     @field_validator("scryfall_user_agent")

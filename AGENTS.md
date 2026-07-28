@@ -102,6 +102,8 @@ Do not mutate deck state directly inside presentation components. Extend
 - Normal search must not call Scryfall; refresh the derived SQLite catalog from
   `default_cards` through the explicit sync command.
 - Expose every returned score through `name_match_scores`.
+- Expose coverage-aware per-result confidence through
+  `title_confidence_scores`; this is the percentage shown in debug mode.
 - The trace must include the algorithm, catalog and filtered counts, current
   page, page size, aliases, original ranks, and scores.
 - Do not add intent, embedding, LLM, or Scryfall-syntax routing without a new

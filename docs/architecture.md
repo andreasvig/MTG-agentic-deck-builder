@@ -26,6 +26,14 @@ FastAPI (127.0.0.1:43127/api/v1)
   |
   +--> local-data/cards.sqlite3
   |
+  | when fewer than 12 titles clear preview confidence
+  v
+AgenticCardSearchService
+  |-- OpenRouter initial tool selection
+  |-- exactly one local-catalog or live Scryfall tool call
+  |-- OpenRouter structured complete ranking
+  `-- in-memory ranked session for Load more
+  |
   +--> local-data/search-debug.jsonl (debug only)
 
 Explicit refresh:
@@ -50,10 +58,10 @@ The runner:
 6. Injects the resolved API base URL into Vite.
 7. Forwards termination and stops both children.
 
-Uvicorn's FastAPI lifespan creates a `SQLiteCardCatalog`,
-`JsonlSearchDebugLogger`, and `FuzzyTitleSearchProvider` on application state.
-It does not create a Scryfall HTTP client. The separate `catalog:sync` command
-owns bulk network access.
+Uvicorn's FastAPI lifespan creates one shared `SQLiteCardCatalog`, the fuzzy
+provider, local and Scryfall agent tools, an optional secret-backed OpenRouter
+client, the agentic service/session store, and JSONL trace writers. The
+separate `catalog:sync` command still owns bulk network access.
 
 ## Backend Modules
 
@@ -74,6 +82,14 @@ Strict provider-neutral Pydantic models for:
 `extra="forbid"` is deliberate. A public contract addition must be intentional
 and reflected in the frontend runtime validator.
 
+### `domain/agentic_search.py`
+
+Strict contracts for the active progressive agentic-search phase:
+all-optional local tool fields, semantic and exact Oracle-text conditions,
+merged mana filters, candidate evidence, final ranked IDs, and the versioned
+eight-stage trace. `AgenticCardSearchRequest` and the additional page metadata
+form the public progressive HTTP contract.
+
 ### `domain/deck.py`
 
 Early backend deck models for stable identities, sections, quantities, and
@@ -93,6 +109,7 @@ Current product routes:
 ```text
 GET /api/v1/health
 GET /api/v1/cards/search
+POST /api/v1/cards/search/agentic
 GET /api/v1/openapi.json
 ```
 
@@ -108,6 +125,12 @@ provider-neutral title-similarity function.
 
 Scryfall-specific response objects must not cross this module boundary.
 
+### `providers/openrouter.py`
+
+Secret-safe async boundary for direct OpenRouter chat completions. Transport
+errors retain debug evidence without exposing credentials through public
+errors.
+
 ### `card_catalog.py`
 
 Discovers and streams Scryfall `default_cards`, builds temporary SQLite tables
@@ -121,6 +144,7 @@ Owns:
 
 - The one fuzzy-title search operation.
 - Complete-catalog fuzzy ranking without a score threshold.
+- The stricter preview-confidence score and active agentic handoff decision.
 - Local color, mana-value, and EUR filtering.
 - Simple numbered pagination after filters.
 - Score-ordered card results and trace evidence.
@@ -129,6 +153,23 @@ Owns:
 
 Builds one structured trace per search and appends complete JSON objects as
 JSONL lines.
+
+### `agentic_search.py`
+
+Non-network guards for local-tool result limits and final candidate-union
+ranking. These prevent empty unconstrained tool requests, invented IDs, omitted
+candidates, and configured-bound violations.
+
+### `agentic_card_search.py`
+
+Executes exact local conditions, bounded paced Scryfall queries, the two-call
+OpenRouter conversation with one intervening tool, complete candidate-union
+validation, debug adaptation, and in-memory ranked-session pagination.
+
+### `agentic_search_debug.py`
+
+Builds and validates complete agent traces, recursively redacts secrets, and
+writes untruncated schema-version-2 records as JSONL.
 
 ## Frontend Modules
 
@@ -157,9 +198,9 @@ manabase.active-deck.v1   # legacy migration only
 
 ### `lib/api.ts`
 
-Builds search URLs, performs fetch calls, maps public API errors, and validates
-the complete response at runtime. TypeScript types alone are not treated as a
-network boundary.
+Builds fuzzy GET and agentic POST requests, performs fetch calls, maps public
+API errors, and validates the complete response at runtime. TypeScript types
+alone are not treated as a network boundary.
 
 ### `hooks/useDeck.ts`
 

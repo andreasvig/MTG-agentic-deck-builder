@@ -58,7 +58,8 @@ for shipped, partial, and planned behavior and
 - Score the local SQLite title catalog with RapidFuzz `WRatio`.
 - Rank the complete catalog without a score threshold or candidate cap.
 - Apply local filters, then page canonical card results.
-- Show the per-result fuzzy percentage while search debug mode is enabled.
+- Show the per-result coverage-aware title confidence while search debug mode
+  is enabled; retain WRatio as separate internal ranking evidence.
 - Filter every search by color identity using can-include or exact matching,
   including colorless, plus minimum/maximum mana value and EUR estimate.
 - Show card image, mana cost, type, rules text, color identity, and legality.
@@ -210,6 +211,12 @@ validation, history, and tests.
 - Build a title-query evaluation corpus for a later semantic-routing threshold.
 - Use that evidence to define a later weak-fuzzy-to-semantic fallback; do not
   impose a minimum score on the current title-ranking phase.
+- Shipped: stricter preview confidence, one-tool agentic contracts, executable
+  local/Scryfall tools, OpenRouter orchestration, progressive preview/final
+  responses, complete debug traces, and saved ranked-ID sessions under ADR
+  0009.
+- Next: evaluate and implement a real semantic embedding index inside the local
+  tool; keep `semantic_query` disabled until that index exists.
 
 ### Phase 5: Portability, Printing, Pricing, And Insight
 

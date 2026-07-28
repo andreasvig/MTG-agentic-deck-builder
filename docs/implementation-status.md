@@ -1,6 +1,6 @@
 # Implementation Status
 
-Last verified: 2026-07-27
+Last verified: 2026-07-28
 
 This is the canonical feature ledger. It describes the repository as it exists,
 not the intended end state.
@@ -39,12 +39,14 @@ not the intended end state.
 
 - Browser-persisted Search debug log toggle.
 - Environment-level debug default.
-- Debug-only fuzzy percentage beneath each returned result.
+- Debug-only coverage-aware title-confidence percentage beneath each returned
+  result.
 - One-stage inline trace with algorithm, catalog and filtered counts, page,
   aliases, original ranks, and scores.
 - Append-only JSONL traces in `local-data/search-debug.jsonl`.
 - Fuzzy title scores in API results and logs.
-- Fuzzy alias, score, and original catalog rank for each loaded-page card.
+- Fuzzy alias, WRatio score, title confidence, and original catalog rank for
+  each loaded-page card.
 
 ### Deck Editor
 
@@ -126,6 +128,44 @@ Missing:
 - A formal evaluation corpus for a future semantic-routing threshold.
 - In-app controls for the YAML matching values.
 
+### Progressive Agentic Search
+
+Implemented:
+
+- Accepted one-tool progressive-search decision in ADR 0009.
+- Stricter substring-or-whole-string preview confidence with a configurable
+  75% phase boundary returned per card and recorded in current fuzzy traces.
+- Validated YAML settings and system prompt for semantic and agentic search.
+- Strict all-optional `search_local_cards` input with merged mana fields,
+  semantic Oracle-text query, exact conditions, structured filters, and
+  bounded candidate counts.
+- Multiset `must_contain_all` semantics for duplicate symbols such as two
+  `{X}` values.
+- Strict final interpretation/ranked-ID output and runtime guards requiring the
+  complete candidate union without invented IDs.
+- Versioned eight-stage complete agent trace, secret redaction, and untruncated
+  JSONL persistence contracts.
+- Local exact-condition tool execution against the complete derived catalog.
+- Bounded live Scryfall search tool with paper-only queries, provider pacing,
+  immutable UI-filter enforcement, and validated card mapping.
+- Direct OpenRouter two-call orchestration with exactly one intervening tool
+  call and structured final output.
+- Progressive fuzzy-preview and agentic POST endpoints.
+- Drawer handoff that keeps confident previews visible while the agent runs.
+- In-memory ranked search sessions so **Load more** does not call the model
+  again.
+- Expandable full raw JSON for all eight agent stages in the current trace
+  panel.
+
+Missing:
+
+- Embedding model, semantic index, and local-tool execution.
+- Trace retention and size policy.
+
+`search.agentic.enabled` is `true`. `search.semantic.enabled` remains `false`;
+semantic-query tool requests are rejected rather than pretending lexical
+matching is an embedding result.
+
 ## Planned, Not Implemented
 
 - Automatic weekly catalog-refresh scheduling.
@@ -136,7 +176,7 @@ Missing:
 - Mana curve, color production, probability, and functional analytics.
 - Multi-select and bulk editing.
 - Named deck snapshots and persisted mutation history.
-- Pydantic AI deck assistant.
+- Pydantic AI deck assistant beyond the card-search contract foundation.
 - Agent chat interface in the reserved right workspace.
 - Typed agent tools for inspect, validate, search, propose patch, confirm, apply,
   and undo.
@@ -157,7 +197,8 @@ Missing:
 - Backend deck Pydantic models exist, but no route or service owns mutations.
 - The local catalog is a derived read model and can be rebuilt from Scryfall.
 - Search is the only product API beyond health.
-- Search accepts card titles only and does not call an embedding or LLM model.
+- Search always starts locally. Natural-language or weak-title queries can
+  continue through OpenRouter and one bounded local/Scryfall tool call.
 - Scryfall images remain remote.
 - Search returns one representative printing per gameplay card.
 

@@ -50,6 +50,8 @@ def test_settings_load_prefixed_environment_variables(monkeypatch: MonkeyPatch) 
     monkeypatch.setenv("MTG_CARD_CATALOG_PATH", "tmp/cards.sqlite3")
     monkeypatch.setenv("MTG_SCRYFALL_BULK_TIMEOUT_SECONDS", "1200")
     monkeypatch.setenv("MTG_SEARCH__TITLE_MATCH__PAGE_SIZE", "9")
+    monkeypatch.setenv("MTG_SEARCH__TITLE_MATCH__PREVIEW_MIN_CONFIDENCE", "0.8")
+    monkeypatch.setenv("MTG_SEARCH__AGENTIC__LOCAL_TOOL__DEFAULT_MAX_RESULTS", "18")
 
     settings = Settings()
 
@@ -62,9 +64,29 @@ def test_settings_load_prefixed_environment_variables(monkeypatch: MonkeyPatch) 
     assert str(settings.card_catalog_path) == "tmp/cards.sqlite3"
     assert settings.scryfall_bulk_timeout_seconds == 1_200
     assert settings.search.title_match.page_size == 9
+    assert settings.search.title_match.preview_min_confidence == 0.8
+    assert settings.search.agentic.local_tool.default_max_results == 18
 
 
 def test_settings_load_repository_search_yaml() -> None:
     settings = Settings()
 
     assert settings.search.title_match.page_size == 12
+    assert settings.search.title_match.preview_min_confidence == 0.75
+    assert settings.search.semantic.enabled is False
+    assert settings.search.agentic.enabled is True
+    assert settings.search.agentic.max_tool_calls == 1
+    assert settings.search.agentic.local_tool.default_max_results == 24
+    assert "{T}" in settings.search.agentic.system_prompt
+    assert '["{X}", "{X}"]' in settings.search.agentic.system_prompt
+
+
+def test_settings_accept_standard_openrouter_key_name(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-secret")
+
+    settings = Settings()
+
+    assert settings.openrouter_api_key is not None
+    assert settings.openrouter_api_key.get_secret_value() == "test-secret"

@@ -30,6 +30,14 @@ export interface ApiClient {
     filters?: CardSearchFilters,
     debug?: boolean,
   ): Promise<CardSearchPage>;
+  searchCardsAgentic?(
+    query: string,
+    page?: number,
+    signal?: AbortSignal,
+    filters?: CardSearchFilters,
+    debug?: boolean,
+    searchSessionId?: string | null,
+  ): Promise<CardSearchPage>;
 }
 
 export function createApiClient(
@@ -94,28 +102,51 @@ export function createApiClient(
         signal,
       });
 
-      if (!response.ok) {
-        let message = "Card search is temporarily unavailable.";
-        try {
-          const body: unknown = await response.json();
-          if (
-            isRecord(body) &&
-            isRecord(body.detail) &&
-            typeof body.detail.message === "string"
-          ) {
-            message = body.detail.message;
-          }
-        } catch {
-          // Keep the stable fallback for non-JSON upstream failures.
-        }
-        throw new ApiError(message, response.status);
-      }
-
-      const body: unknown = await response.json();
-      if (!isCardSearchPage(body)) {
-        throw new ApiError("The card search response was invalid.", 502);
-      }
-      return body;
+      return readCardSearchResponse(response);
+    },
+    async searchCardsAgentic(
+      query,
+      page = 1,
+      signal,
+      filters = {
+        colors: [],
+        includeColorless: false,
+        colorMode: "subset",
+        manaValueMin: null,
+        manaValueMax: null,
+        priceEurMin: null,
+        priceEurMax: null,
+      },
+      debug = false,
+      searchSessionId = null,
+    ) {
+      const response = await fetcher(
+        `${normalizedBaseUrl}/cards/search/agentic`,
+        {
+          method: "POST",
+          headers: {
+            Accept: "application/json",
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            q: query.trim(),
+            page,
+            filters: {
+              colors: filters.colors,
+              include_colorless: filters.includeColorless,
+              color_mode: filters.colorMode,
+              mana_value_min: filters.manaValueMin,
+              mana_value_max: filters.manaValueMax,
+              price_eur_min: filters.priceEurMin,
+              price_eur_max: filters.priceEurMax,
+            },
+            debug,
+            search_session_id: searchSessionId,
+          }),
+          signal,
+        },
+      );
+      return readCardSearchResponse(response);
     },
   };
 }
@@ -164,13 +195,51 @@ function isCardSearchPage(value: unknown): value is CardSearchPage {
         score >= 0 &&
         score <= 1,
     ) &&
+    isRecord(value.title_confidence_scores) &&
+    Object.values(value.title_confidence_scores).every(
+      (score) =>
+        typeof score === "number" &&
+        Number.isFinite(score) &&
+        score >= 0 &&
+        score <= 1,
+    ) &&
     Array.isArray(value.warnings) &&
-    value.strategy === "fuzzy" &&
+    ["fuzzy", "agentic"].includes(String(value.strategy)) &&
     (value.interpretation === null ||
       typeof value.interpretation === "string") &&
     typeof value.reranked === "boolean" &&
+    typeof value.agentic_required === "boolean" &&
+    (value.search_session_id === null ||
+      typeof value.search_session_id === "string") &&
     (value.debug === null || isSearchDebugSummary(value.debug))
   );
+}
+
+async function readCardSearchResponse(
+  response: Response,
+): Promise<CardSearchPage> {
+  if (!response.ok) {
+    let message = "Card search is temporarily unavailable.";
+    try {
+      const body: unknown = await response.json();
+      if (
+        isRecord(body) &&
+        isRecord(body.detail) &&
+        typeof body.detail.message === "string"
+      ) {
+        message = body.detail.message;
+      }
+    } catch {
+      // Keep the stable fallback for non-JSON upstream failures.
+    }
+    throw new ApiError(message, response.status);
+  }
+
+  const body: unknown = await response.json();
+  if (!isCardSearchPage(body)) {
+    throw new ApiError("The card search response was invalid.", 502);
+  }
+  return body;
 }
 
 function isSearchDebugSummary(value: unknown): boolean {

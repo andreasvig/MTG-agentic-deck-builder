@@ -96,10 +96,15 @@ Keep mutation announcements meaningful for assistive technology.
 
 ## Search Contract
 
-The browser validates every search response at runtime in `lib/api.ts`.
-Every response uses the fuzzy title strategy. The search drawer renders
-`Fuzzy match N%` from `name_match_scores` only while debug mode is enabled.
-When `has_more` is true, request `page + 1` and append its cards.
+The browser validates every fuzzy and agentic search response at runtime in
+`lib/api.ts`. When fuzzy search returns `agentic_required`, the drawer retains
+the confident preview cards, shows agentic loading state, and POSTs the same
+query and immutable filters to `/cards/search/agentic`. The final response
+replaces the preview. Later pages include `search_session_id`, so Load more
+reads the stored ranking without a new model run.
+
+`Title confidence N%` from `title_confidence_scores` appears only while debug
+mode is enabled. `name_match_scores` remains the broad WRatio evidence.
 
 When the backend changes `CardSearchPage`, update:
 

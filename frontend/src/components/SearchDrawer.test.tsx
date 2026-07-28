@@ -5,6 +5,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { ApiClient } from "../lib/api";
 import {
   cardSearchPage,
+  ghalta,
   searchDebugSummary,
   solRing,
 } from "../test/fixtures";
@@ -160,6 +161,8 @@ describe("card search dialog", () => {
     expect(screen.getByText("Local fuzzy title ranking")).toBeInTheDocument();
     expect(screen.getAllByText("rapidfuzz.WRatio")).toHaveLength(1);
     expect(screen.getByText("Title candidates")).toBeInTheDocument();
+    expect(screen.getByText("Full raw trace JSON")).toBeInTheDocument();
+    expect(screen.getByText(/"schema_version": 1/)).toBeInTheDocument();
     expect(
       screen.getByText("local-data/search-debug.jsonl"),
     ).toBeInTheDocument();
@@ -171,6 +174,7 @@ describe("card search dialog", () => {
     page.strategy = "fuzzy";
     page.interpretation = "Titles ranked locally by fuzzy similarity";
     page.name_match_scores = { "printing-sol-ring": 0.933333 };
+    page.title_confidence_scores = { "printing-sol-ring": 0.72 };
     const debug = searchDebugSummary();
     debug.stages = [
       {
@@ -243,15 +247,74 @@ describe("card search dialog", () => {
       />,
     );
 
-    expect(await screen.findByText("Fuzzy match 93%")).toBeInTheDocument();
+    expect(
+      await screen.findByText("Title confidence 72%"),
+    ).toBeInTheDocument();
     await userEvent.click(screen.getByText("Search trace"));
     expect(screen.getByText("Title candidates")).toBeInTheDocument();
     expect(screen.getAllByText("93%")).not.toHaveLength(0);
   });
 
+  it("shows confident previews while agentic search ranks the final results", async () => {
+    const preview = cardSearchPage([solRing], "green big creature");
+    preview.agentic_required = true;
+    preview.interpretation =
+      "Confident title matches shown while agentic search continues";
+    let resolveAgentic: (page: ReturnType<typeof cardSearchPage>) => void =
+      () => undefined;
+    const agenticResult = new Promise<ReturnType<typeof cardSearchPage>>(
+      (resolve) => {
+        resolveAgentic = resolve;
+      },
+    );
+    const searchCards = vi.fn<ApiClient["searchCards"]>().mockResolvedValue(
+      preview,
+    );
+    const searchCardsAgentic = vi
+      .fn<NonNullable<ApiClient["searchCardsAgentic"]>>()
+      .mockReturnValue(agenticResult);
+
+    render(
+      <SearchDrawer
+        initialQuery="green big creature"
+        entries={[]}
+        client={{
+          getHealth: vi.fn(),
+          searchCards,
+          searchCardsAgentic,
+        }}
+        onAdd={vi.fn()}
+        onSetQuantity={vi.fn()}
+        onClose={vi.fn()}
+      />,
+    );
+
+    expect(
+      await screen.findByText("Agentic search is ranking results…"),
+    ).toBeInTheDocument();
+    expect(screen.getAllByText("Sol Ring")).not.toHaveLength(0);
+    expect(searchCardsAgentic).toHaveBeenCalledTimes(1);
+
+    const final = cardSearchPage([ghalta], "green big creature");
+    final.strategy = "agentic";
+    final.reranked = true;
+    final.agentic_required = false;
+    final.search_session_id = "search-session-1";
+    final.interpretation = "Large green creatures, strongest matches first.";
+    resolveAgentic(final);
+
+    expect(
+      await screen.findAllByText("Ghalta, Primal Hunger"),
+    ).not.toHaveLength(0);
+    expect(
+      screen.getByText("Large green creatures, strongest matches first."),
+    ).toBeInTheDocument();
+  });
+
   it("hides fuzzy percentages outside debug mode", async () => {
     const page = cardSearchPage(undefined, "sol rng");
     page.name_match_scores = { "printing-sol-ring": 0.933333 };
+    page.title_confidence_scores = { "printing-sol-ring": 0.72 };
 
     render(
       <SearchDrawer
@@ -270,7 +333,7 @@ describe("card search dialog", () => {
     expect(
       await screen.findByRole("button", { name: "Add Sol Ring to deck" }),
     ).toBeInTheDocument();
-    expect(screen.queryByText("Fuzzy match 93%")).not.toBeInTheDocument();
+    expect(screen.queryByText("Title confidence 72%")).not.toBeInTheDocument();
   });
 
   it("shows 12 results first and appends the next page with Load more", async () => {

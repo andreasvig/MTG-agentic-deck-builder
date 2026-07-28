@@ -100,6 +100,10 @@ class SearchDebugTrace:
                         str(scryfall_id): score
                         for scryfall_id, score in page.name_match_scores.items()
                     },
+                    "title_confidence_scores": {
+                        str(scryfall_id): score
+                        for scryfall_id, score in page.title_confidence_scores.items()
+                    },
                     "warnings": page.warnings,
                 },
             }

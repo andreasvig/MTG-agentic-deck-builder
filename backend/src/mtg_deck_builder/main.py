@@ -7,9 +7,16 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from mtg_deck_builder import __version__
+from mtg_deck_builder.agentic_card_search import (
+    AgenticCardSearchService,
+    LocalCardSearchTool,
+    ScryfallCardSearchTool,
+)
+from mtg_deck_builder.agentic_search_debug import JsonlAgentSearchTraceLogger
 from mtg_deck_builder.api.router import router as api_router
 from mtg_deck_builder.card_catalog import SQLiteCardCatalog
 from mtg_deck_builder.config import Settings, get_settings
+from mtg_deck_builder.providers.openrouter import OpenRouterClient
 from mtg_deck_builder.search import FuzzyTitleSearchProvider
 from mtg_deck_builder.search_debug import JsonlSearchDebugLogger
 
@@ -22,14 +29,56 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @asynccontextmanager
     async def lifespan(application: FastAPI) -> AsyncIterator[None]:
         title_match = runtime_settings.search.title_match
-        application.state.card_search_provider = FuzzyTitleSearchProvider(
-            SQLiteCardCatalog(runtime_settings.card_catalog_path),
+        agentic = runtime_settings.search.agentic
+        catalog = SQLiteCardCatalog(runtime_settings.card_catalog_path)
+        fuzzy_provider = FuzzyTitleSearchProvider(
+            catalog,
             debug_logger=JsonlSearchDebugLogger(
                 runtime_settings.search_debug_log_path,
                 result_limit=runtime_settings.search_debug_result_limit,
             ),
             debug_default_enabled=runtime_settings.search_debug_enabled,
             page_size=title_match.page_size,
+            preview_min_confidence=title_match.preview_min_confidence,
+            agentic_enabled=agentic.enabled,
+        )
+        application.state.card_search_provider = fuzzy_provider
+        api_key = (
+            runtime_settings.openrouter_api_key.get_secret_value()
+            if runtime_settings.openrouter_api_key is not None
+            else None
+        )
+        model_client = (
+            OpenRouterClient(
+                api_key=api_key,
+                base_url=runtime_settings.openrouter_base_url,
+                timeout_seconds=agentic.timeout_seconds,
+            )
+            if api_key
+            else None
+        )
+        application.state.agentic_card_search = AgenticCardSearchService(
+            fuzzy_provider=fuzzy_provider,
+            local_tool=LocalCardSearchTool(
+                catalog,
+                default_max_results=agentic.local_tool.default_max_results,
+                hard_max_results=agentic.local_tool.hard_max_results,
+                semantic_enabled=runtime_settings.search.semantic.enabled,
+            ),
+            scryfall_tool=ScryfallCardSearchTool(
+                base_url=runtime_settings.scryfall_base_url,
+                user_agent=runtime_settings.scryfall_user_agent,
+                timeout_seconds=agentic.timeout_seconds,
+                request_interval_seconds=(runtime_settings.scryfall_request_interval_seconds),
+                default_max_results=agentic.local_tool.default_max_results,
+                hard_max_results=agentic.max_tool_results,
+            ),
+            model_client=model_client,
+            settings=agentic,
+            page_size=title_match.page_size,
+            trace_logger=JsonlAgentSearchTraceLogger(runtime_settings.search_debug_log_path),
+            trace_log_path=str(runtime_settings.search_debug_log_path),
+            debug_default_enabled=runtime_settings.search_debug_enabled,
         )
         yield
 

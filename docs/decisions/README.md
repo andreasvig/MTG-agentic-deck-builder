@@ -24,6 +24,7 @@ tradeoffs; they are not task lists.
 | [0006](0006-agent-uses-typed-deck-patches.md) | Proposed | Future agent mutation safety |
 | [0007](0007-single-fuzzy-title-search.md) | Accepted | One fuzzy title-search path |
 | [0008](0008-local-catalog-serves-search.md) | Accepted | Local catalog search reads and pagination |
+| [0009](0009-progressive-one-tool-agentic-search.md) | Accepted | Progressive one-tool agentic search |
 
 ## Updating Decisions
 

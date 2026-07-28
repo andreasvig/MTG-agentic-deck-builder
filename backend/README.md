@@ -16,15 +16,19 @@ The backend currently owns:
 - Read-only local SQLite card catalog.
 - One fuzzy title matcher for exact names, partial segments, and typos.
 - Threshold-free RapidFuzz ranking with a YAML-configured display page size.
+- Stricter preview confidence and immediate fuzzy preview selection.
 - Local structured filters and simple numbered pages.
 - Structured debug traces and JSONL persistence.
+- Strict local-tool, final-ranking, and complete agent-trace contracts.
+- One-tool OpenRouter orchestration with local and live Scryfall search tools.
+- Stored agent-ranked pagination that does not repeat model calls.
 
 The backend does not currently own:
 
 - Deck CRUD or persistence.
 - Deck mutations.
 - Complete Commander validation.
-- Agent tools or chat.
+- Semantic embedding retrieval or deck chat/tools.
 
 ## Run
 
@@ -48,6 +52,7 @@ Endpoints:
 ```text
 GET http://127.0.0.1:43127/api/v1/health
 GET http://127.0.0.1:43127/api/v1/cards/search?q=forest
+POST http://127.0.0.1:43127/api/v1/cards/search/agentic
 GET http://127.0.0.1:43127/api/v1/openapi.json
 ```
 
@@ -59,11 +64,16 @@ src/mtg_deck_builder/
     router.py        API prefix, health, router composition
     cards.py         Query translation and public errors
   domain/
+    agentic_search.py  Strict local-tool, ranked-output, and trace contracts
     cards.py         Strict card/search contracts
     deck.py          Early deck contracts, not routed yet
   providers/
     cards.py         Provider protocol and exceptions
+    openrouter.py    Secret-safe OpenRouter chat-completion transport
     scryfall.py      Scryfall wire models, mapping, and title scores
+  agentic_card_search.py  Tool execution, orchestration, sessions, paging
+  agentic_search.py  Non-network request/response runtime guards
+  agentic_search_debug.py  Full redacted agent-trace builder and JSONL writer
   card_catalog.py    Atomic bulk import and read-only SQLite catalog
   catalog_sync.py    Explicit catalog-refresh CLI
   config.py          YAML/environment settings and validation
@@ -79,7 +89,8 @@ src/mtg_deck_builder/
 - Routes depend on `CardSearchProvider`, not a concrete HTTP client.
 - `oracle_id` and `scryfall_id` are distinct and both required.
 - Exact titles must score `1.0` and appear before partial matches.
-- Search debug records candidates and filter outcomes, not secret headers.
+- Search debug records candidates, WRatio, title confidence, and filter
+  outcomes, not secret headers.
 
 A `CardSearchPage` change requires synchronized frontend interface, runtime
 validation, test fixtures, and E2E fixture updates.
@@ -92,6 +103,11 @@ Title matching loads from root `config.yaml`:
 search:
   title_match:
     page_size: 12
+    preview_min_confidence: 0.75
+  semantic:
+    enabled: false
+  agentic:
+    enabled: true
 ```
 
 Runtime and debug settings load from environment variables and `.env` using
@@ -104,8 +120,10 @@ the `MTG_` prefix.
 | `MTG_FRONTEND_ORIGIN` | `http://127.0.0.1:41737` |
 | `MTG_SCRYFALL_BASE_URL` | `https://api.scryfall.com` |
 | `MTG_SCRYFALL_BULK_TIMEOUT_SECONDS` | `900` |
+| `OPENROUTER_API_KEY` | unset |
 | `MTG_CARD_CATALOG_PATH` | `local-data/cards.sqlite3` |
 | `MTG_SEARCH__TITLE_MATCH__PAGE_SIZE` | `12` |
+| `MTG_SEARCH__TITLE_MATCH__PREVIEW_MIN_CONFIDENCE` | `0.75` |
 | `MTG_SEARCH_DEBUG_ENABLED` | `false` |
 | `MTG_SEARCH_DEBUG_LOG_PATH` | `local-data/search-debug.jsonl` |
 | `MTG_SEARCH_DEBUG_RESULT_LIMIT` | `25` |
@@ -122,6 +140,8 @@ Test ownership:
 - `test_card_catalog.py`: bulk import, atomic replacement, catalog loading.
 - `test_card_search.py`: Scryfall mapping and HTTP contract.
 - `test_title_search.py`: uncapped ordering, paging, filters, and debug records.
+- `test_agentic_search_contracts.py`: tool/output guards and complete traces.
+- `test_agentic_card_search.py`: tool execution, orchestration, and sessions.
 - `test_health.py`: health, CORS, settings.
 - `test_deck_models.py`: backend deck contract validation.
 
@@ -139,7 +159,8 @@ live Scryfall.
 
 ### Changing Search
 
-- Preserve the one fuzzy title path unless a new ADR supersedes ADR 0007.
+- Preserve the local-first fuzzy title path and the ADR 0009 progressive
+  one-tool boundary.
 - Keep score semantics normalized to `0..1`.
 - Apply every structured filter.
 - Add trace details and deterministic tests.

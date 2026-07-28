@@ -102,9 +102,7 @@ def test_sync_decompresses_discovery_and_bulk_responses(tmp_path: Path) -> None:
         ],
     }
     responses = {
-        "https://api.scryfall.test/bulk-data": gzip.compress(
-            json.dumps(metadata).encode()
-        ),
+        "https://api.scryfall.test/bulk-data": gzip.compress(json.dumps(metadata).encode()),
         "https://data.scryfall.test/default.json": gzip.compress(
             json.dumps([card_payload("Forest")]).encode()
         ),

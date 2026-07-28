@@ -2333,6 +2333,10 @@ select {
   margin-top: 7px;
 }
 
+.search-debug__body > .search-debug-raw {
+  margin: 8px 10px;
+}
+
 .search-debug-raw > summary {
   color: #4c6654;
   font-size: 7px;

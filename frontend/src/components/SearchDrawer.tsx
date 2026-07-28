@@ -45,6 +45,7 @@ import { SearchTracePanel } from "./SearchTracePanel";
 type SearchState =
   | { phase: "idle"; page: null }
   | { phase: "loading"; page: CardSearchPage | null }
+  | { phase: "agentic"; page: CardSearchPage }
   | { phase: "success"; page: CardSearchPage }
   | { phase: "error"; page: CardSearchPage | null; message: string };
 
@@ -96,6 +97,8 @@ export function SearchDrawer({
   const dialogRef = useRef<HTMLElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const activeRequest = useRef<AbortController | null>(null);
+  const stateRef = useRef<SearchState>(state);
+  stateRef.current = state;
   const debounceSkipped = useRef(false);
   const filtersRef = useRef(filters);
   filtersRef.current = filters;
@@ -121,19 +124,62 @@ export function SearchDrawer({
       activeRequest.current?.abort();
       const controller = new AbortController();
       activeRequest.current = controller;
+      const existingPage = stateRef.current.page;
+      let retainedPage = append ? existingPage : null;
       setState((current) => ({
         phase: "loading",
         page: append ? current.page : null,
       }));
       try {
-        const result = await client.searchCards(
-          normalized,
-          page,
-          controller.signal,
-          filtersRef.current,
-          debugEnabledRef.current,
-        );
+        const storedAgentSession =
+          append &&
+          existingPage?.strategy === "agentic" &&
+          existingPage.search_session_id
+            ? existingPage.search_session_id
+            : null;
+        const result = storedAgentSession
+          ? await client.searchCardsAgentic?.(
+              normalized,
+              page,
+              controller.signal,
+              filtersRef.current,
+              debugEnabledRef.current,
+              storedAgentSession,
+            )
+          : await client.searchCards(
+              normalized,
+              page,
+              controller.signal,
+              filtersRef.current,
+              debugEnabledRef.current,
+            );
+        if (!result) {
+          throw new Error("Agentic card search is not available.");
+        }
         if (activeRequest.current !== controller) {
+          return;
+        }
+        if (result.agentic_required && page === 1 && !append) {
+          retainedPage = result;
+          const nextState: SearchState = { phase: "agentic", page: result };
+          stateRef.current = nextState;
+          setState(nextState);
+          setSelected(result.cards[0] ?? null);
+          if (!client.searchCardsAgentic) {
+            throw new Error("Agentic card search is not available.");
+          }
+          const agentResult = await client.searchCardsAgentic(
+            normalized,
+            1,
+            controller.signal,
+            filtersRef.current,
+            debugEnabledRef.current,
+          );
+          if (activeRequest.current !== controller) {
+            return;
+          }
+          setState({ phase: "success", page: agentResult });
+          setSelected(agentResult.cards[0] ?? result.cards[0] ?? null);
           return;
         }
         setState((current) => {
@@ -147,9 +193,14 @@ export function SearchDrawer({
               page: {
                 ...result,
                 cards: [...current.page.cards, ...result.cards],
+                debug: result.debug ?? current.page.debug,
                 name_match_scores: {
                   ...current.page.name_match_scores,
                   ...result.name_match_scores,
+                },
+                title_confidence_scores: {
+                  ...current.page.title_confidence_scores,
+                  ...result.title_confidence_scores,
                 },
               },
             };
@@ -168,7 +219,7 @@ export function SearchDrawer({
         }
         setState((current) => ({
           phase: "error",
-          page: current.page,
+          page: retainedPage ?? current.page,
           message:
             error instanceof Error
               ? error.message
@@ -559,7 +610,13 @@ export function SearchDrawer({
         ) : null}
 
         <div className="search-drawer__body">
-          <div className="search-results" aria-live="polite" aria-busy={state.phase === "loading"}>
+          <div
+            className="search-results"
+            aria-live="polite"
+            aria-busy={
+              state.phase === "loading" || state.phase === "agentic"
+            }
+          >
             {state.phase === "idle" ? (
               <div className="search-state">
                 <Search aria-hidden="true" size={26} />
@@ -570,6 +627,17 @@ export function SearchDrawer({
             {state.phase === "loading" && cards.length === 0 ? (
               <div className="search-skeletons" aria-label="Searching cards">
                 {Array.from({ length: 8 }, (_, index) => (
+                  <span className="search-skeleton" key={index} />
+                ))}
+              </div>
+            ) : null}
+
+            {state.phase === "agentic" && cards.length === 0 ? (
+              <div
+                className="search-skeletons"
+                aria-label="Agentic search is ranking cards"
+              >
+                {Array.from({ length: 12 }, (_, index) => (
                   <span className="search-skeleton" key={index} />
                 ))}
               </div>
@@ -616,7 +684,16 @@ export function SearchDrawer({
                     </span>
                   ) : null}
                   {state.phase === "loading" ? <span>Loading more…</span> : null}
+                  {state.phase === "agentic" ? (
+                    <span>Agentic search is ranking results…</span>
+                  ) : null}
                 </div>
+                {state.phase === "error" ? (
+                  <p className="search-warning" role="alert">
+                    <AlertCircle aria-hidden="true" size={14} />
+                    {state.message}
+                  </p>
+                ) : null}
                 {state.page?.warnings[0] ? (
                   <p className="search-warning" role="status">
                     <AlertCircle aria-hidden="true" size={14} />
@@ -634,8 +711,8 @@ export function SearchDrawer({
                         entry.card.scryfall_id !== card.scryfall_id,
                     );
                     const quantity = exactEntry?.quantity ?? 0;
-                    const nameMatchScore =
-                      state.page?.name_match_scores[card.scryfall_id];
+                    const titleConfidenceScore =
+                      state.page?.title_confidence_scores[card.scryfall_id];
                     const colorIdentityWarning =
                       targetGroupId !== COMMAND_ZONE_GROUP_ID &&
                       !isWithinCommanderColorIdentity(
@@ -667,9 +744,10 @@ export function SearchDrawer({
                           <span className="mana-line">{card.mana_cost || "No mana cost"}</span>
                           <span className="type-line">{card.type_line}</span>
                           {debugEnabled &&
-                          typeof nameMatchScore === "number" ? (
+                          typeof titleConfidenceScore === "number" ? (
                             <span className="search-card__match-score">
-                              Fuzzy match {Math.round(nameMatchScore * 100)}%
+                              Title confidence{" "}
+                              {Math.round(titleConfidenceScore * 100)}%
                             </span>
                           ) : null}
                           <span className="printing-line">
@@ -739,7 +817,9 @@ export function SearchDrawer({
               <button
                 className="secondary-button load-more"
                 type="button"
-                disabled={state.phase === "loading"}
+                disabled={
+                  state.phase === "loading" || state.phase === "agentic"
+                }
                 onClick={() =>
                   void runSearch(
                     query,

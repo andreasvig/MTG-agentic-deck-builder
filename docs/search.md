@@ -1,8 +1,16 @@
-# Card-Title Search
+# Progressive Card Search
 
-The application has one search phase: local fuzzy card-title matching. There is
-no minimum score, candidate cap, intent compiler, semantic model, LLM reranker,
-direct Scryfall-syntax mode, or per-query Scryfall request.
+The application starts every query with local fuzzy card-title matching. There
+is no fuzzy minimum score or candidate-pool cap. When fewer than 12 titles
+clear the stricter 75% preview-confidence boundary, the drawer keeps those
+confident cards visible and starts one bounded agentic search.
+
+The agent makes exactly one local or Scryfall tool call, sees the result in the
+same conversation, and makes one final structured call that ranks every
+candidate ID. Semantic embeddings remain disabled; descriptive constraints
+that the local catalog cannot execute, such as power or toughness, use
+Scryfall. See
+[`ADR 0009`](decisions/0009-progressive-one-tool-agentic-search.md).
 
 ## Data Source
 
@@ -34,14 +42,20 @@ Use `npm run catalog:sync -- --force` to rebuild an already-current catalog.
 ## Query Flow
 
 ```text
-user title
+user query
   -> load canonical cards and aliases from local SQLite
   -> normalize case and punctuation
   -> score every card title with RapidFuzz WRatio
   -> sort the complete catalog (no cutoff)
   -> apply local color, mana-value, and EUR filters
-  -> return the requested 12-card page
-  -> fetch the next page only when Load more is selected
+  -> compute stricter preview confidence for the first 12
+  -> if all 12 clear 75%: return the normal fuzzy page
+  -> otherwise: return only confident previews immediately
+       -> model selects exactly one tool
+       -> execute search_local_cards or bounded live Scryfall
+       -> same model context ranks the preview/tool candidate union
+       -> return 12 agent-ranked cards and store the complete ranking
+       -> Load more reads the stored ranking without another model call
 ```
 
 Every query follows this flow, including exact names, partial words, title
@@ -73,6 +87,24 @@ An exact normalized title scores `1.0`. Equal scores prefer the alias whose
 length is closest to the query, then title order for determinism. The score is
 a string-similarity heuristic, not a probability.
 
+### Title Confidence
+
+WRatio remains the broad internal ranking signal because it recalls partial
+words and title segments well. It is not displayed as a percentage because its
+token shortcuts can overstate a partial match: `big green creatures` can score
+highly against Green Dragon based on `green` alone.
+
+Every returned card also has a stricter title-confidence score:
+
+- If the complete normalized query occurs inside a title alias, keep the
+  existing WRatio behavior. `green` therefore still matches Green Dragon.
+- Otherwise, compare the complete query and title alias with whole-string edit
+  similarity. Every added descriptor then affects the score.
+
+This preserves `forest` → Misty Rainforest and `galta` → Ghalta while making
+`big green creatures` → Green Dragon fall below the 75% preview boundary.
+Debug mode displays this score as `Title confidence N%`.
+
 ## Configuration
 
 Search behavior lives in root [`config.yaml`](../config.yaml):
@@ -81,6 +113,20 @@ Search behavior lives in root [`config.yaml`](../config.yaml):
 search:
   title_match:
     page_size: 12
+    preview_min_confidence: 0.75
+
+  semantic:
+    enabled: false
+    model: null
+
+  agentic:
+    enabled: true
+    provider: openrouter
+    model: google/gemini-3.5-flash-lite
+    max_tool_calls: 1
+    local_tool:
+      default_max_results: 24
+      hard_max_results: 60
 ```
 
 `page_size` accepts `1..30` and controls the number of cards returned per API
@@ -90,6 +136,16 @@ use:
 ```dotenv
 MTG_SEARCH__TITLE_MATCH__PAGE_SIZE=12
 ```
+
+`preview_min_confidence` does not truncate or cap the complete fuzzy ranking.
+It controls which first-page cards may be shown before the agent finishes. A
+complete normalized query contained in a title alias keeps its WRatio score;
+other candidates use whole-string edit similarity so natural-language token
+overlap does not masquerade as title confidence.
+
+The agentic system prompt, semantic indexed fields, one-tool limit, candidate
+bounds, and full debug-capture switches also live in `config.yaml`. Agentic
+search is enabled; semantic embeddings remain disabled.
 
 The local catalog path is configured separately:
 
@@ -117,19 +173,26 @@ Enable **Search debug log** in Search settings.
 
 Debug mode:
 
-- Shows `Fuzzy match N%` beneath every returned result.
+- Shows `Title confidence N%` beneath every returned result.
 - Reports the local catalog count, filtered count, removed count, page range,
-  matched aliases, original ranks, and scores.
+  matched aliases, original ranks, WRatio scores, and title confidence.
+- Exposes the complete raw trace JSON in an expandable inline panel.
 - Records `minimum_score: null` to make the absence of a threshold explicit.
 - Appends the complete trace to `local-data/search-debug.jsonl`.
 
-There are no provider queries in a search trace because normal search makes no
-network request.
+Fuzzy traces include preview confidence, the qualifying preview count, and the
+agentic handoff decision. Completed agentic traces use schema version 2 and
+contain eight raw stages: request context, initial model request/response, tool
+call/result, final model request/response, and validation. The JSONL writer
+preserves complete model/tool payloads and provider-returned reasoning fields
+while redacting authentication headers, API keys, cookies, passwords, and
+secrets. It does not claim access to hidden model chain-of-thought.
 
 ## Public Endpoint
 
 ```http
 GET /api/v1/cards/search
+POST /api/v1/cards/search/agentic
 ```
 
 | Parameter | Type | Purpose |
@@ -143,14 +206,24 @@ GET /api/v1/cards/search
 | `price_min`, `price_max` | decimal | EUR-estimate range |
 | `debug` | boolean | Return and persist the title-match trace |
 
-`total_results` is the number of locally filtered cards. `has_more` means a
-later numbered page exists. `name_match_scores` maps each returned
-`scryfall_id` to its normalized fuzzy score.
+The GET returns the fuzzy page or immediate confident preview plus
+`agentic_required`. The POST starts the one-tool agent run, or accepts
+`search_session_id` with a later page to reuse a completed ranking.
+
+`total_results` is the number of results in the active fuzzy or agentic
+ranking. `has_more` means a later numbered page exists. `name_match_scores`
+maps each returned
+`scryfall_id` to its broad normalized WRatio score.
+`title_confidence_scores` maps the same IDs to the coverage-aware score shown
+in debug mode and used by the progressive preview phase.
 
 ## Failure Behavior
 
 - A missing, incompatible, or unreadable catalog returns the safe HTTP 503
   card-search response.
+- A missing OpenRouter key or unavailable model/provider returns a safe HTTP
+  503 for the agentic phase; any confident fuzzy previews remain visible.
+- An invalid or expired agentic session returns a safe HTTP 400.
 - An empty filtered result or page beyond the end returns an empty successful
   page.
 - A failed refresh leaves the previously installed SQLite database untouched.
@@ -161,5 +234,11 @@ later numbered page exists. `name_match_scores` maps each returned
   atomic failure behavior.
 - `test_card_search.py`: Scryfall card-object mapping and HTTP contract.
 - `test_title_search.py`: exact-first threshold-free ordering, local filters,
-  simple pagination, and trace evidence.
-- Frontend component and Playwright tests: scores, filters, and Load more.
+  simple pagination, preview confidence, and trace evidence.
+- `test_agentic_search_contracts.py`: all-optional local-tool fields, multiset
+  symbols, result bounds, complete ranked-ID validation, versioned trace
+  completeness, full raw JSON persistence, and secret redaction.
+- `test_agentic_card_search.py`: one-tool orchestration, duplicate mana-symbol
+  execution, full trace stages, final ranking, and session pagination.
+- Frontend component and browser tests: progressive preview, agent handoff,
+  scores, filters, debug trace, and Load more.

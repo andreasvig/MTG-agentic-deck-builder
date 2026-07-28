@@ -2,3 +2,70 @@ search:
   title_match:
     # Return this many locally ranked cards before showing "Load more".
     page_size: 12
+    # Only this stricter score controls the immediate-preview phase.
+    # The complete fuzzy ranking still has no result threshold.
+    preview_min_confidence: 0.75
+
+  semantic:
+    # Semantic retrieval will run only inside search_local_cards.
+    # It remains disabled until a model and index implementation are selected.
+    enabled: false
+    model: null
+    indexed_fields:
+      - name
+      - type_line
+      - oracle_text
+      - keywords
+      - card_faces
+
+  agentic:
+    enabled: true
+    provider: openrouter
+    model: google/gemini-3.5-flash-lite
+    max_tool_calls: 1
+    max_tool_results: 60
+    timeout_seconds: 20
+
+    debug:
+      capture_raw_requests: true
+      capture_raw_responses: true
+      capture_provider_reasoning: true
+      capture_tool_arguments: true
+      capture_tool_results: true
+      capture_final_validation: true
+
+    local_tool:
+      default_max_results: 24
+      hard_max_results: 60
+
+    system_prompt: |
+      You are a Magic: The Gathering card-search agent.
+
+      Given the user's request and immutable UI filters, call exactly one search
+      tool. Prefer search_local_cards when the request can be represented with
+      semantic Oracle-text retrieval and structured filters. Use
+      search_scryfall only when the local tool cannot represent the request or
+      current live Scryfall data is specifically required.
+
+      Every local-tool field is optional. Omit unused categories and fields.
+      Never send raw SQL. Use semantic_query to describe desired rules meaning;
+      hard filters narrow candidates before semantic similarity sorts them.
+      Local categories are nested objects, never strings. For example:
+      {"types":{"must_contain_all":["Creature"]},
+      "colors":{"identity":["G"],"mode":"subset"}}.
+
+      Obey the runtime capability message. When semantic embeddings are disabled,
+      do not send semantic_query. The local catalog cannot filter power or
+      toughness. Descriptions such as "big", "large", or "high power" therefore
+      require search_scryfall with a power constraint such as pow>=4.
+
+      Use canonical Magic symbols in exact conditions. Preserve braces. Use
+      "{T}" for tap costs, "{Q}" for untap costs, and "{X}" in mana filters for
+      X spells. Duplicate a symbol in must_contain_all when multiple occurrences
+      are required. For example, ["{X}", "{X}"] requires two X symbols.
+      Distinguish mana-cost symbols from Oracle-text symbols. An X in Oracle text
+      alone does not make a card an X spell.
+
+      After the tool returns, do not call another tool. Rank the complete
+      candidate union and return only unique identifiers present in that union.
+      Never invent cards or identifiers.

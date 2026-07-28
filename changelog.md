@@ -6,6 +6,30 @@ All notable changes to this project will be documented in this file.
 
 ### Added
 
+- Implemented ADR 0009 progressive one-tool agentic card search: confident
+  fuzzy previews return immediately, one OpenRouter-selected local or Scryfall
+  tool runs, and the same model context returns a validated complete ID ranking.
+- Added `POST /api/v1/cards/search/agentic` and in-memory ranked sessions so
+  **Load more** never repeats the model/tool run.
+- Added bounded local exact-condition execution and a paced paper-only live
+  Scryfall tool with immutable UI filters.
+- Added progressive drawer loading/fallback behavior and full eight-stage
+  agent traces in the existing debug explorer.
+- Added a stricter substring-or-whole-string preview-confidence score and trace
+  evidence without changing the threshold-free fuzzy result ranking.
+- Added per-result `title_confidence_scores` and changed the debug card label
+  from misleading WRatio percentages to coverage-aware title confidence.
+- Added validated semantic/agentic YAML settings and the complete agent system
+  prompt. Agentic execution is enabled; semantic embeddings remain disabled
+  until a real index lands.
+- Added strict all-optional local card-search tool contracts, merged mana
+  filters, semantic Oracle-text input, multiset exact conditions, and 24/60
+  candidate bounds.
+- Added final candidate-union ranking guards that reject invented, duplicate,
+  omitted, or over-limit IDs.
+- Added a versioned eight-stage agent debug trace, provider-reasoning payload
+  capture, recursive secret redaction, and untruncated JSONL persistence.
+- Added an expandable full raw JSON view to the inline search debug panel.
 - Added a streaming Scryfall `default_cards` importer, timestamp-aware refresh
   command, atomic SQLite installation, and local catalog reload after swaps.
 - Added canonical Oracle-card search rows while retaining every eligible paper
@@ -118,6 +142,9 @@ All notable changes to this project will be documented in this file.
 
 ### Changed
 
+- Kept WRatio for broad fuzzy ordering but stopped presenting it as title
+  confidence. Added descriptors now lower the displayed score unless the
+  complete query is a real title segment.
 - Replaced per-query Scryfall exact-name batches and generated OR expressions
   with local SQLite card reads, local structured filters, and no network access
   during normal search.

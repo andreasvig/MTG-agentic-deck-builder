@@ -2,7 +2,7 @@ export type MagicColor = "W" | "U" | "B" | "R" | "G";
 export type CardLegality = "legal" | "not_legal" | "restricted" | "banned";
 export type CardFinish = "nonfoil" | "foil" | "etched";
 export type ColorMatchMode = "subset" | "exact";
-export type SearchStrategy = "fuzzy";
+export type SearchStrategy = "fuzzy" | "agentic";
 export type SearchDebugStageStatus = "ok" | "skipped" | "error";
 
 export interface CardSearchFilters {
@@ -83,10 +83,13 @@ export interface CardSearchPage {
   has_more: boolean;
   cards: CardSearchResult[];
   name_match_scores: Record<string, number>;
+  title_confidence_scores: Record<string, number>;
   warnings: string[];
   strategy: SearchStrategy;
   interpretation: string | null;
   reranked: boolean;
+  agentic_required: boolean;
+  search_session_id: string | null;
   debug: SearchDebugSummary | null;
 }
 
