@@ -227,3 +227,106 @@ export function searchDebugSummary(): SearchDebugSummary {
     },
   };
 }
+
+export function failedAgentSearchDebugSummary(): SearchDebugSummary {
+  const traceId = "7510e3a8-55a3-4b5d-89db-a7d119e6ea4a";
+  const skipped = ["tool_call", "tool_response", "thinking", "output_response"];
+  return {
+    trace_id: traceId,
+    log_path: "local-data/search-debug.jsonl",
+    log_written: true,
+    total_duration_ms: 870.3,
+    stages: [
+      {
+        name: "system_prompt",
+        status: "ok",
+        duration_ms: 0,
+        input_count: null,
+        output_count: null,
+      },
+      {
+        name: "user_input_prompt",
+        status: "ok",
+        duration_ms: 0,
+        input_count: null,
+        output_count: null,
+      },
+      {
+        name: "thinking",
+        status: "error",
+        duration_ms: 870.3,
+        input_count: null,
+        output_count: null,
+      },
+      ...skipped.map((name) => ({
+        name,
+        status: "skipped" as const,
+        duration_ms: 0,
+        input_count: null,
+        output_count: null,
+      })),
+    ],
+    trace: {
+      schema_version: 2,
+      trace_id: traceId,
+      started_at: "2026-07-28T12:00:00Z",
+      completed_at: "2026-07-28T12:00:00.870Z",
+      total_duration_ms: 870.3,
+      request: {
+        query: "green big creature",
+        debug: true,
+        filters: {},
+      },
+      configuration: {
+        workflow: "one_tool_then_final",
+        model_calls: 2,
+      },
+      decision: {
+        strategy: "agentic",
+        input_kind: "card_search_query",
+        failed_stage: "thinking",
+      },
+      stages: [
+        {
+          name: "system_prompt",
+          status: "ok",
+          duration_ms: 0,
+          details: { content: "You are a Magic card-search agent." },
+        },
+        {
+          name: "user_input_prompt",
+          status: "ok",
+          duration_ms: 0,
+          details: { content: 'Find cards for "green big creature".' },
+        },
+        {
+          name: "thinking",
+          status: "error",
+          duration_ms: 870.3,
+          details: {
+            phase: "tool_selection",
+            error_type: "OpenRouterError",
+            status_code: 429,
+            provider_response: {
+              error: { message: "Rate limit exceeded" },
+            },
+          },
+        },
+        ...skipped.map((name) => ({
+          name,
+          status: "skipped" as const,
+          duration_ms: 0,
+          details: {
+            reason:
+              "Not reached because an earlier agentic-search step failed.",
+          },
+        })),
+      ],
+      result: {
+        status: "error",
+        strategy: "agentic",
+        failed_stage: "thinking",
+      },
+    },
+  };
+}

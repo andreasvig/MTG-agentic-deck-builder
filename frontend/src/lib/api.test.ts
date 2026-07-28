@@ -1,6 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
 
-import { cardSearchPage, searchDebugSummary } from "../test/fixtures";
+import {
+  cardSearchPage,
+  failedAgentSearchDebugSummary,
+  searchDebugSummary,
+} from "../test/fixtures";
 import { ApiError, createApiClient } from "./api";
 
 describe("API client", () => {
@@ -141,6 +145,35 @@ describe("API client", () => {
       ),
     ).rejects.toEqual(
       new ApiError("The card search response was invalid.", 502),
+    );
+  });
+
+  it("retains a typed failed agent trace on API errors", async () => {
+    const debug = failedAgentSearchDebugSummary();
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValue(
+      Response.json(
+        {
+          detail: {
+            code: "agentic_search_unavailable",
+            message: "Agentic card search is temporarily unavailable.",
+            debug,
+          },
+        },
+        { status: 503 },
+      ),
+    );
+
+    await expect(
+      createApiClient(
+        "http://localhost/api/v1",
+        fetcher,
+      ).searchCardsAgentic?.("green big creature"),
+    ).rejects.toEqual(
+      new ApiError(
+        "Agentic card search is temporarily unavailable.",
+        503,
+        debug,
+      ),
     );
   });
 

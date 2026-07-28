@@ -195,6 +195,9 @@ Debug mode:
   matched aliases, original ranks, WRatio scores, and title confidence.
 - Renders exactly seven agentic steps: system prompt, user input prompt,
   thinking, tool call, tool response, final thinking, and output response.
+- Keeps the same seven-step trace on agentic failure: completed steps stay
+  visible, the broken step opens automatically with sanitized provider
+  evidence, and later steps are marked skipped.
 - Shows the exact simplified tool-role message sent to the model, using local
   numeric IDs, beside the expandable untouched raw tool result.
 - Records `minimum_score: null` to make the absence of a threshold explicit.
@@ -207,6 +210,9 @@ full raw trace. The internal schema-version-2 JSONL audit record remains
 complete and preserves model/tool payloads and provider-returned reasoning
 fields while redacting authentication headers, API keys, cookies, passwords,
 and secrets. It does not claim access to hidden model chain-of-thought.
+When the agentic endpoint returns `503` in debug mode, its typed public error
+detail includes this sanitized failed trace; non-debug errors keep the small
+stable error envelope.
 
 ## Public Endpoint
 

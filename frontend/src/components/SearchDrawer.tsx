@@ -39,7 +39,7 @@ import {
   getCommanderColorIdentity,
   isWithinCommanderColorIdentity,
 } from "../domain/deck";
-import { apiClient, type ApiClient } from "../lib/api";
+import { ApiError, apiClient, type ApiClient } from "../lib/api";
 import { CardArt } from "./CardArt";
 import { SearchTracePanel } from "./SearchTracePanel";
 
@@ -218,14 +218,21 @@ export function SearchDrawer({
         if (error instanceof DOMException && error.name === "AbortError") {
           return;
         }
-        setState((current) => ({
-          phase: "error",
-          page: retainedPage ?? current.page,
-          message:
-            error instanceof Error
-              ? error.message
-              : "Card search is temporarily unavailable.",
-        }));
+        setState((current) => {
+          const previousPage = retainedPage ?? current.page;
+          const failedDebug = error instanceof ApiError ? error.debug : null;
+          return {
+            phase: "error",
+            page:
+              previousPage && failedDebug
+                ? { ...previousPage, debug: failedDebug }
+                : previousPage,
+            message:
+              error instanceof Error
+                ? error.message
+                : "Card search is temporarily unavailable.",
+          };
+        });
       }
     },
     [client],
@@ -666,7 +673,14 @@ export function SearchDrawer({
             ) : null}
 
             {state.phase === "error" && cards.length === 0 ? (
-              <div className="search-state search-state--error" role="alert">
+              <div
+                className={[
+                  "search-state",
+                  "search-state--error",
+                  state.page?.debug ? "search-state--with-trace" : "",
+                ].join(" ")}
+                role="alert"
+              >
                 <AlertCircle aria-hidden="true" size={26} />
                 <h3>Search could not finish</h3>
                 <p>{state.message}</p>

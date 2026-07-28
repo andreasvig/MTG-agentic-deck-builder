@@ -7,6 +7,7 @@ import {
 } from "@playwright/test";
 
 import {
+  failedAgentSearchDebugSummary,
   gamble,
   ghalta,
   llanowarElves,
@@ -439,6 +440,66 @@ test("search communicates empty and provider-recovery states", async ({
   await expect(
     page.getByRole("button", { name: "Add Sol Ring to deck" }),
   ).toBeVisible();
+});
+
+test("failed agentic search keeps the trace open at the broken step", async ({
+  page,
+}, testInfo) => {
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await page.addInitScript(() => {
+    window.localStorage.setItem("manabase.search-debug", "true");
+  });
+  await page.route(SEARCH_ROUTE, async (route) => {
+    const requestUrl = new URL(route.request().url());
+    if (requestUrl.pathname.endsWith("/search/agentic")) {
+      await fulfillJson(
+        route,
+        {
+          detail: {
+            code: "agentic_search_unavailable",
+            message: "Agentic card search is temporarily unavailable.",
+            debug: failedAgentSearchDebugSummary(),
+          },
+        },
+        503,
+      );
+      return;
+    }
+
+    const response = searchPage(
+      requestUrl.searchParams.get("q") ?? "",
+      [],
+    );
+    response.agentic_required = true;
+    response.interpretation =
+      "Confident title matches shown while agentic search continues";
+    await fulfillJson(route, response);
+  });
+
+  await page.goto("/");
+  await openSearch(page);
+  await page
+    .getByRole("textbox", { name: "Search cards" })
+    .fill("green big creature");
+
+  await expect(
+    page.getByRole("heading", { name: "Search could not finish" }),
+  ).toBeVisible();
+  await expect(
+    page.getByText("Agentic card search is temporarily unavailable."),
+  ).toBeVisible();
+  await expect(page.getByText("Search stopped here")).toBeVisible();
+  await expect(
+    page.getByText("OpenRouterError", { exact: true }),
+  ).toBeVisible();
+  await expect(page.getByText("The provider returned HTTP 429.")).toBeVisible();
+  await expect(
+    page.getByText("Tool call", { exact: true }),
+  ).toBeVisible();
+  await page.screenshot({
+    path: testInfo.outputPath("desktop-failed-agent-trace.png"),
+    fullPage: true,
+  });
 });
 
 test("search filters shape requests without crowding the results", async ({

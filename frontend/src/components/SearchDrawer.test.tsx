@@ -2,9 +2,10 @@ import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import type { ApiClient } from "../lib/api";
+import { ApiError, type ApiClient } from "../lib/api";
 import {
   cardSearchPage,
+  failedAgentSearchDebugSummary,
   ghalta,
   searchDebugSummary,
   solRing,
@@ -315,6 +316,49 @@ describe("card search dialog", () => {
     await waitFor(() =>
       expect(screen.queryByText("Agentic search loading")).not.toBeInTheDocument(),
     );
+  });
+
+  it("keeps and opens the failed agent trace beside the error", async () => {
+    window.localStorage.setItem("manabase.search-debug", "true");
+    const preview = cardSearchPage([], "green big creature");
+    preview.agentic_required = true;
+    const debug = failedAgentSearchDebugSummary();
+    const searchCardsAgentic = vi
+      .fn<NonNullable<ApiClient["searchCardsAgentic"]>>()
+      .mockRejectedValue(
+        new ApiError(
+          "Agentic card search is temporarily unavailable.",
+          503,
+          debug,
+        ),
+      );
+
+    render(
+      <SearchDrawer
+        initialQuery="green big creature"
+        entries={[]}
+        client={{
+          getHealth: vi.fn(),
+          searchCards: vi.fn().mockResolvedValue(preview),
+          searchCardsAgentic,
+        }}
+        onAdd={vi.fn()}
+        onSetQuantity={vi.fn()}
+        onClose={vi.fn()}
+      />,
+    );
+
+    expect(
+      await screen.findByText("Search could not finish"),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText("Agentic card search is temporarily unavailable."),
+    ).toBeInTheDocument();
+    expect(screen.getByText("Search stopped here")).toBeVisible();
+    expect(screen.getByText("OpenRouterError")).toBeVisible();
+    expect(screen.getByText("The provider returned HTTP 429.")).toBeVisible();
+    expect(screen.getAllByText("Not reached because an earlier agentic-search step failed."))
+      .toHaveLength(4);
   });
 
   it("hides fuzzy percentages outside debug mode", async () => {

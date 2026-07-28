@@ -6,7 +6,10 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from pydantic import BaseModel, ConfigDict
 
-from mtg_deck_builder.agentic_card_search import AgenticCardSearchService
+from mtg_deck_builder.agentic_card_search import (
+    AgenticCardSearchService,
+    AgenticCardSearchUnavailable,
+)
 from mtg_deck_builder.domain import (
     AgenticCardSearchRequest,
     CardSearchFilters,
@@ -14,6 +17,7 @@ from mtg_deck_builder.domain import (
     CardSearchQuery,
     ColorMatchMode,
     MagicColor,
+    SearchDebugSummary,
 )
 from mtg_deck_builder.providers import (
     CardSearchProvider,
@@ -31,6 +35,7 @@ class PublicError(BaseModel):
 
     code: str
     message: str
+    debug: SearchDebugSummary | None = None
 
 
 class PublicErrorResponse(BaseModel):
@@ -135,7 +140,7 @@ async def search_cards(
             detail=PublicError(
                 code="invalid_card_search",
                 message="The card title could not be searched.",
-            ).model_dump(),
+            ).model_dump(mode="json", exclude_none=True),
         ) from None
     except CardSearchUnavailable:
         raise HTTPException(
@@ -143,7 +148,7 @@ async def search_cards(
             detail=PublicError(
                 code="card_search_unavailable",
                 message="Card search is temporarily unavailable.",
-            ).model_dump(),
+            ).model_dump(mode="json", exclude_none=True),
         ) from None
 
 
@@ -176,7 +181,16 @@ async def search_cards_agentically(
             detail=PublicError(
                 code="invalid_agentic_search",
                 message="The agentic card search could not be completed.",
-            ).model_dump(),
+            ).model_dump(mode="json", exclude_none=True),
+        ) from None
+    except AgenticCardSearchUnavailable as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=PublicError(
+                code="agentic_search_unavailable",
+                message="Agentic card search is temporarily unavailable.",
+                debug=exc.debug,
+            ).model_dump(mode="json", exclude_none=True),
         ) from None
     except CardSearchUnavailable:
         raise HTTPException(
@@ -184,5 +198,5 @@ async def search_cards_agentically(
             detail=PublicError(
                 code="agentic_search_unavailable",
                 message="Agentic card search is temporarily unavailable.",
-            ).model_dump(),
+            ).model_dump(mode="json", exclude_none=True),
         ) from None

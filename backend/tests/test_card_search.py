@@ -3,8 +3,14 @@ from typing import Any
 import pytest
 from fastapi.testclient import TestClient
 
+from mtg_deck_builder.agentic_card_search import AgenticCardSearchUnavailable
 from mtg_deck_builder.api.cards import get_card_search_provider
-from mtg_deck_builder.domain import CardSearchFilters, CardSearchPage, CardSearchQuery
+from mtg_deck_builder.domain import (
+    CardSearchFilters,
+    CardSearchPage,
+    CardSearchQuery,
+    SearchDebugSummary,
+)
 from mtg_deck_builder.main import create_app
 from mtg_deck_builder.providers import (
     CardSearchQueryError,
@@ -184,6 +190,14 @@ class StubProvider:
         return self.outcome
 
 
+class FailingAgenticSearch:
+    def __init__(self, debug: SearchDebugSummary) -> None:
+        self.debug = debug
+
+    async def search(self, _request: object) -> CardSearchPage:
+        raise AgenticCardSearchUnavailable(self.debug)
+
+
 def make_client(provider: StubProvider) -> TestClient:
     app = create_app()
     app.dependency_overrides[get_card_search_provider] = lambda: provider
@@ -289,6 +303,31 @@ def test_search_endpoint_maps_provider_errors(
 
     assert response.status_code == expected_status
     assert response.json() == {"detail": expected_detail}
+
+
+def test_agentic_error_response_includes_the_failed_trace_in_debug_mode() -> None:
+    debug = SearchDebugSummary(
+        trace_id=SCRYFALL_ID,
+        log_path="local-data/search-debug.jsonl",
+        log_written=True,
+        total_duration_ms=12.5,
+        stages=[],
+        trace={"result": {"status": "error"}},
+    )
+    app = create_app()
+    with TestClient(app) as client:
+        client.app.state.agentic_card_search = FailingAgenticSearch(debug)
+        response = client.post(
+            "/api/v1/cards/search/agentic",
+            json={"q": "green big creatures", "debug": True},
+        )
+
+    assert response.status_code == 503
+    detail = response.json()["detail"]
+    assert detail["code"] == "agentic_search_unavailable"
+    assert detail["message"] == "Agentic card search is temporarily unavailable."
+    assert detail["debug"]["trace_id"] == SCRYFALL_ID
+    assert detail["debug"]["trace"]["result"]["status"] == "error"
 
 
 @pytest.mark.parametrize(

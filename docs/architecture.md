@@ -130,7 +130,9 @@ Scryfall-specific response objects must not cross this module boundary.
 
 Secret-safe async boundary for direct OpenRouter chat completions. Transport
 errors retain debug evidence without exposing credentials through public
-errors.
+errors. In debug mode, an agentic `503` carries the sanitized partial trace so
+the drawer can show completed, failed, and skipped steps instead of discarding
+the evidence.
 
 ### `card_catalog.py`
 

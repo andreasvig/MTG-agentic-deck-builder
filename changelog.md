@@ -6,6 +6,9 @@ All notable changes to this project will be documented in this file.
 
 ### Added
 
+- Preserved debug traces when agentic search fails: the error view now opens
+  the seven-step trace at the broken step, shows sanitized provider evidence,
+  and marks every unexecuted later step as skipped.
 - Enlarged search-result cards with bigger artwork, roomier content, and more
   readable confidence, price, and action controls across desktop and mobile.
 - Implemented ADR 0009 progressive one-tool agentic card search: confident

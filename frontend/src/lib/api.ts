@@ -1,6 +1,7 @@
 import type {
   CardSearchFilters,
   CardSearchPage,
+  SearchDebugSummary,
 } from "../domain/card";
 
 const DEFAULT_API_BASE_URL = "http://127.0.0.1:43127/api/v1";
@@ -15,6 +16,7 @@ export class ApiError extends Error {
   constructor(
     message: string,
     readonly status: number,
+    readonly debug: SearchDebugSummary | null = null,
   ) {
     super(message);
     this.name = "ApiError";
@@ -222,6 +224,7 @@ async function readCardSearchResponse(
 ): Promise<CardSearchPage> {
   if (!response.ok) {
     let message = "Card search is temporarily unavailable.";
+    let debug: SearchDebugSummary | null = null;
     try {
       const body: unknown = await response.json();
       if (
@@ -230,11 +233,14 @@ async function readCardSearchResponse(
         typeof body.detail.message === "string"
       ) {
         message = body.detail.message;
+        if (isSearchDebugSummary(body.detail.debug)) {
+          debug = body.detail.debug;
+        }
       }
     } catch {
       // Keep the stable fallback for non-JSON upstream failures.
     }
-    throw new ApiError(message, response.status);
+    throw new ApiError(message, response.status, debug);
   }
 
   const body: unknown = await response.json();
@@ -244,7 +250,7 @@ async function readCardSearchResponse(
   return body;
 }
 
-function isSearchDebugSummary(value: unknown): boolean {
+function isSearchDebugSummary(value: unknown): value is SearchDebugSummary {
   return (
     isRecord(value) &&
     typeof value.trace_id === "string" &&

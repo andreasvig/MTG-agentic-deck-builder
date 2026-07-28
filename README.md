@@ -174,6 +174,8 @@ The inline trace viewer exposes:
 - A chronological seven-step agent trace showing only system prompt, user input
   prompt, thinking, tool call, tool response, final thinking, and output
   response.
+- Failed agent runs keep that trace visible, open the broken step with
+  sanitized provider evidence, and mark later steps as skipped.
 - The exact compact tool message sent to the model alongside the untouched raw
   tool JSON.
 

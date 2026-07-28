@@ -2525,6 +2525,11 @@ select {
   border-left-color: #4d7c5b;
 }
 
+.search-debug-card--error {
+  background: #fff5f4;
+  border-left-color: var(--danger);
+}
+
 .search-debug-card > header {
   display: flex;
   min-height: 27px;
@@ -3241,6 +3246,10 @@ select {
 
 .search-state--error svg {
   color: var(--danger);
+}
+
+.search-state--with-trace {
+  min-height: 190px;
 }
 
 .search-state--error .secondary-button {

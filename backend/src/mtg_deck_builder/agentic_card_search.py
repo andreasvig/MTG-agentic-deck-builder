@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import json
 from collections import Counter
-from contextlib import suppress
 from dataclasses import dataclass
 from decimal import Decimal
 from time import monotonic, perf_counter
@@ -67,6 +66,14 @@ class ExecutedSearchTool:
     arguments: dict[str, Any]
     candidates: tuple[AgentSearchCandidate, ...]
     payload: dict[str, Any]
+
+
+class AgenticCardSearchUnavailable(CardSearchUnavailable):
+    """An agentic failure with an optional sanitized trace for debug clients."""
+
+    def __init__(self, debug: SearchDebugSummary | None = None) -> None:
+        super().__init__()
+        self.debug = debug
 
 
 @dataclass(frozen=True)
@@ -198,8 +205,6 @@ class AgenticCardSearchService:
             return await self._page_stored_search(request)
         if request.page != 1:
             raise CardSearchQueryError
-        if not self._settings.enabled or self._model_client is None:
-            raise CardSearchUnavailable
 
         preview = await self._fuzzy_provider.search(
             CardSearchQuery(
@@ -230,10 +235,10 @@ class AgenticCardSearchService:
             await self._persist_failed_trace(trace, exc, trace_enabled)
             raise
         except Exception as exc:
-            await self._persist_failed_trace(trace, exc, trace_enabled)
+            debug = await self._persist_failed_trace(trace, exc, trace_enabled)
             if isinstance(exc, CardSearchQueryError):
                 raise
-            raise CardSearchUnavailable from exc
+            raise AgenticCardSearchUnavailable(debug) from exc
 
         trace_record = trace.finish()
         log_written = False
@@ -284,7 +289,6 @@ class AgenticCardSearchService:
         preview: CardSearchPage,
         trace: AgentSearchTraceBuilder,
     ) -> _CompletedAgentRun:
-        assert self._model_client is not None
         tools = _tool_definitions()
         messages: list[dict[str, Any]] = [
             {
@@ -314,6 +318,8 @@ class AgenticCardSearchService:
             "provider": {"require_parameters": True},
         }
         trace.add_stage("initial_model_request", initial_payload)
+        if not self._settings.enabled or self._model_client is None:
+            raise CardSearchUnavailable
         started = perf_counter()
         initial_response = await self._model_client.chat_completion(initial_payload)
         trace.add_stage(
@@ -442,9 +448,9 @@ class AgenticCardSearchService:
         trace: AgentSearchTraceBuilder,
         error: BaseException,
         trace_enabled: bool,
-    ) -> None:
+    ) -> SearchDebugSummary | None:
         if not trace_enabled:
-            return
+            return None
         error_payload: dict[str, Any] = {"error_type": type(error).__name__}
         if isinstance(error, OpenRouterError):
             error_payload.update(
@@ -457,8 +463,17 @@ class AgenticCardSearchService:
             status="cancelled" if isinstance(error, asyncio.CancelledError) else "error",
             error=error_payload,
         )
-        with suppress(OSError):
+        log_written = False
+        try:
             await self._trace_logger.write(record)
+            log_written = True
+        except OSError:
+            pass
+        return _to_failed_search_debug_summary(
+            record,
+            log_path=self._trace_log_path,
+            log_written=log_written,
+        )
 
 
 @dataclass(frozen=True)
@@ -1129,6 +1144,197 @@ def _to_search_debug_summary(
     )
 
 
+def _to_failed_search_debug_summary(
+    trace: AgentSearchTraceRecord,
+    *,
+    log_path: str,
+    log_written: bool,
+) -> SearchDebugSummary:
+    """Project a partial internal run into the same seven visible trace steps."""
+
+    total_duration_ms = max(
+        (trace.completed_at - trace.started_at).total_seconds() * 1_000,
+        0,
+    )
+    stages = _failed_agent_trace_presentation_stages(trace)
+    failed_stage = next(
+        (str(stage["name"]) for stage in stages if stage["status"] == "error"),
+        "unknown",
+    )
+    record = {
+        "schema_version": trace.schema_version,
+        "trace_id": str(trace.trace_id),
+        "started_at": trace.started_at.isoformat(),
+        "completed_at": trace.completed_at.isoformat(),
+        "total_duration_ms": round(total_duration_ms, 3),
+        "request": trace.stages[0].payload,
+        "configuration": {"workflow": "one_tool_then_final", "model_calls": 2},
+        "decision": {
+            "strategy": "agentic",
+            "input_kind": "card_search_query",
+            "failed_stage": failed_stage,
+        },
+        "stages": stages,
+        "result": {
+            "status": trace.status,
+            "strategy": "agentic",
+            "failed_stage": failed_stage,
+            "error": trace.error or {},
+        },
+    }
+    return SearchDebugSummary(
+        trace_id=trace.trace_id,
+        log_path=log_path,
+        log_written=log_written,
+        total_duration_ms=round(total_duration_ms, 3),
+        stages=[
+            SearchDebugStage(
+                name=str(stage["name"]),
+                status=stage["status"],
+                duration_ms=float(stage["duration_ms"]),
+            )
+            for stage in stages
+        ],
+        trace=record,
+    )
+
+
+def _failed_agent_trace_presentation_stages(
+    trace: AgentSearchTraceRecord,
+) -> list[dict[str, Any]]:
+    """Show completed work, the exact failure point, and later skipped steps."""
+
+    by_name = {stage.name: stage for stage in trace.stages}
+    initial_request = by_name.get("initial_model_request")
+    initial_response = by_name.get("initial_model_response")
+    tool_call = by_name.get("tool_call")
+    tool_result = by_name.get("tool_result")
+    final_response = by_name.get("final_model_response")
+    validation = by_name.get("validation")
+    messages = (
+        initial_request.payload.get("messages")
+        if initial_request is not None
+        else None
+    )
+    model_messages = messages if isinstance(messages, list) else []
+    error_details = trace.error or {"error_type": "UnknownAgenticSearchError"}
+    failure_duration_ms = max(
+        (trace.completed_at - trace.started_at).total_seconds() * 1_000,
+        0,
+    )
+
+    if initial_request is None:
+        failed_index = 0
+    elif initial_response is None:
+        failed_index = 2
+    elif tool_call is None:
+        failed_index = 3
+    elif tool_result is None:
+        failed_index = 4
+    elif final_response is None:
+        failed_index = 5
+    elif validation is None:
+        failed_index = 6
+    else:
+        failed_index = 6
+
+    final_message = (
+        _trace_response_message(final_response.payload)
+        if final_response is not None
+        else {}
+    )
+    final_content = final_message.get("content")
+    stage_specs: list[tuple[str, dict[str, Any], float | None, bool]] = [
+        (
+            "system_prompt",
+            {"content": _message_content(model_messages, "system")},
+            None,
+            initial_request is not None,
+        ),
+        (
+            "user_input_prompt",
+            {"content": _message_content(model_messages, "user")},
+            None,
+            initial_request is not None,
+        ),
+        (
+            "thinking",
+            (
+                _thinking_trace_payload(
+                    initial_response.payload,
+                    phase="tool_selection",
+                )
+                if initial_response is not None
+                else {"phase": "tool_selection"}
+            ),
+            initial_response.duration_ms if initial_response is not None else None,
+            initial_response is not None,
+        ),
+        (
+            "tool_call",
+            tool_call.payload if tool_call is not None else {},
+            tool_call.duration_ms if tool_call is not None else None,
+            tool_call is not None,
+        ),
+        (
+            "tool_response",
+            tool_result.payload if tool_result is not None else {},
+            tool_result.duration_ms if tool_result is not None else None,
+            tool_result is not None,
+        ),
+        (
+            "thinking",
+            (
+                _thinking_trace_payload(
+                    final_response.payload,
+                    phase="final_ranking",
+                )
+                if final_response is not None
+                else {"phase": "final_ranking"}
+            ),
+            final_response.duration_ms if final_response is not None else None,
+            final_response is not None,
+        ),
+        (
+            "output_response",
+            {
+                "content": final_content if isinstance(final_content, str) else "",
+                "ranked_ids": (
+                    validation.payload.get("ranked_ids")
+                    if validation is not None
+                    else []
+                ),
+                "ranked_cards": [],
+            },
+            validation.duration_ms if validation is not None else None,
+            validation is not None,
+        ),
+    ]
+
+    stages: list[dict[str, Any]] = []
+    for index, (name, details, duration_ms, completed) in enumerate(stage_specs):
+        if completed:
+            status = "ok"
+        elif index == failed_index:
+            status = "error"
+            details = {**details, **error_details}
+            duration_ms = duration_ms or failure_duration_ms
+        else:
+            status = "skipped"
+            details = {
+                "reason": "Not reached because an earlier agentic-search step failed."
+            }
+        stages.append(
+            _presentation_stage(
+                name,
+                details,
+                duration_ms=duration_ms,
+                status=status,
+            )
+        )
+    return stages
+
+
 def _agent_trace_presentation_stages(
     trace: AgentSearchTraceRecord,
     *,
@@ -1205,10 +1411,11 @@ def _presentation_stage(
     details: dict[str, Any],
     *,
     duration_ms: float | None = None,
+    status: str = "ok",
 ) -> dict[str, Any]:
     return {
         "name": name,
-        "status": "ok",
+        "status": status,
         "duration_ms": duration_ms or 0,
         "details": details,
     }

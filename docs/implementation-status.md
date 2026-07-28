@@ -47,6 +47,8 @@ not the intended end state.
 - Fuzzy title scores in API results and logs.
 - Fuzzy alias, WRatio score, title confidence, and original catalog rank for
   each loaded-page card.
+- Failed agentic searches retain an auto-opened sanitized trace with the broken
+  step marked as an error and all later steps marked skipped.
 
 ### Deck Editor
 

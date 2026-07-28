@@ -68,6 +68,10 @@ fully observable in debug mode.
   exact simplified tool message sent to the model. Redact secrets. “Provider
   reasoning” means fields actually returned by the provider; hidden internal
   chain-of-thought is not available and must not be represented as captured.
+- When an agentic request fails in debug mode, return its sanitized partial
+  trace in the typed error response. Keep all seven visible steps, mark the
+  broken step as an error, mark later steps skipped, and open the failed step
+  automatically in the drawer.
 - Enable agentic execution only after model calls, progressive API behavior,
   tool execution, session pagination, and tests land. Keep semantic embeddings
   independently disabled until a real index is implemented.

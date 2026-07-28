@@ -4,8 +4,11 @@ from decimal import Decimal
 from pathlib import Path
 from uuid import UUID, uuid5
 
+import pytest
+
 from mtg_deck_builder.agentic_card_search import (
     AgenticCardSearchService,
+    AgenticCardSearchUnavailable,
     ExecutedSearchTool,
     LocalCardSearchTool,
     _normalize_tool_arguments,
@@ -23,6 +26,7 @@ from mtg_deck_builder.domain import (
     LocalCardSearchRequest,
     ManaSearch,
 )
+from mtg_deck_builder.providers.openrouter import OpenRouterError
 
 _UUID_NAMESPACE = UUID("f3c7af78-93ea-4d1b-8873-0eac5b4f6c5f")
 
@@ -323,6 +327,105 @@ class StubModelClient:
     ) -> dict[str, object]:
         self.payloads.append(payload)
         return self._responses.pop(0)
+
+
+class FailingModelClient:
+    async def chat_completion(
+        self,
+        _payload: dict[str, object],
+    ) -> dict[str, object]:
+        raise OpenRouterError(
+            "OpenRouter returned HTTP 429",
+            status_code=429,
+            response_body={"error": {"message": "Rate limit exceeded"}},
+        )
+
+
+def test_agent_failure_returns_the_partial_sanitized_debug_trace(
+    tmp_path: Path,
+) -> None:
+    trace_path = tmp_path / "search.jsonl"
+    service = AgenticCardSearchService(
+        fuzzy_provider=StubFuzzyProvider(),  # type: ignore[arg-type]
+        local_tool=StubTool([GHALTA]),  # type: ignore[arg-type]
+        model_client=FailingModelClient(),  # type: ignore[arg-type]
+        settings=AgenticSearchSettings(enabled=True),
+        page_size=6,
+        trace_logger=JsonlAgentSearchTraceLogger(trace_path),
+        trace_log_path=str(trace_path),
+        debug_default_enabled=False,
+    )
+
+    with pytest.raises(AgenticCardSearchUnavailable) as raised:
+        asyncio.run(
+            service.search(
+                AgenticCardSearchRequest(
+                    q="green big creature",
+                    debug=True,
+                )
+            )
+        )
+
+    debug = raised.value.debug
+    assert debug is not None
+    assert [stage.status for stage in debug.stages] == [
+        "ok",
+        "ok",
+        "error",
+        "skipped",
+        "skipped",
+        "skipped",
+        "skipped",
+    ]
+    assert debug.trace["decision"]["failed_stage"] == "thinking"
+    failed_details = debug.trace["stages"][2]["details"]
+    assert failed_details["error_type"] == "OpenRouterError"
+    assert failed_details["status_code"] == 429
+    assert failed_details["provider_response"] == {
+        "error": {"message": "Rate limit exceeded"}
+    }
+    assert debug.trace["result"]["status"] == "error"
+    assert debug.log_written is True
+    assert '"status":"error"' in trace_path.read_text(encoding="utf-8")
+
+
+def test_unconfigured_agent_still_returns_system_and_user_trace_steps(
+    tmp_path: Path,
+) -> None:
+    trace_path = tmp_path / "search.jsonl"
+    service = AgenticCardSearchService(
+        fuzzy_provider=StubFuzzyProvider(),  # type: ignore[arg-type]
+        local_tool=StubTool([GHALTA]),  # type: ignore[arg-type]
+        model_client=None,
+        settings=AgenticSearchSettings(enabled=True),
+        page_size=6,
+        trace_logger=JsonlAgentSearchTraceLogger(trace_path),
+        trace_log_path=str(trace_path),
+        debug_default_enabled=False,
+    )
+
+    with pytest.raises(AgenticCardSearchUnavailable) as raised:
+        asyncio.run(
+            service.search(
+                AgenticCardSearchRequest(
+                    q="green big creature",
+                    debug=True,
+                )
+            )
+        )
+
+    debug = raised.value.debug
+    assert debug is not None
+    assert [stage.status for stage in debug.stages[:3]] == ["ok", "ok", "error"]
+    assert debug.trace["stages"][2]["details"]["error_type"] == (
+        "CardSearchUnavailable"
+    )
+    assert "Magic: The Gathering card-search agent" in (
+        debug.trace["stages"][0]["details"]["content"]
+    )
+    assert '"green big creature"' in (
+        debug.trace["stages"][1]["details"]["content"]
+    )
 
 
 def test_agent_runs_one_tool_then_reuses_the_ranked_session(

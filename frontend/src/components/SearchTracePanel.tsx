@@ -103,9 +103,10 @@ export function SearchTracePanel({ debug }: SearchTracePanelProps) {
   const inputKind = textValue(trace.decision.input_kind);
   const query = textValue(trace.request.query);
   const isAgentic = strategy === "agentic";
+  const hasFailed = trace.stages.some((stage) => stage.status === "error");
 
   return (
-    <details className="search-debug">
+    <details className="search-debug" open={hasFailed ? true : undefined}>
       <summary>
         <Bug aria-hidden="true" size={14} />
         <span>Search trace</span>
@@ -183,6 +184,7 @@ function TraceStage({
         `search-debug-layer--${stage.status}`,
         `search-debug-layer--${presentation.tone}`,
       ].join(" ")}
+      open={stage.status === "error" ? true : undefined}
     >
       <summary>
         <span className="search-debug-layer__number">{index + 1}</span>
@@ -205,6 +207,9 @@ function TraceStage({
 }
 
 function TraceStageContent({ stage }: { stage: SearchDebugTraceStage }) {
+  if (stage.status !== "ok") {
+    return <InterruptedStage stage={stage} />;
+  }
   if (
     stage.name === "system_prompt" ||
     stage.name === "user_input_prompt"
@@ -250,6 +255,48 @@ function TraceStageContent({ stage }: { stage: SearchDebugTraceStage }) {
     return <ValidationResult details={stage.details} />;
   }
   return <FuzzyStage stage={stage} />;
+}
+
+function InterruptedStage({ stage }: { stage: SearchDebugTraceStage }) {
+  const details = stage.details;
+  if (stage.status === "skipped") {
+    return (
+      <section className="search-debug-card search-debug-card--validation">
+        <p>
+          {textValue(details?.reason) ??
+            "This step was not reached because an earlier step failed."}
+        </p>
+      </section>
+    );
+  }
+
+  const errorType = textValue(details?.error_type) ?? "Agentic search error";
+  const statusCode = numberValue(details?.status_code);
+  const providerResponse = details?.provider_response;
+
+  return (
+    <section className="search-debug-card search-debug-card--error">
+      <header>
+        <strong>Search stopped here</strong>
+        <span>{errorType}</span>
+      </header>
+      <p>
+        {statusCode !== null
+          ? `The provider returned HTTP ${statusCode}.`
+          : "This step failed before the agent could continue."}
+      </p>
+      {providerResponse !== null && providerResponse !== undefined ? (
+        <details className="search-debug-nested search-debug-nested--raw" open>
+          <summary>
+            Provider error response
+            <span>sanitized trace payload</span>
+          </summary>
+          <pre>{JSON.stringify(providerResponse, null, 2)}</pre>
+        </details>
+      ) : null}
+      <StageRawPayload details={details} />
+    </section>
+  );
 }
 
 function PromptContent({
