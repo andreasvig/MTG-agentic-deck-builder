@@ -791,8 +791,8 @@ def _normalize_tool_arguments(
 
     oracle_text = normalized.get("oracle_text")
     if isinstance(oracle_text, str):
-        normalized["oracle_text"] = {"semantic_query": oracle_text}
-        changes.append("oracle_text string -> oracle_text.semantic_query")
+        normalized["oracle_text"] = {"must_contain_any": [oracle_text]}
+        changes.append("oracle_text string -> oracle_text.must_contain_any")
 
     colors = normalized.get("colors")
     if isinstance(colors, str):

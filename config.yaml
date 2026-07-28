@@ -56,6 +56,10 @@ search:
       conditions and structured name, mana, type, color, power, toughness,
       price, format, set, and rarity filters. For descriptions such as "big",
       "large", or "high power", use a local numeric power range.
+      Use the wording that appears on Magic cards for exact Oracle-text
+      conditions: for example, map "untapping" to "untap". "Untapping elves"
+      means an Elf type condition plus an Oracle-text "untap" condition, while
+      "cards that untap elves" means both "untap" and "Elf" in Oracle text.
 
       Use canonical Magic symbols in exact conditions. Preserve braces. Use
       "{T}" for tap costs, "{Q}" for untap costs, and "{X}" in mana filters for

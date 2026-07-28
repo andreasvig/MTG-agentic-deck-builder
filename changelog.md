@@ -6,6 +6,9 @@ All notable changes to this project will be documented in this file.
 
 ### Added
 
+- Fixed provider shorthand such as `{"types":"Elf","oracle_text":"untap"}` so
+  exact Oracle-text requests run locally instead of being misclassified as
+  disabled semantic search.
 - Preserved debug traces when agentic search fails: the error view now opens
   the seven-step trace at the broken step, shows sanitized provider evidence,
   and marks every unexecuted later step as skipped.

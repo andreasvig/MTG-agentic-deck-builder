@@ -162,6 +162,12 @@ Those preview IDs are reserved at the front of the candidate union. The local
 tool cannot overwrite them: a new card receives the next available ID, while
 the same `oracle_id` reuses the existing preview ID.
 
+The tool schema requires nested exact conditions. A narrow provider-boundary
+compatibility layer repairs obvious string shorthand before strict validation:
+for example, `types: "Elf"` becomes a required Elf type and
+`oracle_text: "untap"` becomes an exact Oracle-text alternative. It never
+promotes shorthand into semantic search while embeddings are disabled.
+
 The local catalog path is configured separately:
 
 ```dotenv

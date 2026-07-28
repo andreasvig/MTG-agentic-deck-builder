@@ -167,6 +167,7 @@ def test_provider_shorthand_is_normalized_before_strict_validation() -> None:
         {
             "name": "Ghalta",
             "types": "Creature",
+            "oracle_text": "untap",
             "colors": "green",
             "power": "5",
         },
@@ -175,12 +176,14 @@ def test_provider_shorthand_is_normalized_before_strict_validation() -> None:
     assert normalized == {
         "name": {"query": "Ghalta"},
         "types": {"must_contain_all": ["Creature"]},
+        "oracle_text": {"must_contain_any": ["untap"]},
         "colors": {"identity": ["G"]},
         "power": {"minimum": 5.0},
     }
     assert changes == [
         "name string -> name.query",
         "types string -> types.must_contain_all",
+        "oracle_text string -> oracle_text.must_contain_any",
         "colors string -> colors.identity",
         "power numeric string -> power.minimum",
     ]
