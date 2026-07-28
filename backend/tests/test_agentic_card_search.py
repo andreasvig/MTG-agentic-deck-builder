@@ -27,6 +27,7 @@ from mtg_deck_builder.domain import (
     ManaSearch,
 )
 from mtg_deck_builder.providers.openrouter import OpenRouterError
+from mtg_deck_builder.semantic_index import SemanticScoreResult
 
 _UUID_NAMESPACE = UUID("f3c7af78-93ea-4d1b-8873-0eac5b4f6c5f")
 
@@ -129,12 +130,29 @@ class StubCatalog:
         return self._entries
 
 
+class StubSemanticIndex:
+    def __init__(self, scores: dict[UUID, float]) -> None:
+        self.scores = scores
+        self.queries: list[str] = []
+
+    async def score(
+        self,
+        query: str,
+        oracle_ids: list[UUID],
+    ) -> SemanticScoreResult:
+        self.queries.append(query)
+        return SemanticScoreResult(
+            scores={oracle_id: self.scores[oracle_id] for oracle_id in oracle_ids},
+            model="test-semantic-model",
+            dimensions=3,
+        )
+
+
 def test_local_tool_treats_duplicate_mana_symbols_as_a_multiset() -> None:
     tool = LocalCardSearchTool(  # type: ignore[arg-type]
         StubCatalog([STONECOIL, HANGARBACK]),
         default_max_results=10,
         hard_max_results=60,
-        semantic_enabled=False,
     )
 
     result = asyncio.run(
@@ -152,7 +170,6 @@ def test_local_tool_filters_numeric_power_and_toughness() -> None:
         StubCatalog([HANGARBACK, GHALTA, GIGANTOSAURUS]),
         default_max_results=10,
         hard_max_results=60,
-        semantic_enabled=False,
     )
 
     result = asyncio.run(
@@ -175,7 +192,6 @@ def test_local_tool_excludes_previously_considered_oracle_cards() -> None:
         StubCatalog([GHALTA, GIGANTOSAURUS]),
         default_max_results=10,
         hard_max_results=60,
-        semantic_enabled=False,
     )
 
     result = asyncio.run(
@@ -186,10 +202,72 @@ def test_local_tool_excludes_previously_considered_oracle_cards() -> None:
         )
     )
 
-    assert [candidate.card.name for candidate in result.candidates] == [
-        "Gigantosaurus"
-    ]
+    assert [candidate.card.name for candidate in result.candidates] == ["Gigantosaurus"]
     assert result.payload["compiled_query"]["excluded_oracle_card_count"] == 1
+
+
+def test_local_tool_filters_first_then_semantically_sorts_without_a_cutoff() -> None:
+    semantic_index = StubSemanticIndex(
+        {
+            GHALTA.oracle_id: 0.71,
+            GIGANTOSAURUS.oracle_id: 0.93,
+            HANGARBACK.oracle_id: 0.99,
+        }
+    )
+    tool = LocalCardSearchTool(  # type: ignore[arg-type]
+        StubCatalog([HANGARBACK, GHALTA, GIGANTOSAURUS]),
+        default_max_results=10,
+        hard_max_results=60,
+        semantic_index=semantic_index,  # type: ignore[arg-type]
+    )
+
+    result = asyncio.run(
+        tool.search(
+            LocalCardSearchRequest(
+                semantic_sort="large green creature threats",
+                colors={"identity": ["G"]},  # type: ignore[arg-type]
+                types={"must_contain_all": ["Creature"]},  # type: ignore[arg-type]
+            ),
+            immutable_filters=CardSearchFilters(),
+        )
+    )
+
+    assert [candidate.card.name for candidate in result.candidates] == [
+        "Gigantosaurus",
+        "Ghalta, Primal Hunger",
+    ]
+    assert [candidate.semantic_score for candidate in result.candidates] == [
+        0.93,
+        0.71,
+    ]
+    assert result.payload["total_candidates"] == 2
+    assert semantic_index.queries == ["large green creature threats"]
+    assert result.payload["compiled_query"]["semantic_sort"] == {
+        "mode": "cosine",
+        "model": "test-semantic-model",
+        "dimensions": 3,
+        "query": "large green creature threats",
+        "score_scale": "normalized_cosine_0_to_1",
+        "minimum_score": None,
+        "scored_candidates": 2,
+    }
+
+
+def test_local_name_query_is_a_filter_instead_of_a_second_sort() -> None:
+    tool = LocalCardSearchTool(  # type: ignore[arg-type]
+        StubCatalog([GHALTA, GIGANTOSAURUS]),
+        default_max_results=10,
+        hard_max_results=60,
+    )
+
+    result = asyncio.run(
+        tool.search(
+            LocalCardSearchRequest(name={"query": "Ghalta"}),  # type: ignore[arg-type]
+            immutable_filters=CardSearchFilters(),
+        )
+    )
+
+    assert [candidate.card.name for candidate in result.candidates] == ["Ghalta, Primal Hunger"]
 
 
 def test_provider_shorthand_is_normalized_before_strict_validation() -> None:
@@ -253,6 +331,7 @@ class StubTool:
         self.calls = 0
         self._candidates = candidates
         self.exclusions: list[frozenset[UUID]] = []
+        self.requests: list[LocalCardSearchRequest] = []
 
     async def search(
         self,
@@ -263,6 +342,8 @@ class StubTool:
     ) -> ExecutedSearchTool:
         self.calls += 1
         self.exclusions.append(excluded_oracle_ids)
+        assert isinstance(request, LocalCardSearchRequest)
+        self.requests.append(request)
         candidates = tuple(
             AgentSearchCandidate(
                 card=card,
@@ -330,9 +411,7 @@ class RoundStubTool(StubTool):
                     "engine": "local_sqlite_catalog",
                     "result_limit": 24,
                 },
-                "candidates": [
-                    candidate.model_dump(mode="json") for candidate in candidates
-                ],
+                "candidates": [candidate.model_dump(mode="json") for candidate in candidates],
             },
         )
 
@@ -362,9 +441,7 @@ class SequentialModelClient:
                                     "type": "function",
                                     "function": {
                                         "name": "search_local_cards",
-                                        "arguments": json.dumps(
-                                            {"power": {"minimum": 4}}
-                                        ),
+                                        "arguments": json.dumps({"power": {"minimum": 4}}),
                                     },
                                 }
                             ],
@@ -520,9 +597,7 @@ def test_agent_failure_returns_the_partial_sanitized_debug_trace(
     failed_details = debug.trace["stages"][2]["details"]
     assert failed_details["error_type"] == "OpenRouterError"
     assert failed_details["status_code"] == 429
-    assert failed_details["provider_response"] == {
-        "error": {"message": "Rate limit exceeded"}
-    }
+    assert failed_details["provider_response"] == {"error": {"message": "Rate limit exceeded"}}
     assert debug.trace["result"]["status"] == "error"
     assert debug.log_written is True
     assert '"status":"error"' in trace_path.read_text(encoding="utf-8")
@@ -556,15 +631,11 @@ def test_unconfigured_agent_still_returns_system_and_user_trace_steps(
     debug = raised.value.debug
     assert debug is not None
     assert [stage.status for stage in debug.stages[:3]] == ["ok", "ok", "error"]
-    assert debug.trace["stages"][2]["details"]["error_type"] == (
-        "CardSearchUnavailable"
+    assert debug.trace["stages"][2]["details"]["error_type"] == ("CardSearchUnavailable")
+    assert (
+        "Magic: The Gathering card-search agent" in (debug.trace["stages"][0]["details"]["content"])
     )
-    assert "Magic: The Gathering card-search agent" in (
-        debug.trace["stages"][0]["details"]["content"]
-    )
-    assert '"green big creature"' in (
-        debug.trace["stages"][1]["details"]["content"]
-    )
+    assert '"green big creature"' in (debug.trace["stages"][1]["details"]["content"])
 
 
 def test_agent_runs_one_tool_then_reuses_the_ranked_session(
@@ -599,6 +670,7 @@ def test_agent_runs_one_tool_then_reuses_the_ranked_session(
     assert first.has_more is True
     assert first.search_session_id is not None
     assert local_tool.calls == 1
+    assert local_tool.requests[0].semantic_sort == "green big creature"
     assert len(model.payloads) == 2
     assert model.payloads[0]["tool_choice"] == "required"
     assert len(model.payloads[0]["tools"]) == 1
@@ -734,9 +806,7 @@ def test_empty_continuation_is_successful_and_can_be_retried(
         debug_default_enabled=False,
     )
 
-    first = asyncio.run(
-        service.search(AgenticCardSearchRequest(q="green big creature"))
-    )
+    first = asyncio.run(service.search(AgenticCardSearchRequest(q="green big creature")))
     assert first.search_session_id is not None
     empty = asyncio.run(
         service.search(
@@ -782,9 +852,7 @@ def test_empty_initial_result_can_start_a_continuation(
         debug_default_enabled=False,
     )
 
-    first = asyncio.run(
-        service.search(AgenticCardSearchRequest(q="green big creature"))
-    )
+    first = asyncio.run(service.search(AgenticCardSearchRequest(q="green big creature")))
     assert first.cards == []
     assert first.search_session_id is not None
 

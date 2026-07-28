@@ -1,3 +1,5 @@
+import json
+
 from fastapi.testclient import TestClient
 from pytest import MonkeyPatch
 
@@ -73,12 +75,26 @@ def test_settings_load_repository_search_yaml() -> None:
 
     assert settings.search.title_match.page_size == 6
     assert settings.search.title_match.preview_min_confidence == 0.75
-    assert settings.search.semantic.enabled is False
+    assert settings.search.semantic_sort.model == "BAAI/bge-small-en-v1.5"
+    assert str(settings.search.semantic_sort.index_path) == ("local-data/card-semantic.sqlite3")
+    assert settings.search.semantic_sort.threads == 4
     assert settings.search.agentic.enabled is True
     assert settings.search.agentic.max_tool_calls == 1
     assert settings.search.agentic.local_tool.default_max_results == 24
     assert "{T}" in settings.search.agentic.system_prompt
     assert '["{X}", "{X}"]' in settings.search.agentic.system_prompt
+    assert "semantic_sort is the only non-filtering field" in (
+        settings.search.agentic.system_prompt
+    )
+    assert '"grave yard things that give me value"' in (settings.search.agentic.system_prompt)
+    prompt_lines = settings.search.agentic.system_prompt.splitlines()
+    example_payloads = [
+        json.loads(prompt_lines[index + 1])
+        for index, line in enumerate(prompt_lines)
+        if line == "Tool:"
+    ]
+    assert len(example_payloads) == 5
+    assert all("semantic_sort" in payload for payload in example_payloads)
 
 
 def test_settings_accept_standard_openrouter_key_name(

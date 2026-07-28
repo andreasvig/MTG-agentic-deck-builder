@@ -25,12 +25,14 @@ FastAPI (127.0.0.1:43127/api/v1)
   | - debug tracing
   |
   +--> local-data/cards.sqlite3
+  +--> local-data/card-semantic.sqlite3
   |
   | when fewer than six titles clear preview confidence
   v
 AgenticCardSearchService
   |-- OpenRouter initial tool selection
   |-- exactly one structured local-catalog tool call
+  |     `-- hard filters -> local semantic sort -> candidate limit
   |-- OpenRouter structured relevant-subset ranking
   `-- in-memory ranked batches and user-triggered Load more continuations
   |
@@ -39,6 +41,7 @@ AgenticCardSearchService
 Explicit refresh:
 
 Scryfall default_cards -> streaming importer -> atomic cards.sqlite3 swap
+cards.sqlite3 -> FastEmbed ONNX model -> atomic semantic sidecar swap
 ```
 
 The backend does not currently persist decks. The frontend does not call a
@@ -58,10 +61,11 @@ The runner:
 6. Injects the resolved API base URL into Vite.
 7. Forwards termination and stops both children.
 
-Uvicorn's FastAPI lifespan creates one shared `SQLiteCardCatalog`, the fuzzy
-provider, one local agent search tool, an optional secret-backed OpenRouter
-client, the agentic service/session store, and JSONL trace writers. Only the
-separate `catalog:sync` command performs Scryfall bulk network access.
+Uvicorn's FastAPI lifespan creates one shared `SQLiteCardCatalog`, its
+`SemanticCardIndex`, the fuzzy provider, one local agent search tool, an
+optional secret-backed OpenRouter client, the agentic service/session store,
+and JSONL trace writers. Only the separate `catalog:sync` command performs
+Scryfall bulk network access.
 
 ## Backend Modules
 
@@ -86,10 +90,10 @@ and reflected in the frontend runtime validator.
 
 Strict contracts for the active progressive agentic-search phase:
 all-optional local tool fields, exact Oracle-text conditions, merged mana
-filters, a reserved disabled semantic field, candidate evidence, final ranked
-IDs, and the versioned internal audit trace. The public debug summary projects
-it into the seven valuable agent steps. `AgenticCardSearchRequest` and the
-additional page metadata form the public progressive HTTP contract.
+filters, top-level non-filtering `semantic_sort`, candidate evidence, final
+ranked IDs, and the versioned internal audit trace. The public debug summary
+projects it into the seven valuable agent steps. `AgenticCardSearchRequest` and
+the additional page metadata form the public progressive HTTP contract.
 
 ### `domain/deck.py`
 
@@ -175,6 +179,12 @@ and user-triggered session expansion.
 
 Builds and validates complete agent traces, recursively redacts secrets, and
 writes untruncated schema-version-2 records as JSONL.
+
+### `semantic_index.py`
+
+Renders stable gameplay documents, lazily loads the local FastEmbed ONNX model,
+atomically builds the catalog-coupled vector sidecar, embeds each intent, and
+cosine-scores every hard-filtered candidate without a minimum threshold.
 
 ## Frontend Modules
 
@@ -297,6 +307,8 @@ Changing only one layer causes either server validation failures or frontend
 
 - Missing, incompatible, or unreadable local catalog becomes HTTP 503 with
   `card_search_unavailable`.
+- A missing, stale, or dimension-incompatible semantic sidecar becomes an
+  agentic HTTP 503; fuzzy title search remains usable.
 - Invalid min/max pairs become HTTP 422.
 - An empty catalog or page beyond its end returns an empty successful page.
 - Disabled/full `localStorage` does not make the active deck unusable; current

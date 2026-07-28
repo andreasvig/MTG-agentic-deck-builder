@@ -46,11 +46,12 @@ durable technical decisions.
 - Exactly one `search_local_cards` tool call per agent round.
 - Cached agent-ranked pages followed by explicit user-triggered continuation
   rounds that exclude cards already shown or examined.
+- Always-on local semantic sorting after structured filters, with no similarity
+  cutoff.
 - Seven-step debug traces plus complete secret-redacted JSONL diagnostics.
 
 Normal search does not query Scryfall. Scryfall is used for explicit catalog
-refreshes and remote card images. Embedding-backed semantic search is not
-implemented; the semantic tool field remains disabled.
+refreshes and remote card images.
 
 ## Target Architecture
 
@@ -63,6 +64,7 @@ React UI
 FastAPI
   |- local SQLite card catalog
   |- fuzzy title search
+  |- local semantic vector sidecar
   `- one-tool OpenRouter search agent
 
 Next:
@@ -117,11 +119,8 @@ deck assistant to a particular orchestration framework.
 
 - Build a representative query evaluation set before changing the 75% routing
   boundary.
-- Consider embeddings only if the one-tool local search cannot provide enough
-  semantic recall.
-- If adopted, keep semantic ranking inside `search_local_cards`, after hard
-  local filters, and document the model, index lifecycle, and evaluation
-  results.
+- Evaluate semantic-sort quality and tune the embedding document or model only
+  against measured queries.
 - Add a trace retention and size policy.
 - Schedule catalog refreshes only when the local workflow needs automation.
 
@@ -141,4 +140,4 @@ deck assistant to a particular orchestration framework.
 - Whether price history provides enough value to add another data provider.
 - How to handle a confirmed assistant patch when the deck changed after the
   proposal was created.
-- Whether semantic embeddings measurably improve search after evaluation.
+- Which evaluation cases should govern future semantic-model changes.

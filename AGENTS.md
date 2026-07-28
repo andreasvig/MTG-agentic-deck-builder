@@ -28,8 +28,9 @@ the documentation in the same change when drift is found.
   natural-language requests continue through the one-tool OpenRouter search
   agent.
 - RapidFuzz `WRatio` handles exact titles, typos, words, and partial segments.
-- `config.yaml` owns the six-card page size, 75% preview boundary, agent model,
-  one-tool prompt, and continuation values.
+- `config.yaml` owns the six-card page size, 75% preview boundary, local
+  semantic model/index values, agent model, one-tool prompt, and continuation
+  values.
 - Deck libraries are currently browser-local and persisted in `localStorage`.
 - There is no deck CRUD API or SQLite persistence yet.
 - Progressive card-search agent execution is shipped. The separate deck chat
@@ -115,9 +116,9 @@ Do not mutate deck state directly inside presentation components. Extend
 - Serve cached agent-ranked batches before running another model call. After
   exhaustion, one explicit **Load more** click authorizes one continuation
   round with all visible cards excluded.
-- Keep semantic retrieval disabled until a real embedding model, index, and
-  evaluation exist. Exact Oracle-text and structured local conditions remain
-  available.
+- Treat every local-tool field except `semantic_sort` as a hard filter.
+  `semantic_sort` must run after filters, must never discard by score, and must
+  use the catalog-coupled local embedding sidecar.
 - Normal search must not call Scryfall; refresh the derived SQLite catalog from
   `default_cards` through the explicit sync command.
 - Expose every returned score through `name_match_scores`.
@@ -129,7 +130,7 @@ Do not mutate deck state directly inside presentation components. Extend
   complete redacted raw evidence belongs in JSONL.
 - Do not restore direct Scryfall-syntax routing, live agent Scryfall queries, or
   the superseded layered embedding/reranker pipeline without a new product
-  decision and ADR.
+  decision and ADR. Semantic sorting belongs inside the one local tool.
 
 When the `CardSearchPage` contract changes, update all of:
 

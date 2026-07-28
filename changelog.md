@@ -31,6 +31,14 @@ All notable changes to this project are documented here.
   previews remain visible, the model calls exactly one structured
   `search_local_cards` tool, then returns a validated relevant subset of local
   numeric candidate IDs.
+- Added an always-on local FastEmbed sidecar using
+  `BAAI/bge-small-en-v1.5`. Structured conditions filter first; `semantic_sort`
+  cosine-orders every survivor without a minimum score before the result limit.
+- Made `catalog:sync` atomically maintain both the Scryfall-derived catalog and
+  its model/field/catalog-versioned semantic vectors.
+- Expanded the tool schema and system prompt with explicit filter-versus-sort
+  semantics, conservative intent recovery, canonical Magic wording, and
+  worked examples for imperfect natural-language and misspelled queries.
 - Added local agent-tool conditions for name, Oracle text, mana symbols, types,
   colors, power/toughness, price, format legality, sets, and rarities.
 - Added multiset exact matching so duplicate symbols such as `["{X}", "{X}"]`

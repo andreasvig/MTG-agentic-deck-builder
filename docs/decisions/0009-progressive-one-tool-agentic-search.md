@@ -4,6 +4,11 @@
 - Date: 2026-07-27
 - Augments: ADR 0008
 
+Implementation note: ADR 0010 replaces this record's reserved
+`oracle_text.semantic_query` and disabled-capability behavior with always-on
+top-level `semantic_sort`. The one-tool and filter-before-sort boundaries remain
+active.
+
 ## Context
 
 The local threshold-free title matcher has excellent recall for exact names,

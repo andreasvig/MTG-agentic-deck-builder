@@ -22,6 +22,8 @@ not the intended end state.
 - Local SQLite catalog synchronized from Scryfall `default_cards`.
 - Streaming, timestamp-aware, atomic bulk import with every paper printing and
   one representative result per Oracle card.
+- Atomic semantic sidecar synchronized with the exact catalog, using local
+  `BAAI/bge-small-en-v1.5` ONNX embeddings over gameplay card text.
 - One fuzzy title path for exact names, typos, words, and partial segments.
 - Local full-title, face, and before-comma aliases.
 - RapidFuzz `WRatio` scores normalized to `0..1`.
@@ -137,11 +139,12 @@ Implemented:
 - Accepted one-tool progressive-search decision in ADR 0009.
 - Stricter substring-or-whole-string preview confidence with a configurable
   75% phase boundary returned per card and recorded in current fuzzy traces.
-- Validated YAML settings and system prompt for agentic search, with semantic
-  retrieval explicitly disabled.
+- Validated YAML settings and a detailed agent prompt explaining filter versus
+  sort behavior, intent recovery, canonical symbols, and imperfect-query
+  examples.
 - Strict all-optional `search_local_cards` input with merged mana fields,
   exact Oracle-text conditions, structured filters, bounded candidate counts,
-  and a reserved disabled semantic field.
+  and top-level semantic sorting.
 - Multiset `must_contain_all` semantics for duplicate symbols such as two
   `{X}` values.
 - Strict final interpretation/ranked-ID output using temporary integers,
@@ -151,6 +154,9 @@ Implemented:
   untruncated JSONL persistence contracts.
 - Local exact-condition and numeric power/toughness tool execution against the
   complete derived catalog.
+- Filter-before-sort semantic execution with no score cutoff, per-candidate
+  cosine evidence, and automatic fallback to the original user intent when the
+  model omits `semantic_sort`.
 - A single agent-visible local search tool; live Scryfall query generation is
   not exposed to the model.
 - Direct OpenRouter two-call orchestration with exactly one intervening tool
@@ -170,13 +176,11 @@ Implemented:
 
 Missing:
 
-- Embedding model, semantic index, and embedding-backed ranking inside the
-  local tool.
 - Trace retention and size policy.
 
-`search.agentic.enabled` is `true`. `search.semantic.enabled` remains `false`;
-semantic-query tool requests are rejected rather than pretending lexical
-matching is an embedding result.
+`search.agentic.enabled` is `true`. Semantic sorting has no enabled flag; a
+missing or stale sidecar is an explicit unavailable state fixed by
+`npm run catalog:sync`.
 
 ## Planned, Not Implemented
 

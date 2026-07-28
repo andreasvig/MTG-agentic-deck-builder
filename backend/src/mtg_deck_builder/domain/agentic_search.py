@@ -60,28 +60,52 @@ class AgentSearchModel(BaseModel):
 class TextConditions(AgentSearchModel):
     """Exact text conditions with multiset semantics for duplicate values."""
 
-    must_contain_all: list[NonEmptyString] = Field(default_factory=list, max_length=50)
-    must_contain_any: list[NonEmptyString] = Field(default_factory=list, max_length=50)
-    must_not_contain: list[NonEmptyString] = Field(default_factory=list, max_length=50)
+    must_contain_all: list[NonEmptyString] = Field(
+        default_factory=list,
+        max_length=50,
+        description=(
+            "Literal values that must all occur. Duplicate values require that many occurrences."
+        ),
+    )
+    must_contain_any: list[NonEmptyString] = Field(
+        default_factory=list,
+        max_length=50,
+        description="At least one of these literal values must occur.",
+    )
+    must_not_contain: list[NonEmptyString] = Field(
+        default_factory=list,
+        max_length=50,
+        description="Cards containing any of these literal values are removed.",
+    )
 
 
 class NameSearch(AgentSearchModel):
     """Optional name search for the local card tool."""
 
-    query: BoundedString | None = None
+    query: BoundedString | None = Field(
+        default=None,
+        description=(
+            "Case-insensitive complete or partial card-name filter. "
+            "Use semantic_sort for concepts rather than names."
+        ),
+    )
 
 
 class OracleTextSearch(TextConditions):
-    """Semantic and exact Oracle-text conditions."""
-
-    semantic_query: BoundedString | None = None
+    """Literal Oracle-text filters."""
 
 
 class ManaSearch(TextConditions):
     """Combined mana-value and mana-cost conditions."""
 
-    value_minimum: Annotated[float | None, Field(default=None, ge=0, le=100)] = None
-    value_maximum: Annotated[float | None, Field(default=None, ge=0, le=100)] = None
+    value_minimum: Annotated[
+        float | None,
+        Field(default=None, ge=0, le=100, description="Inclusive mana-value minimum."),
+    ] = None
+    value_maximum: Annotated[
+        float | None,
+        Field(default=None, ge=0, le=100, description="Inclusive mana-value maximum."),
+    ] = None
 
     @model_validator(mode="after")
     def range_must_be_ordered(self) -> "ManaSearch":
@@ -95,15 +119,28 @@ class ManaSearch(TextConditions):
 
 
 class TypeSearch(TextConditions):
-    """Exact type-line conditions."""
+    """Literal type-line filters, such as Creature, Elf, Artifact, or Saga."""
 
 
 class ColorSearch(AgentSearchModel):
     """Optional color-identity conditions."""
 
-    identity: list[MagicColor] | None = Field(default=None, max_length=5)
-    mode: ColorMatchMode = "subset"
-    include_colorless: bool = False
+    identity: list[MagicColor] | None = Field(
+        default=None,
+        max_length=5,
+        description="Requested W/U/B/R/G color identity.",
+    )
+    mode: ColorMatchMode = Field(
+        default="subset",
+        description=(
+            "subset allows cards whose identity is contained in the requested "
+            "identity; exact requires equality."
+        ),
+    )
+    include_colorless: bool = Field(
+        default=False,
+        description="Also allow exactly colorless identity.",
+    )
 
     @field_validator("identity")
     @classmethod
@@ -143,6 +180,13 @@ class PriceRange(AgentSearchModel):
 class LocalCardSearchRequest(AgentSearchModel):
     """All-optional structured input for the local card-search tool."""
 
+    semantic_sort: BoundedString | None = Field(
+        default=None,
+        description=(
+            "A natural-language description of the user's intended cards. "
+            "It sorts surviving candidates by meaning and never filters them."
+        ),
+    )
     name: NameSearch | None = None
     oracle_text: OracleTextSearch | None = None
     mana: ManaSearch | None = None
@@ -151,11 +195,33 @@ class LocalCardSearchRequest(AgentSearchModel):
     power: NumericRange | None = None
     toughness: NumericRange | None = None
     price_eur: PriceRange | None = None
-    format: NonEmptyString | None = None
-    legality: CardLegality | None = None
-    sets: list[NonEmptyString] | None = Field(default=None, max_length=100)
-    rarities: list[NonEmptyString] | None = Field(default=None, max_length=20)
-    max_results: Annotated[int | None, Field(default=None, ge=1, le=60)] = None
+    format: NonEmptyString | None = Field(
+        default=None,
+        description="Format name used for an exact legality filter.",
+    )
+    legality: CardLegality | None = Field(
+        default=None,
+        description="Required legality; format must also be supplied.",
+    )
+    sets: list[NonEmptyString] | None = Field(
+        default=None,
+        max_length=100,
+        description="Allowed exact set codes.",
+    )
+    rarities: list[NonEmptyString] | None = Field(
+        default=None,
+        max_length=20,
+        description="Allowed exact rarity names.",
+    )
+    max_results: Annotated[
+        int | None,
+        Field(
+            default=None,
+            ge=1,
+            le=60,
+            description="Maximum top candidates returned after filtering and sorting.",
+        ),
+    ] = None
 
     def has_agent_criteria(self) -> bool:
         """Return whether the model supplied a meaningful search condition."""

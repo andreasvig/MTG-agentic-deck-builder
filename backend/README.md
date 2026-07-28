@@ -22,6 +22,8 @@ The backend currently owns:
 - Strict local-tool, final-ranking, and complete agent-trace contracts.
 - One-tool OpenRouter orchestration with only the structured local catalog
   search tool.
+- Always-on local FastEmbed semantic sorting after hard filters, with no
+  similarity cutoff.
 - Natural model-facing prompts with temporary numeric candidate IDs and no
   image/provider URLs.
 - Relevant-subset ranking that permits weak candidates to be omitted.
@@ -33,7 +35,7 @@ The backend does not currently own:
 - Deck CRUD or persistence.
 - Deck mutations.
 - Complete Commander validation.
-- Semantic embedding retrieval or deck chat/tools.
+- Deck chat/tools.
 
 ## Run
 
@@ -85,6 +87,7 @@ src/mtg_deck_builder/
   main.py            FastAPI construction and lifespan dependencies
   search.py          Local fuzzy ranking, filtering, and pagination
   search_debug.py    Trace construction and JSONL writes
+  semantic_index.py  Atomic local vector index and cosine sorting
 ```
 
 ## Contract Rules
@@ -116,8 +119,9 @@ search:
   title_match:
     page_size: 6
     preview_min_confidence: 0.75
-  semantic:
-    enabled: false
+  semantic_sort:
+    model: BAAI/bge-small-en-v1.5
+    index_path: local-data/card-semantic.sqlite3
   agentic:
     enabled: true
 ```
@@ -166,9 +170,12 @@ live provider queries.
 ### Refreshing Card Data
 
 - Run `npm run catalog:sync` from the repository root.
-- The command skips work when Scryfall's bulk timestamp is already installed.
+- The command skips each current artifact independently and ensures both the
+  Scryfall-derived catalog and its local semantic sidecar.
 - Use `npm run catalog:sync -- --force` only when a rebuild is required.
 - Keep bulk transport and Scryfall wire details outside routes and search.
+- The first sync downloads the configured FastEmbed ONNX model; later syncs
+  reuse its local cache.
 
 ### Changing Search
 

@@ -114,6 +114,8 @@ The agent user prompt treats already-visible fuzzy cards as selectable
 candidates. Their reserved IDs do not overlap with later local-tool cards,
 except that the same Oracle card deliberately reuses its preview ID. Each
 preview includes mana, type, power/toughness, Oracle text, and EUR price.
+Structured tool fields filter locally; `semantic_sort` only orders the
+surviving candidates and never applies a score cutoff.
 
 The debug viewer presents agentic execution as exactly seven chronological,
 color-coded stages: system prompt, user input prompt, thinking, tool call, tool

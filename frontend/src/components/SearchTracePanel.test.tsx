@@ -70,7 +70,15 @@ it("renders readable content for every agentic trace stage", async () => {
           request: { name: { query: "Ghalta" } },
           compiled_query: {
             engine: "local_sqlite_catalog",
-            semantic_mode: "disabled",
+            semantic_sort: {
+              mode: "cosine",
+              model: "BAAI/bge-small-en-v1.5",
+              dimensions: 384,
+              query: "Ghalta cards",
+              score_scale: "normalized_cosine_0_to_1",
+              minimum_score: null,
+              scored_candidates: 24,
+            },
             result_limit: 24,
           },
           candidates: [{ card: ghalta }],

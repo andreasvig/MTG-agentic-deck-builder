@@ -37,40 +37,63 @@ class TitleMatchSettings(BaseModel):
     preview_min_confidence: Annotated[float, Field(ge=0, le=1)] = 0.75
 
 
-class SemanticSearchSettings(BaseModel):
-    """Configuration reserved for semantic retrieval inside the local tool."""
+SemanticIndexedField = Literal[
+    "name",
+    "mana_cost",
+    "type_line",
+    "oracle_text",
+    "power_toughness",
+    "card_faces",
+]
+
+
+class SemanticSortSettings(BaseModel):
+    """Always-available local embedding sort inside the agent tool."""
 
     model_config = ConfigDict(extra="forbid")
 
-    enabled: bool = False
-    model: str | None = None
-    indexed_fields: list[Literal["name", "type_line", "oracle_text", "keywords", "card_faces"]] = (
-        Field(
-            default_factory=lambda: [
-                "name",
-                "type_line",
-                "oracle_text",
-                "keywords",
-                "card_faces",
-            ]
-        )
+    model: str = "BAAI/bge-small-en-v1.5"
+    index_path: Path = Path("local-data/card-semantic.sqlite3")
+    cache_dir: Path = Path("local-data/embedding-models")
+    batch_size: Annotated[int, Field(ge=1, le=2_048)] = 256
+    threads: Annotated[int, Field(ge=1, le=64)] = 4
+    indexed_fields: list[SemanticIndexedField] = Field(
+        default_factory=lambda: [
+            "name",
+            "mana_cost",
+            "type_line",
+            "oracle_text",
+            "power_toughness",
+            "card_faces",
+        ],
+        min_length=1,
     )
 
     @field_validator("model")
     @classmethod
-    def model_must_not_be_blank(cls, value: str | None) -> str | None:
-        if value is None:
-            return None
+    def model_must_not_be_blank(cls, value: str) -> str:
         stripped = value.strip()
         if not stripped:
             raise ValueError("semantic model must not be blank")
         return stripped
 
-    @model_validator(mode="after")
-    def enabled_search_requires_a_model(self) -> "SemanticSearchSettings":
-        if self.enabled and self.model is None:
-            raise ValueError("semantic model is required while semantic search is enabled")
-        return self
+    @field_validator("index_path", "cache_dir", mode="before")
+    @classmethod
+    def paths_must_not_be_blank(cls, value: object) -> object:
+        if isinstance(value, str):
+            stripped = value.strip()
+            if not stripped:
+                raise ValueError("semantic paths must not be blank")
+            return stripped
+        return value
+
+    @field_validator("indexed_fields")
+    @classmethod
+    def indexed_fields_must_be_unique(
+        cls,
+        value: list[SemanticIndexedField],
+    ) -> list[SemanticIndexedField]:
+        return list(dict.fromkeys(value))
 
 
 class AgentDebugSettings(BaseModel):
@@ -126,9 +149,7 @@ class AgenticSearchSettings(BaseModel):
     timeout_seconds: Annotated[float, Field(gt=0, le=120)] = 20
     debug: AgentDebugSettings = Field(default_factory=AgentDebugSettings)
     local_tool: AgentLocalToolSettings = Field(default_factory=AgentLocalToolSettings)
-    continuation: AgentContinuationSettings = Field(
-        default_factory=AgentContinuationSettings
-    )
+    continuation: AgentContinuationSettings = Field(default_factory=AgentContinuationSettings)
     system_prompt: str = "You are a Magic: The Gathering card-search agent."
 
     @field_validator("model", "system_prompt")
@@ -152,7 +173,7 @@ class SearchSettings(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     title_match: TitleMatchSettings = Field(default_factory=TitleMatchSettings)
-    semantic: SemanticSearchSettings = Field(default_factory=SemanticSearchSettings)
+    semantic_sort: SemanticSortSettings = Field(default_factory=SemanticSortSettings)
     agentic: AgenticSearchSettings = Field(default_factory=AgenticSearchSettings)
 
 

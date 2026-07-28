@@ -51,7 +51,7 @@ def test_tool_call_contract_allows_only_the_typed_local_search_tool() -> None:
     local = adapter.validate_python(
         {
             "name": "search_local_cards",
-            "arguments": {"oracle_text": {"semantic_query": "creates artifact creature tokens"}},
+            "arguments": {"semantic_sort": "creates artifact creature tokens"},
         }
     )
 
@@ -76,6 +76,9 @@ def test_max_results_alone_does_not_make_an_empty_tool_request_meaningful() -> N
     request = LocalCardSearchRequest(max_results=24)
 
     assert request.has_agent_criteria() is False
+    assert LocalCardSearchRequest(
+        semantic_sort="cards that create artifact creature tokens"
+    ).has_agent_criteria()
 
 
 @pytest.mark.parametrize(

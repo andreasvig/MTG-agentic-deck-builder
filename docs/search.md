@@ -7,16 +7,19 @@ confident cards visible and starts one bounded agentic search.
 
 The agent makes exactly one structured local-catalog tool call, sees the result
 in the same conversation, and makes one final structured call that ranks the
-relevant candidate IDs. The agent has no live Scryfall-query tool. Semantic
-embeddings remain disabled; name, exact Oracle text, mana, type, color,
-power/toughness, price, format, set, and rarity filters execute locally.
+relevant candidate IDs. The agent has no live Scryfall-query tool. Name, exact
+Oracle text, mana, type, color, power/toughness, price, format, set, and rarity
+conditions filter locally. `semantic_sort` then cosine-sorts every survivor
+without a similarity threshold.
 See
-[`ADR 0009`](decisions/0009-progressive-one-tool-agentic-search.md).
+[`ADR 0009`](decisions/0009-progressive-one-tool-agentic-search.md) and
+[`ADR 0010`](decisions/0010-always-on-semantic-sort.md).
 
 ## Data Source
 
-`npm run catalog:sync` reads Scryfall's `default_cards` bulk export as a stream
-and builds `local-data/cards.sqlite3`.
+`npm run catalog:sync` reads Scryfall's `default_cards` bulk export as a stream,
+builds `local-data/cards.sqlite3`, and ensures the local semantic sidecar at
+`local-data/card-semantic.sqlite3` matches it.
 
 The importer:
 
@@ -29,6 +32,10 @@ The importer:
 6. Retains Oracle text, EUR price, and power/toughness in the local card record.
 7. Validates a temporary SQLite database.
 8. Atomically replaces the installed database only after a successful import.
+9. Renders name, mana cost, type, rules text, power/toughness, and card faces
+   into stable embedding documents.
+10. Embeds them locally with `BAAI/bge-small-en-v1.5` and atomically installs
+    normalized 384-dimensional vectors in the semantic sidecar.
 
 Images remain remote Scryfall URLs. The SQLite file and temporary files are
 ignored by Git.
@@ -40,6 +47,9 @@ npm run catalog:sync
 ```
 
 Use `npm run catalog:sync -- --force` to rebuild an already-current catalog.
+The first run downloads approximately 67 MB of ONNX model files into
+`local-data/embedding-models`. Later runs reuse the model and skip a current
+semantic index.
 
 ## Query Flow
 
@@ -55,6 +65,11 @@ user query
   -> otherwise: return only confident previews immediately
        -> model selects exactly one tool
        -> execute search_local_cards against the local catalog
+          -> apply every structured hard filter
+          -> exclude displayed and previously examined Oracle cards
+          -> embed semantic_sort locally
+          -> cosine-sort every survivor (no score cutoff)
+          -> return the configured top candidate count
        -> keep preview IDs selectable even if the tool does not return them
        -> assign later non-overlapping IDs to new tool cards
        -> reuse the preview ID for an exact duplicate Oracle card
@@ -128,9 +143,19 @@ search:
     page_size: 6
     preview_min_confidence: 0.75
 
-  semantic:
-    enabled: false
-    model: null
+  semantic_sort:
+    model: BAAI/bge-small-en-v1.5
+    index_path: local-data/card-semantic.sqlite3
+    cache_dir: local-data/embedding-models
+    batch_size: 256
+    threads: 4
+    indexed_fields:
+      - name
+      - mana_cost
+      - type_line
+      - oracle_text
+      - power_toughness
+      - card_faces
 
   agentic:
     enabled: true
@@ -163,8 +188,8 @@ other candidates use whole-string edit similarity so natural-language token
 overlap does not masquerade as title confidence.
 
 The agentic system prompt, semantic indexed fields, one-tool limit, candidate
-bounds, and full debug-capture switches also live in `config.yaml`. Agentic
-search is enabled; semantic embeddings remain disabled.
+bounds, and full debug-capture switches also live in `config.yaml`. Semantic
+sorting has no enabled flag: a current index is part of the catalog contract.
 
 The initial user prompt gives every already-visible fuzzy card a selectable ID
 and includes its mana, type, power/toughness, EUR estimate, and Oracle text.
@@ -175,8 +200,16 @@ the same `oracle_id` reuses the existing preview ID.
 The tool schema requires nested exact conditions. A narrow provider-boundary
 compatibility layer repairs obvious string shorthand before strict validation:
 for example, `types: "Elf"` becomes a required Elf type and
-`oracle_text: "untap"` becomes an exact Oracle-text alternative. It never
-promotes shorthand into semantic search while embeddings are disabled.
+`oracle_text: "untap"` becomes an exact Oracle-text alternative.
+
+All structured fields are hard filters except top-level `semantic_sort`.
+`semantic_sort` is a natural-language intent string. It never filters and has
+no minimum score. The service supplies the original user request when the
+model omits it, so every agent round has semantic ordering. The prompt teaches
+the agent to clean up bad grammar, separate explicit constraints from broad
+intent, avoid overly strict Oracle-text guesses, and use examples such as
+`untapping elves`, `big green creatures`, `grave yard things`, double-X
+artifacts, and `galta`.
 
 **Load more** is always available after a search response. `has_more: true`
 means the next ranked batch is already cached. `has_more: false` means the
@@ -231,6 +264,8 @@ Debug mode:
   evidence, and later steps are marked skipped.
 - Shows the exact simplified tool-role message sent to the model, using local
   numeric IDs, beside the expandable untouched raw tool result.
+- Records the semantic intent, model, vector dimensions, scored-candidate
+  count, and per-candidate score while explicitly recording no minimum cutoff.
 - Records `minimum_score: null` to make the absence of a threshold explicit.
 - Appends the complete trace to `local-data/search-debug.jsonl`.
 
@@ -282,6 +317,8 @@ in debug mode and used by the progressive preview phase.
 
 - A missing, incompatible, or unreadable catalog returns the safe HTTP 503
   card-search response.
+- A missing or stale semantic sidecar returns a safe agentic HTTP 503 and tells
+  local diagnostics to run `npm run catalog:sync`.
 - A missing OpenRouter key or unavailable model/provider returns a safe HTTP
   503 for the agentic phase; any confident fuzzy previews remain visible.
 - An invalid or expired agentic session returns a safe HTTP 400.
@@ -300,8 +337,11 @@ in debug mode and used by the progressive preview phase.
   symbols, result bounds, numeric relevant-subset validation, versioned trace
   completeness, full raw JSON persistence, and secret redaction.
 - `test_agentic_card_search.py`: one-tool orchestration, duplicate mana-symbol
-  execution, natural prompts, raw/simplified tool trace payloads, candidate
-  omission, alias-aware confidence preservation, cached pagination, exclusions,
-  empty continuation retries, and multi-round agent sessions.
+  execution, filter-before-sort behavior, natural prompts, raw/simplified tool
+  trace payloads, candidate omission, alias-aware confidence preservation,
+  cached pagination, exclusions, empty continuation retries, and multi-round
+  agent sessions.
+- `test_semantic_index.py`: atomic index builds, stable gameplay documents,
+  cosine scoring without a cutoff, and stale-catalog rejection.
 - Frontend component and browser tests: progressive preview, animated agent
   handoff, readable seven-step traces, scores, filters, and Load more.

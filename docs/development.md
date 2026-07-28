@@ -20,7 +20,8 @@ npm run catalog:sync
 `npm run setup` synchronizes the backend environment, including development
 dependencies, and installs frontend packages. Search requires no API key.
 The catalog command downloads Scryfall's current compressed `default_cards`
-export and atomically installs the local search database.
+export, atomically installs the local search database, downloads the configured
+FastEmbed ONNX model on first use, and builds the matching semantic sidecar.
 
 ## Run
 
@@ -88,6 +89,11 @@ colliding with common development tools.
 
 Do not remove the identifying user agent. Normal search does not call
 Scryfall; these settings belong to the explicit bulk refresh command.
+
+Semantic model, sidecar path, cache path, batch size, and indexed fields live
+under `search.semantic_sort` in `config.yaml`. They are not feature flags:
+`npm run catalog:sync` ensures the sidecar matches the exact catalog and model
+configuration.
 
 ### Search
 
@@ -207,6 +213,9 @@ Stop the existing runner or change all related environment URLs consistently.
 The local catalog is missing or unreadable. Run `npm run catalog:sync`, then
 retry the search. A successful refresh is visible to the running backend after
 the atomic file swap.
+
+If fuzzy previews work but the agentic phase returns 503, the semantic sidecar
+may be missing or stale. The same command rebuilds it.
 
 ### Frontend Reports Malformed Search Data
 

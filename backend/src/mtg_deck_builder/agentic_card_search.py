@@ -26,6 +26,7 @@ from mtg_deck_builder.card_catalog import (
     CatalogEntry,
     SQLiteCardCatalog,
     card_title_aliases,
+    normalize_card_title,
 )
 from mtg_deck_builder.config import AgenticSearchSettings
 from mtg_deck_builder.domain import (
@@ -54,6 +55,7 @@ from mtg_deck_builder.search import (
     matches_card_filters,
     preview_confidence_score,
 )
+from mtg_deck_builder.semantic_index import SemanticCardIndex, SemanticScoreResult
 
 _TOOL_CALL_ADAPTER = TypeAdapter(AgentSearchToolCall)
 
@@ -135,12 +137,12 @@ class LocalCardSearchTool:
         *,
         default_max_results: int,
         hard_max_results: int,
-        semantic_enabled: bool,
+        semantic_index: SemanticCardIndex | None = None,
     ) -> None:
         self._catalog = catalog
         self._default_max_results = default_max_results
         self._hard_max_results = hard_max_results
-        self._semantic_enabled = semantic_enabled
+        self._semantic_index = semantic_index
 
     async def search(
         self,
@@ -155,23 +157,32 @@ class LocalCardSearchTool:
             default_max_results=self._default_max_results,
             hard_max_results=self._hard_max_results,
         )
-        if (
-            request.oracle_text is not None
-            and request.oracle_text.semantic_query
-            and not self._semantic_enabled
-        ):
-            raise AgentSearchContractError("semantic Oracle-text retrieval is not enabled")
         if request.legality is not None and request.format is None:
             raise AgentSearchContractError("legality requires a format")
 
         entries = await self._catalog.entries()
-        result = await asyncio.to_thread(
-            _execute_local_search,
+        matches = await asyncio.to_thread(
+            _filter_local_candidates,
             entries,
             request,
             immutable_filters,
-            limit,
             excluded_oracle_ids,
+        )
+        semantic_result: SemanticScoreResult | None = None
+        if request.semantic_sort is not None:
+            if self._semantic_index is None:
+                raise CardSearchUnavailable("semantic index is unavailable")
+            semantic_result = await self._semantic_index.score(
+                request.semantic_sort,
+                [candidate.card.oracle_id for _, candidate in matches],
+            )
+        result = _rank_local_candidates(
+            matches,
+            request=request,
+            immutable_filters=immutable_filters,
+            excluded_oracle_ids=excluded_oracle_ids,
+            limit=limit,
+            semantic_result=semantic_result,
         )
         return ExecutedSearchTool(
             name="search_local_cards",
@@ -231,9 +242,7 @@ class AgenticCardSearchService:
 
         if request.already_shown_oracle_ids:
             shown_cards = list(
-                await self._local_tool.cards_by_oracle_ids(
-                    request.already_shown_oracle_ids
-                )
+                await self._local_tool.cards_by_oracle_ids(request.already_shown_oracle_ids)
             )
         else:
             preview = await self._fuzzy_provider.search(
@@ -263,9 +272,7 @@ class AgenticCardSearchService:
         )
         session_id = uuid4()
         cards = _deduplicate_cards(completed.cards)
-        title_scores = {
-            card.scryfall_id: _card_title_scores(request.q, card) for card in cards
-        }
+        title_scores = {card.scryfall_id: _card_title_scores(request.q, card) for card in cards}
         batches = _page_batches(
             cards,
             first_page=request.page,
@@ -389,15 +396,7 @@ class AgenticCardSearchService:
         messages: list[dict[str, Any]] = [
             {
                 "role": "system",
-                "content": (
-                    self._settings.system_prompt
-                    + "\n\nIMPORTANT RUNTIME CAPABILITIES: semantic embeddings are "
-                    "disabled. Do not use semantic_query. search_local_cards is the "
-                    "only available tool. It supports structured name, Oracle text, "
-                    "mana, type, color, power, toughness, price, format, set, and "
-                    'rarity filters. "types" and "colors" are nested objects, never '
-                    "strings."
-                ),
+                "content": self._settings.system_prompt,
             },
             {
                 "role": "user",
@@ -435,6 +434,13 @@ class AgenticCardSearchService:
         call_id, tool_call, raw_arguments, normalizations = _parse_single_tool_call(
             assistant_message
         )
+        if tool_call.arguments.semantic_sort is None:
+            tool_call = tool_call.model_copy(
+                update={
+                    "arguments": tool_call.arguments.model_copy(update={"semantic_sort": request.q})
+                }
+            )
+            normalizations.append("semantic_sort defaulted to the user's request")
         trace.add_stage(
             "tool_call",
             {
@@ -574,16 +580,11 @@ class AgenticCardSearchService:
         continuation = self._settings.continuation
         if not continuation.enabled:
             raise CardSearchQueryError
-        if (
-            continuation.max_rounds is not None
-            and stored.round_number >= continuation.max_rounds
-        ):
+        if continuation.max_rounds is not None and stored.round_number >= continuation.max_rounds:
             raise CardSearchQueryError
 
         already_shown = list(
-            await self._local_tool.cards_by_oracle_ids(
-                request.already_shown_oracle_ids
-            )
+            await self._local_tool.cards_by_oracle_ids(request.already_shown_oracle_ids)
         )
         completed, debug = await self._execute_agent_round(
             request,
@@ -609,7 +610,8 @@ class AgenticCardSearchService:
             *(card.oracle_id for card in stored.cards),
         }
         new_cards = tuple(
-            card for card in _deduplicate_cards(completed.cards)
+            card
+            for card in _deduplicate_cards(completed.cards)
             if card.oracle_id not in existing_ids
         )
         new_batches = _page_batches(
@@ -617,33 +619,21 @@ class AgenticCardSearchService:
             first_page=request.page,
             page_size=self._page_size,
         )
-        new_scores = {
-            card.scryfall_id: _card_title_scores(request.q, card) for card in new_cards
-        }
+        new_scores = {card.scryfall_id: _card_title_scores(request.q, card) for card in new_cards}
         updated = replace(
             stored,
             cards=(*stored.cards, *new_cards),
             page_batches={**stored.page_batches, **new_batches},
             name_match_scores={
                 **stored.name_match_scores,
-                **{
-                    card.scryfall_id: new_scores[card.scryfall_id][0]
-                    for card in new_cards
-                },
+                **{card.scryfall_id: new_scores[card.scryfall_id][0] for card in new_cards},
             },
             title_confidence_scores={
                 **stored.title_confidence_scores,
-                **{
-                    card.scryfall_id: new_scores[card.scryfall_id][1]
-                    for card in new_cards
-                },
+                **{card.scryfall_id: new_scores[card.scryfall_id][1] for card in new_cards},
             },
             interpretation=completed.output.interpretation,
-            warnings=(
-                ("No additional matches found in this pass.",)
-                if not new_cards
-                else ()
-            ),
+            warnings=(("No additional matches found in this pass.",) if not new_cards else ()),
             debug=debug,
             debug_runs=(
                 *stored.debug_runs,
@@ -652,9 +642,7 @@ class AgenticCardSearchService:
             debug_page=request.page,
             considered_oracle_ids=(
                 stored.considered_oracle_ids
-                | frozenset(
-                    candidate.card.oracle_id for candidate in completed.tool.candidates
-                )
+                | frozenset(candidate.card.oracle_id for candidate in completed.tool.candidates)
             ),
             next_candidate_id=completed.next_candidate_id,
             round_number=stored.round_number + 1,
@@ -704,13 +692,12 @@ class _CompletedAgentRun:
     next_candidate_id: int
 
 
-def _execute_local_search(
+def _filter_local_candidates(
     entries: tuple[CatalogEntry, ...],
     request: LocalCardSearchRequest,
     immutable_filters: CardSearchFilters,
-    limit: int,
     excluded_oracle_ids: frozenset[UUID] = frozenset(),
-) -> LocalCardSearchResult:
+) -> list[tuple[float, AgentSearchCandidate]]:
     matches: list[tuple[float, AgentSearchCandidate]] = []
     for entry in entries:
         card = entry.card
@@ -721,9 +708,14 @@ def _execute_local_search(
         evidence: list[str] = []
         decisions: dict[str, bool] = {"immutable_ui_filters": True}
         if request.name is not None and request.name.query:
+            normalized_query = normalize_card_title(request.name.query)
+            if not normalized_query or not any(
+                normalized_query in alias for alias in entry.aliases
+            ):
+                continue
             name_score = name_similarity_score(request.name.query, card.name)
-            decisions["name"] = name_score > 0
-            evidence.append(f"name similarity {name_score:.3f}")
+            decisions["name"] = True
+            evidence.append(f"name contains query; similarity {name_score:.3f}")
         else:
             name_score = 0
         if request.oracle_text is not None:
@@ -801,20 +793,66 @@ def _execute_local_search(
                 ),
             )
         )
-    matches.sort(
+    return matches
+
+
+def _rank_local_candidates(
+    matches: list[tuple[float, AgentSearchCandidate]],
+    *,
+    request: LocalCardSearchRequest,
+    immutable_filters: CardSearchFilters,
+    excluded_oracle_ids: frozenset[UUID],
+    limit: int,
+    semantic_result: SemanticScoreResult | None,
+) -> LocalCardSearchResult:
+    ranked: list[tuple[float, float, AgentSearchCandidate]] = []
+    for name_score, candidate in matches:
+        semantic_score = (
+            semantic_result.scores[candidate.card.oracle_id]
+            if semantic_result is not None
+            else None
+        )
+        if semantic_score is not None:
+            candidate = candidate.model_copy(
+                update={
+                    "semantic_score": semantic_score,
+                    "exact_match_evidence": [
+                        *candidate.exact_match_evidence,
+                        f"semantic sort score {semantic_score:.3f}",
+                    ],
+                }
+            )
+        ranked.append((semantic_score or 0, name_score, candidate))
+    ranked.sort(
         key=lambda item: (
             -item[0],
-            item[1].card.name.casefold(),
+            -item[1],
+            item[2].card.name.casefold(),
         )
     )
-    candidates = [candidate for _, candidate in matches[:limit]]
+    candidates = [candidate for _, _, candidate in ranked[:limit]]
     return LocalCardSearchResult(
         request=request,
-        total_candidates=len(matches),
+        total_candidates=len(ranked),
         candidates=candidates,
         compiled_query={
             "engine": "local_sqlite_catalog",
-            "semantic_mode": "disabled",
+            "semantic_sort": (
+                {
+                    "mode": "cosine",
+                    "model": semantic_result.model,
+                    "dimensions": semantic_result.dimensions,
+                    "query": request.semantic_sort,
+                    "score_scale": "normalized_cosine_0_to_1",
+                    "minimum_score": None,
+                    "scored_candidates": len(ranked),
+                }
+                if semantic_result is not None
+                else {
+                    "mode": "not_requested",
+                    "minimum_score": None,
+                }
+            ),
             "immutable_filters": immutable_filters.model_dump(mode="json"),
             "excluded_oracle_card_count": len(excluded_oracle_ids),
             "result_limit": limit,
@@ -931,13 +969,16 @@ def _tool_definitions() -> list[dict[str, Any]]:
             "function": {
                 "name": "search_local_cards",
                 "description": (
-                    "Search the complete local MTG catalog with exact structured "
-                    "conditions. All fields are optional. Duplicate exact values "
-                    "to require multiple occurrences. Use numeric power and "
-                    "toughness ranges for descriptions such as big, large, or "
-                    "high power. Semantic Oracle-text search is unavailable while "
-                    "embeddings are disabled; use exact Oracle-text conditions. "
-                    "types and colors must be nested objects, never strings."
+                    "Filter and semantically sort the complete local MTG catalog. "
+                    "Structured fields are hard filters: a card that fails one is "
+                    "removed. semantic_sort is different: it never removes cards; "
+                    "it cosine-sorts every surviving card by the meaning of the "
+                    "natural-language intent, with no minimum score. All fields "
+                    "are optional. Avoid over-filtering vague requests. Use exact "
+                    "Oracle text only for wording likely to appear on cards, use "
+                    "numeric power/toughness for size, preserve symbols such as "
+                    "{T} and {X}, and duplicate a required symbol when occurrence "
+                    "count matters. name, types, and colors are nested objects."
                 ),
                 "parameters": LocalCardSearchRequest.model_json_schema(),
                 "strict": True,
@@ -1146,17 +1187,13 @@ def _render_agent_user_message(
         "",
     ]
     if is_continuation:
-        lines.append(
-            "Already showing — these cards must not be returned or ranked again:"
-        )
+        lines.append("Already showing — these cards must not be returned or ranked again:")
         if already_shown:
             for candidate_id, card in enumerate(already_shown, start=1):
                 if include_full_card_details:
                     lines.extend(_render_preview_candidate(candidate_id, card))
                 else:
-                    lines.append(
-                        f"{candidate_id}. {card.name} — {_card_type_line(card)}"
-                    )
+                    lines.append(f"{candidate_id}. {card.name} — {_card_type_line(card)}")
         else:
             lines.append("- None")
         lines.extend(
@@ -1252,6 +1289,8 @@ def _render_tool_result_message(
         "The search tool has finished.",
         f"Tool used: {executed.name}",
         f"Candidate count: {len(candidates)}",
+        (f"Semantic sort intent: {executed.arguments.get('semantic_sort', 'not requested')}"),
+        ("Hard filters ran before semantic sorting. No semantic score cutoff was applied."),
         (
             "Candidate IDs are temporary numbers for this search only. Cards marked "
             "ALREADY SHOWN were visible to the user before this tool finished."
@@ -1499,11 +1538,7 @@ def _failed_agent_trace_presentation_stages(
     tool_result = by_name.get("tool_result")
     final_response = by_name.get("final_model_response")
     validation = by_name.get("validation")
-    messages = (
-        initial_request.payload.get("messages")
-        if initial_request is not None
-        else None
-    )
+    messages = initial_request.payload.get("messages") if initial_request is not None else None
     model_messages = messages if isinstance(messages, list) else []
     error_details = trace.error or {"error_type": "UnknownAgenticSearchError"}
     failure_duration_ms = max(
@@ -1527,9 +1562,7 @@ def _failed_agent_trace_presentation_stages(
         failed_index = 6
 
     final_message = (
-        _trace_response_message(final_response.payload)
-        if final_response is not None
-        else {}
+        _trace_response_message(final_response.payload) if final_response is not None else {}
     )
     final_content = final_message.get("content")
     stage_specs: list[tuple[str, dict[str, Any], float | None, bool]] = [
@@ -1588,9 +1621,7 @@ def _failed_agent_trace_presentation_stages(
             {
                 "content": final_content if isinstance(final_content, str) else "",
                 "ranked_ids": (
-                    validation.payload.get("ranked_ids")
-                    if validation is not None
-                    else []
+                    validation.payload.get("ranked_ids") if validation is not None else []
                 ),
                 "ranked_cards": [],
             },
@@ -1609,9 +1640,7 @@ def _failed_agent_trace_presentation_stages(
             duration_ms = duration_ms or failure_duration_ms
         else:
             status = "skipped"
-            details = {
-                "reason": "Not reached because an earlier agentic-search step failed."
-            }
+            details = {"reason": "Not reached because an earlier agentic-search step failed."}
         stages.append(
             _presentation_stage(
                 name,

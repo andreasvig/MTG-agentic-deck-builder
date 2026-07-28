@@ -18,6 +18,7 @@ from mtg_deck_builder.config import Settings, get_settings
 from mtg_deck_builder.providers.openrouter import OpenRouterClient
 from mtg_deck_builder.search import FuzzyTitleSearchProvider
 from mtg_deck_builder.search_debug import JsonlSearchDebugLogger
+from mtg_deck_builder.semantic_index import SemanticCardIndex
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -29,7 +30,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def lifespan(application: FastAPI) -> AsyncIterator[None]:
         title_match = runtime_settings.search.title_match
         agentic = runtime_settings.search.agentic
+        semantic_sort = runtime_settings.search.semantic_sort
         catalog = SQLiteCardCatalog(runtime_settings.card_catalog_path)
+        semantic_index = SemanticCardIndex(
+            path=semantic_sort.index_path,
+            catalog=catalog,
+            settings=semantic_sort,
+        )
         fuzzy_provider = FuzzyTitleSearchProvider(
             catalog,
             debug_logger=JsonlSearchDebugLogger(
@@ -62,7 +69,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 catalog,
                 default_max_results=agentic.local_tool.default_max_results,
                 hard_max_results=agentic.local_tool.hard_max_results,
-                semantic_enabled=runtime_settings.search.semantic.enabled,
+                semantic_index=semantic_index,
             ),
             model_client=model_client,
             settings=agentic,

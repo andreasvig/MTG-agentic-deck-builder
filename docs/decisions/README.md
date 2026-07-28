@@ -25,6 +25,7 @@ tradeoffs; they are not task lists.
 | [0007](0007-single-fuzzy-title-search.md) | Accepted | One fuzzy title-search path |
 | [0008](0008-local-catalog-serves-search.md) | Accepted | Local catalog search reads and pagination |
 | [0009](0009-progressive-one-tool-agentic-search.md) | Accepted | Progressive one-tool agentic search |
+| [0010](0010-always-on-semantic-sort.md) | Accepted | Always-on local semantic sorting |
 
 ## Updating Decisions
 

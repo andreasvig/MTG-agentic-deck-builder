@@ -36,12 +36,13 @@ Shipped:
 - Provider-neutral public domain models.
 - Streaming `default_cards` importer and atomic SQLite replacement.
 - Local fuzzy-title ranking and structured filters.
+- Local semantic sidecar over full gameplay text, synchronized with the
+  catalog.
 - Daily EUR display and Cardmarket links from the selected bulk printing.
 
 Not shipped:
 
 - Automatic weekly refresh scheduling.
-- Indexed rules-text or semantic search.
 - Persisted price history.
 
 ## Consequences
@@ -49,7 +50,7 @@ Not shipped:
 Positive:
 
 - Correctness and new-card coverage remain delegated to Scryfall.
-- The later local index can be rebuilt rather than treated as irreplaceable
+- The local indexes can be rebuilt rather than treated as irreplaceable
   primary data.
 - UI, rules, and agent code remain provider-neutral.
 

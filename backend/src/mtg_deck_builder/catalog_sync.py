@@ -1,10 +1,13 @@
 """CLI for refreshing the local Scryfall bulk card catalog."""
 
 import argparse
+import asyncio
 import json
+import sys
 
-from mtg_deck_builder.card_catalog import ScryfallBulkCatalogSync
+from mtg_deck_builder.card_catalog import ScryfallBulkCatalogSync, SQLiteCardCatalog
 from mtg_deck_builder.config import get_settings
+from mtg_deck_builder.semantic_index import SemanticCardIndex
 
 
 def main() -> None:
@@ -16,21 +19,43 @@ def main() -> None:
     )
     args = parser.parse_args()
     settings = get_settings()
-    result = ScryfallBulkCatalogSync(
+    catalog_result = ScryfallBulkCatalogSync(
         target=settings.card_catalog_path,
         api_base_url=settings.scryfall_base_url,
         user_agent=settings.scryfall_user_agent,
         timeout_seconds=settings.scryfall_bulk_timeout_seconds,
     ).sync(force=args.force)
+    semantic_settings = settings.search.semantic_sort
+    semantic_result = asyncio.run(
+        SemanticCardIndex(
+            path=semantic_settings.index_path,
+            catalog=SQLiteCardCatalog(settings.card_catalog_path),
+            settings=semantic_settings,
+            progress=lambda completed, total: print(
+                f"Embedded {completed:,}/{total:,} cards",
+                file=sys.stderr,
+                flush=True,
+            ),
+        ).sync(force=args.force)
+    )
     print(
         json.dumps(
             {
-                "status": result.status,
-                "source_updated_at": result.source_updated_at,
-                "cards": result.cards,
-                "printings": result.printings,
-                "skipped": result.skipped,
-                "path": str(result.path),
+                "catalog": {
+                    "status": catalog_result.status,
+                    "source_updated_at": catalog_result.source_updated_at,
+                    "cards": catalog_result.cards,
+                    "printings": catalog_result.printings,
+                    "skipped": catalog_result.skipped,
+                    "path": str(catalog_result.path),
+                },
+                "semantic_sort": {
+                    "status": semantic_result.status,
+                    "cards": semantic_result.cards,
+                    "dimensions": semantic_result.dimensions,
+                    "model": semantic_result.model,
+                    "path": str(semantic_result.path),
+                },
             },
             indent=2,
         )

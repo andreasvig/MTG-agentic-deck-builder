@@ -86,6 +86,9 @@ npm run catalog:sync
 Title search works without an API key. Natural-language agentic search requires
 `OPENROUTER_API_KEY` in `.env`.
 
+The first catalog sync also downloads the local embedding model and builds the
+semantic sidecar for every card. Later syncs skip both artifacts when current.
+
 ### Run
 
 ```bash
@@ -112,6 +115,7 @@ FastAPI
   |- strict provider-neutral contracts
   |- local SQLite card catalog
   |- uncapped RapidFuzz title scoring and local filters
+  |- local semantic vector sort with no relevance cutoff
   |- one-tool OpenRouter search continuation
   |- append-only search diagnostics
   |
@@ -162,6 +166,12 @@ mana, type, power/toughness, Oracle text, and EUR price. Tool candidates receive
 later temporary IDs (`1`, `2`, `3`, and so on), exact Oracle-card duplicates
 reuse the preview ID, and the model may omit irrelevant results. See
 [`ADR 0009`](docs/decisions/0009-progressive-one-tool-agentic-search.md).
+
+Inside that tool, every structured field is a hard filter except
+`semantic_sort`. The local embedding index cosine-sorts every surviving card
+without a similarity threshold before the candidate limit is applied. The
+agent prompt includes examples for recovering intent from imperfect queries.
+See [`ADR 0010`](docs/decisions/0010-always-on-semantic-sort.md).
 
 ## Search Debugging
 
@@ -249,6 +259,7 @@ backend/
     main.py            FastAPI lifecycle and dependencies
     search.py          Fuzzy title matching
     search_debug.py    JSONL trace construction
+    semantic_index.py  Local embedding index and cosine sorting
   tests/               Backend contract and behavior tests
 frontend/
   src/
@@ -289,8 +300,6 @@ recorded in
 - No complete Commander partner/background/companion validation.
 - No persisted price history or true Cardmarket trend integration.
 - No full printing/finish chooser.
-- No embedding-backed semantic index. Agentic search can still apply exact
-  Oracle-text and structured local-catalog conditions.
 - No plaintext import/export.
 - No deck analytics.
 - No agent chat, tools, or confirmed patch workflow.
