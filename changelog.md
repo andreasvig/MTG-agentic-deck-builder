@@ -14,8 +14,8 @@ All notable changes to this project will be documented in this file.
   **Load more** never repeats the model/tool run.
 - Added bounded local exact-condition execution and a paced paper-only live
   Scryfall tool with immutable UI filters.
-- Added progressive drawer loading/fallback behavior and full eight-stage
-  agent traces in the existing debug explorer.
+- Added progressive drawer loading/fallback behavior and a focused seven-step
+  agent trace in the existing debug explorer.
 - Added a stricter substring-or-whole-string preview-confidence score and trace
   evidence without changing the threshold-free fuzzy result ranking.
 - Added per-result `title_confidence_scores` and changed the debug card label
@@ -28,14 +28,14 @@ All notable changes to this project will be documented in this file.
   candidate bounds.
 - Added final candidate-subset ranking guards that reject invented, duplicate,
   or over-limit IDs while allowing irrelevant candidates to be omitted.
-- Added a versioned eight-stage agent debug trace, provider-reasoning payload
-  capture, recursive secret redaction, and untruncated JSONL persistence.
-- Added an expandable full raw JSON view to the inline search debug panel.
+- Added a versioned complete internal agent audit trace, provider-reasoning
+  payload capture, recursive secret redaction, and untruncated JSONL
+  persistence.
 - Added a compact animated agentic-search loading banner that leaves confident
   fuzzy previews visible while the final ranking runs.
-- Added readable chronological cards for all eight agent trace stages,
-  including prompts, provider usage, reasoning relay JSON, tool
-  arguments/results, candidates, interpretation, and validation.
+- Added readable chronological cards for the seven valuable agent trace steps:
+  system prompt, user input prompt, thinking, tool call, tool response, final
+  thinking, and output response.
 - Added natural URL-free agent user prompts, temporary numeric candidate IDs,
   explicit already-shown fuzzy markers, and a readable exact tool message
   stored beside the untouched raw tool result.

@@ -58,11 +58,10 @@ fully observable in debug mode.
   gives the final ranker useful alternatives beyond the 12-card display page.
 - Preserve canonical symbols such as `{T}`, `{Q}`, and `{X}`. Classify X spells
   from mana cost rather than an X appearing in Oracle text.
-- When debug mode is enabled, return and persist a versioned, complete
-  observable trace with these stages in order:
-  `request_context`, `initial_model_request`, `initial_model_response`,
-  `tool_call`, `tool_result`, `final_model_request`, `final_model_response`,
-  and `validation`.
+- When debug mode is enabled, present exactly seven user-facing steps in order:
+  system prompt, user input prompt, thinking, tool call, tool response, final
+  thinking, and output response. Keep request envelopes, request context, and
+  validation plumbing out of the inline presentation.
 - Preserve full raw provider and tool JSON without truncation alongside the
   exact simplified tool message sent to the model. Redact secrets. “Provider
   reasoning” means fields actually returned by the provider; hidden internal
@@ -82,7 +81,8 @@ Positive:
   tool.
 - The final model sees readable numbered cards, can discard weak results, and
   may not invent IDs.
-- Debugging has one stable trace schema from request through validation.
+- Debugging has one stable seven-step presentation while the internal audit log
+  retains execution and validation evidence.
 - Contract work can ship without adding a model dependency, API key, or network
   behavior.
 

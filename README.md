@@ -169,11 +169,11 @@ The inline trace viewer exposes:
 - The matching algorithm, catalog count, filtered count, and page range.
 - Matched aliases, original ranks, WRatio scores, and title confidence for the
   current page.
-- A chronological eight-stage agent trace with model messages, reasoning relay
-  JSON, tool arguments/results, candidate cards, final ranking, and validation.
+- A chronological seven-step agent trace showing only system prompt, user input
+  prompt, thinking, tool call, tool response, final thinking, and output
+  response.
 - The exact compact tool message sent to the model alongside the untouched raw
   tool JSON.
-- Expandable raw payloads for every stage plus the complete trace JSON.
 
 The backend also appends one complete JSON object per line:
 

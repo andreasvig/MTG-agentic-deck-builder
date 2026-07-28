@@ -30,6 +30,31 @@ const DETAIL_LABELS: Array<[string, string]> = [
 ];
 
 const STAGE_PRESENTATIONS: Record<string, StagePresentation> = {
+  system_prompt: {
+    label: "System prompt",
+    description: "Instructions given to the search agent",
+    tone: "model",
+  },
+  user_input_prompt: {
+    label: "User input prompt",
+    description: "The search request and fuzzy results already shown",
+    tone: "request",
+  },
+  thinking: {
+    label: "Thinking",
+    description: "Reasoning returned by the model",
+    tone: "model",
+  },
+  tool_response: {
+    label: "Tool response",
+    description: "The exact search result returned to the agent",
+    tone: "tool",
+  },
+  output_response: {
+    label: "Output response",
+    description: "The agent's final ranked answer",
+    tone: "result",
+  },
   request_context: {
     label: "Request context",
     description: "Query, filters, and confident fuzzy previews",
@@ -77,6 +102,7 @@ export function SearchTracePanel({ debug }: SearchTracePanelProps) {
   const strategy = textValue(trace.decision.strategy) ?? "undecided";
   const inputKind = textValue(trace.decision.input_kind);
   const query = textValue(trace.request.query);
+  const isAgentic = strategy === "agentic";
 
   return (
     <details className="search-debug">
@@ -92,24 +118,26 @@ export function SearchTracePanel({ debug }: SearchTracePanelProps) {
         />
       </summary>
       <div className="search-debug__body">
-        <div className="search-debug__overview">
-          <span>
-            <small>Query</small>
-            <code>{query ?? "Unknown"}</code>
-          </span>
-          <span>
-            <small>Input</small>
-            <strong>{inputKind ?? "unknown"}</strong>
-          </span>
-          <span>
-            <small>Steps</small>
-            <strong>{trace.stages.length}</strong>
-          </span>
-          <span>
-            <small>Log</small>
-            <strong>{debug.log_written ? "written" : "failed"}</strong>
-          </span>
-        </div>
+        {!isAgentic ? (
+          <div className="search-debug__overview">
+            <span>
+              <small>Query</small>
+              <code>{query ?? "Unknown"}</code>
+            </span>
+            <span>
+              <small>Input</small>
+              <strong>{inputKind ?? "unknown"}</strong>
+            </span>
+            <span>
+              <small>Steps</small>
+              <strong>{trace.stages.length}</strong>
+            </span>
+            <span>
+              <small>Log</small>
+              <strong>{debug.log_written ? "written" : "failed"}</strong>
+            </span>
+          </div>
+        ) : null}
 
         <div className="search-debug__timeline">
           {trace.stages.map((stage, index) => (
@@ -121,15 +149,19 @@ export function SearchTracePanel({ debug }: SearchTracePanelProps) {
           ))}
         </div>
 
-        <details className="search-debug-raw">
-          <summary>Full raw trace JSON</summary>
-          <pre>{JSON.stringify(trace, null, 2)}</pre>
-        </details>
+        {!isAgentic ? (
+          <>
+            <details className="search-debug-raw">
+              <summary>Full raw trace JSON</summary>
+              <pre>{JSON.stringify(trace, null, 2)}</pre>
+            </details>
 
-        <footer className="search-debug__footer">
-          <span>{debug.log_path}</span>
-          <code>{debug.trace_id}</code>
-        </footer>
+            <footer className="search-debug__footer">
+              <span>{debug.log_path}</span>
+              <code>{debug.trace_id}</code>
+            </footer>
+          </>
+        ) : null}
       </div>
     </details>
   );
@@ -151,7 +183,6 @@ function TraceStage({
         `search-debug-layer--${stage.status}`,
         `search-debug-layer--${presentation.tone}`,
       ].join(" ")}
-      open
     >
       <summary>
         <span className="search-debug-layer__number">{index + 1}</span>
@@ -174,6 +205,21 @@ function TraceStage({
 }
 
 function TraceStageContent({ stage }: { stage: SearchDebugTraceStage }) {
+  if (
+    stage.name === "system_prompt" ||
+    stage.name === "user_input_prompt"
+  ) {
+    return <PromptContent details={stage.details} />;
+  }
+  if (stage.name === "thinking") {
+    return <ThinkingContent details={stage.details} />;
+  }
+  if (stage.name === "tool_response") {
+    return <ToolResult details={stage.details} />;
+  }
+  if (stage.name === "output_response") {
+    return <OutputResponse details={stage.details} />;
+  }
   if (stage.name === "request_context") {
     return <RequestContext details={stage.details} />;
   }
@@ -204,6 +250,47 @@ function TraceStageContent({ stage }: { stage: SearchDebugTraceStage }) {
     return <ValidationResult details={stage.details} />;
   }
   return <FuzzyStage stage={stage} />;
+}
+
+function PromptContent({
+  details,
+}: {
+  details: Record<string, unknown> | undefined;
+}) {
+  return (
+    <pre className="search-debug-prompt">
+      {textValue(details?.content) ?? "No prompt text returned"}
+    </pre>
+  );
+}
+
+function ThinkingContent({
+  details,
+}: {
+  details: Record<string, unknown> | undefined;
+}) {
+  const reasoning = textValue(details?.reasoning);
+  const reasoningDetails = details?.reasoning_details;
+
+  return (
+    <>
+      <section className="search-debug-card search-debug-card--reasoning">
+        <p>
+          {reasoning ??
+            "The model did not return visible reasoning text for this step."}
+        </p>
+      </section>
+      {reasoningDetails !== null && reasoningDetails !== undefined ? (
+        <details className="search-debug-nested search-debug-nested--reasoning">
+          <summary>
+            Thinking relay JSON
+            <span>{humanize(textValue(details?.phase) ?? "thinking")}</span>
+          </summary>
+          <pre>{JSON.stringify(reasoningDetails, null, 2)}</pre>
+        </details>
+      ) : null}
+    </>
+  );
 }
 
 function RequestContext({
@@ -400,7 +487,6 @@ function ToolCall({
       <section className="search-debug-card search-debug-card--tool">
         <header>
           <strong>{textValue(details?.name) ?? "Unknown tool"}</strong>
-          <span>{textValue(details?.tool_call_id)}</span>
         </header>
         <div className="search-debug-call">
           <small>Validated arguments</small>
@@ -415,7 +501,6 @@ function ToolCall({
           </div>
         ) : null}
       </section>
-      <StageRawPayload details={details} />
     </>
   );
 }
@@ -426,34 +511,15 @@ function ToolResult({
   details: Record<string, unknown> | undefined;
 }) {
   const rawToolResult = recordValue(details?.raw_tool_result);
-  const numberedCandidates = recordList(details?.numbered_candidates);
-  const candidates =
-    numberedCandidates.length > 0
-      ? numberedCandidates
-      : recordList(rawToolResult?.candidates ?? details?.candidates);
-  const compiledQuery = recordValue(
-    rawToolResult?.compiled_query ?? details?.compiled_query,
-  );
-  const request = recordValue(rawToolResult?.request ?? details?.request);
   const messageToAgent = textValue(details?.message_to_agent);
 
   return (
     <>
-      <TraceMeta
-        values={[
-          ["Tool", textValue(details?.tool)],
-          [
-            "Catalog",
-            numberValue(rawToolResult?.total_candidates ?? details?.total_candidates),
-          ],
-          ["Returned", candidates.length],
-          ["Engine", textValue(compiledQuery?.engine)],
-          ["Semantic", textValue(compiledQuery?.semantic_mode)],
-          ["Limit", numberValue(compiledQuery?.result_limit)],
-        ]}
-      />
       {messageToAgent ? (
-        <details className="search-debug-nested search-debug-nested--message">
+        <details
+          className="search-debug-nested search-debug-nested--message"
+          open
+        >
           <summary>
             Exact message returned to agent
             <span>plain text · temporary numeric IDs</span>
@@ -464,34 +530,54 @@ function ToolResult({
       {rawToolResult ? (
         <details className="search-debug-nested search-debug-nested--raw">
           <summary>
-            Raw tool result
+            Raw tool response
             <span>unaltered internal payload</span>
           </summary>
           <pre>{JSON.stringify(rawToolResult, null, 2)}</pre>
         </details>
       ) : null}
-      {request ? (
+    </>
+  );
+}
+
+function OutputResponse({
+  details,
+}: {
+  details: Record<string, unknown> | undefined;
+}) {
+  const rankedIds = numberList(details?.ranked_ids);
+  const rankedCards = recordList(details?.ranked_cards);
+  const interpretation = textValue(details?.interpretation);
+  const content = textValue(details?.content);
+
+  return (
+    <>
+      <section className="search-debug-card search-debug-card--result">
+        <header>
+          <strong>Final answer</strong>
+          <span>{rankedIds.length} ranked IDs</span>
+        </header>
+        {interpretation ? <p>{interpretation}</p> : null}
+        {rankedCards.length > 0 ? (
+          <div className="search-debug-output-cards">
+            {rankedCards.map((card, index) => (
+              <span key={`${textValue(card.name) ?? "card"}-${index}`}>
+                <b>{numberValue(card.rank) ?? index + 1}</b>
+                {textValue(card.name) ?? "Unknown card"}
+              </span>
+            ))}
+          </div>
+        ) : null}
+      </section>
+      {content ? (
         <details className="search-debug-nested">
           <summary>
-            Search specification
-            <span>local tool filters</span>
+            Exact output response
+            <span>raw model message</span>
           </summary>
-          <pre>{JSON.stringify(request, null, 2)}</pre>
+          <pre>{prettyJsonText(content)}</pre>
         </details>
       ) : null}
-      {candidates.length > 0 ? (
-        <CardCandidateList candidates={candidates} title="Returned candidates" />
-      ) : null}
-      {compiledQuery ? (
-        <details className="search-debug-nested">
-          <summary>
-            Compiled query
-            <span>{textValue(compiledQuery.engine) ?? "provider query"}</span>
-          </summary>
-          <pre>{JSON.stringify(compiledQuery, null, 2)}</pre>
-        </details>
-      ) : null}
-      <StageRawPayload details={details} />
     </>
   );
 }

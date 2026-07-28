@@ -87,8 +87,9 @@ and reflected in the frontend runtime validator.
 Strict contracts for the active progressive agentic-search phase:
 all-optional local tool fields, semantic and exact Oracle-text conditions,
 merged mana filters, candidate evidence, final ranked IDs, and the versioned
-eight-stage trace. `AgenticCardSearchRequest` and the additional page metadata
-form the public progressive HTTP contract.
+internal audit trace. The public debug summary projects it into the seven
+valuable agent steps. `AgenticCardSearchRequest` and the additional page
+metadata form the public progressive HTTP contract.
 
 ### `domain/deck.py`
 

@@ -2557,6 +2557,49 @@ select {
   line-height: 1.5;
 }
 
+.search-debug-prompt {
+  max-height: 320px;
+  margin: 0;
+  padding: 10px;
+  overflow: auto;
+  color: #344039;
+  font: 8.5px/1.55 var(--font-mono);
+  white-space: pre-wrap;
+  background: #f8faf8;
+  border: 1px solid #dce2dd;
+  border-radius: 4px;
+}
+
+.search-debug-output-cards {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  padding: 0 8px 8px;
+}
+
+.search-debug-output-cards span {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 7px;
+  color: #38525a;
+  font-size: 8px;
+  font-weight: 700;
+  background: #e4f0f1;
+  border-radius: 3px;
+}
+
+.search-debug-output-cards b {
+  color: #fff;
+  background: #4a8791;
+  border-radius: 999px;
+  width: 15px;
+  height: 15px;
+  display: inline-grid;
+  place-items: center;
+  font-size: 7px;
+}
+
 .search-debug-query {
   display: block;
   padding: 9px 8px 4px;

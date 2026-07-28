@@ -1164,15 +1164,11 @@ def _to_search_debug_summary(
         (trace.completed_at - trace.started_at).total_seconds() * 1_000,
         0,
     )
-    stages = [
-        {
-            "name": stage.name,
-            "status": "ok",
-            "duration_ms": stage.duration_ms or 0,
-            "details": stage.payload,
-        }
-        for stage in trace.stages
-    ]
+    stages = _agent_trace_presentation_stages(
+        trace,
+        result_cards=result_cards,
+        interpretation=interpretation,
+    )
     record = {
         "schema_version": trace.schema_version,
         "trace_id": str(trace.trace_id),
@@ -1213,14 +1209,129 @@ def _to_search_debug_summary(
         total_duration_ms=round(total_duration_ms, 3),
         stages=[
             SearchDebugStage(
-                name=stage.name,
+                name=str(stage["name"]),
                 status="ok",
-                duration_ms=stage.duration_ms or 0,
+                duration_ms=float(stage["duration_ms"]),
             )
-            for stage in trace.stages
+            for stage in stages
         ],
         trace=record,
     )
+
+
+def _agent_trace_presentation_stages(
+    trace: AgentSearchTraceRecord,
+    *,
+    result_cards: tuple[CardSearchResult, ...],
+    interpretation: str,
+) -> list[dict[str, Any]]:
+    """Project the internal execution log into the seven user-facing agent steps."""
+
+    by_name = {stage.name: stage for stage in trace.stages}
+    initial_request = by_name["initial_model_request"]
+    initial_response = by_name["initial_model_response"]
+    tool_call = by_name["tool_call"]
+    tool_result = by_name["tool_result"]
+    final_response = by_name["final_model_response"]
+    validation = by_name["validation"]
+
+    messages = initial_request.payload.get("messages")
+    model_messages = messages if isinstance(messages, list) else []
+    system_prompt = _message_content(model_messages, "system")
+    user_prompt = _message_content(model_messages, "user")
+    final_message = _trace_response_message(final_response.payload)
+    final_content = final_message.get("content")
+    ranked_ids = validation.payload.get("ranked_ids")
+
+    return [
+        _presentation_stage(
+            "system_prompt",
+            {"content": system_prompt},
+        ),
+        _presentation_stage(
+            "user_input_prompt",
+            {"content": user_prompt},
+        ),
+        _presentation_stage(
+            "thinking",
+            _thinking_trace_payload(initial_response.payload, phase="tool_selection"),
+            duration_ms=initial_response.duration_ms,
+        ),
+        _presentation_stage(
+            "tool_call",
+            tool_call.payload,
+            duration_ms=tool_call.duration_ms,
+        ),
+        _presentation_stage(
+            "tool_response",
+            tool_result.payload,
+            duration_ms=tool_result.duration_ms,
+        ),
+        _presentation_stage(
+            "thinking",
+            _thinking_trace_payload(final_response.payload, phase="final_ranking"),
+            duration_ms=final_response.duration_ms,
+        ),
+        _presentation_stage(
+            "output_response",
+            {
+                "content": final_content if isinstance(final_content, str) else "",
+                "interpretation": interpretation,
+                "ranked_ids": ranked_ids if isinstance(ranked_ids, list) else [],
+                "ranked_cards": [
+                    {
+                        "rank": rank,
+                        "name": card.name,
+                    }
+                    for rank, card in enumerate(result_cards, start=1)
+                ],
+            },
+        ),
+    ]
+
+
+def _presentation_stage(
+    name: str,
+    details: dict[str, Any],
+    *,
+    duration_ms: float | None = None,
+) -> dict[str, Any]:
+    return {
+        "name": name,
+        "status": "ok",
+        "duration_ms": duration_ms or 0,
+        "details": details,
+    }
+
+
+def _message_content(messages: list[object], role: str) -> str:
+    for message in messages:
+        if not isinstance(message, dict) or message.get("role") != role:
+            continue
+        content = message.get("content")
+        return content if isinstance(content, str) else ""
+    return ""
+
+
+def _trace_response_message(response: dict[str, Any]) -> dict[str, Any]:
+    choices = response.get("choices")
+    if not isinstance(choices, list) or not choices or not isinstance(choices[0], dict):
+        return {}
+    message = choices[0].get("message")
+    return message if isinstance(message, dict) else {}
+
+
+def _thinking_trace_payload(
+    response: dict[str, Any],
+    *,
+    phase: str,
+) -> dict[str, Any]:
+    message = _trace_response_message(response)
+    return {
+        "phase": phase,
+        "reasoning": message.get("reasoning"),
+        "reasoning_details": message.get("reasoning_details"),
+    }
 
 
 def _load_json_response(body: bytes) -> object:

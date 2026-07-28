@@ -183,22 +183,20 @@ Debug mode:
   agent-ranked results.
 - Reports the local catalog count, filtered count, removed count, page range,
   matched aliases, original ranks, WRatio scores, and title confidence.
-- Renders agentic stages as a chronological trace with readable prompt
-  messages, provider metadata, reasoning relay JSON, normalized tool
-  arguments, candidate cards, final interpretation, and validation checks.
+- Renders exactly seven agentic steps: system prompt, user input prompt,
+  thinking, tool call, tool response, final thinking, and output response.
 - Shows the exact simplified tool-role message sent to the model, using local
   numeric IDs, beside the expandable untouched raw tool result.
-- Exposes the complete raw trace JSON in an expandable inline panel.
 - Records `minimum_score: null` to make the absence of a threshold explicit.
 - Appends the complete trace to `local-data/search-debug.jsonl`.
 
 Fuzzy traces include preview confidence, the qualifying preview count, and the
-agentic handoff decision. Completed agentic traces use schema version 2 and
-contain eight raw stages: request context, initial model request/response, tool
-call/result, final model request/response, and validation. The JSONL writer
-preserves complete model/tool payloads and provider-returned reasoning fields
-while redacting authentication headers, API keys, cookies, passwords, and
-secrets. It does not claim access to hidden model chain-of-thought.
+agentic handoff decision. The inline agent trace deliberately hides duplicated
+request envelopes, request context, validation plumbing, log metadata, and the
+full raw trace. The internal schema-version-2 JSONL audit record remains
+complete and preserves model/tool payloads and provider-returned reasoning
+fields while redacting authentication headers, API keys, cookies, passwords,
+and secrets. It does not claim access to hidden model chain-of-thought.
 
 ## Public Endpoint
 
@@ -255,4 +253,4 @@ in debug mode and used by the progressive preview phase.
   execution, natural prompts, raw/simplified tool trace payloads, candidate
   omission, alias-aware confidence preservation, and session pagination.
 - Frontend component and browser tests: progressive preview, animated agent
-  handoff, readable eight-stage traces, scores, filters, and Load more.
+  handoff, readable seven-step traces, scores, filters, and Load more.

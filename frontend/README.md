@@ -108,13 +108,12 @@ mode is enabled. `name_match_scores` remains the broad WRatio evidence. Both
 scores stay alias-aware after agentic reranking, including short pre-comma
 aliases such as `Ghalta`.
 
-The debug viewer presents agentic execution as eight chronological,
-color-coded stages. Each stage has a readable summary for prompts, provider
-metadata, reasoning relay JSON, tool arguments/results, candidate cards, final
-interpretation, or validation. Raw stage and full-trace JSON remain
-expandable. The tool-result stage shows the exact simplified plain-text message
-sent to the model with IDs `1..N`, plus the untouched raw tool JSON. Validation
-shows how many irrelevant candidates the model omitted.
+The debug viewer presents agentic execution as exactly seven chronological,
+color-coded stages: system prompt, user input prompt, thinking, tool call, tool
+response, final thinking, and output response. It omits duplicated request
+envelopes, request context, validation plumbing, log metadata, and full-trace
+JSON. The tool-response stage shows the exact simplified plain-text message
+sent to the model with IDs `1..N`, plus the untouched raw tool JSON.
 
 When the backend changes `CardSearchPage`, update:
 
@@ -152,7 +151,7 @@ Test ownership:
 - `lib/api.test.ts`: request encoding, errors, runtime response validation.
 - `components/SearchDrawer.test.tsx`: filters, debug, scores, progressive
   loading.
-- `components/SearchTracePanel.test.tsx`: readable content across all eight
+- `components/SearchTracePanel.test.tsx`: readable content across exactly seven
   agentic trace stages.
 - `App.test.tsx`: primary deck/editor integration behavior.
 - `e2e/deck-builder.spec.ts`: real browser workflows with deterministic API

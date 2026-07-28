@@ -13,55 +13,33 @@ it("renders readable content for every agentic trace stage", async () => {
   };
   debug.trace.stages = [
     {
-      name: "request_context",
+      name: "system_prompt",
       status: "ok",
       duration_ms: 0,
       details: {
-        query: "galtha",
-        filters: {},
-        preview_candidates: [ghalta],
+        content: "Choose exactly one search tool.",
       },
     },
     {
-      name: "initial_model_request",
+      name: "user_input_prompt",
       status: "ok",
       duration_ms: 0,
       details: {
-        model: "test/model",
-        tool_choice: "required",
-        messages: [
-          { role: "system", content: "Choose one search tool." },
-          { role: "user", content: "galtha" },
-        ],
-        tools: [
-          {
-            type: "function",
-            function: { name: "search_local_cards" },
-          },
-        ],
+        content:
+          'Please find cards for "galtha".\n1. Ghalta, Primal Hunger',
       },
     },
     {
-      name: "initial_model_response",
+      name: "thinking",
       status: "ok",
       duration_ms: 100,
       details: {
-        choices: [
+        phase: "tool_selection",
+        reasoning: "The query resembles a card title.",
+        reasoning_details: [
           {
-            finish_reason: "tool_calls",
-            message: {
-              role: "assistant",
-              reasoning: "The query resembles a card title.",
-              tool_calls: [
-                {
-                  id: "call-1",
-                  function: {
-                    name: "search_local_cards",
-                    arguments: '{"name":{"query":"Ghalta"}}',
-                  },
-                },
-              ],
-            },
+            type: "reasoning.summary",
+            summary: "Use local title search.",
           },
         ],
       },
@@ -77,7 +55,7 @@ it("renders readable content for every agentic trace stage", async () => {
       },
     },
     {
-      name: "tool_result",
+      name: "tool_response",
       status: "ok",
       duration_ms: 25,
       details: {
@@ -100,48 +78,32 @@ it("renders readable content for every agentic trace stage", async () => {
       },
     },
     {
-      name: "final_model_request",
-      status: "ok",
-      duration_ms: 0,
-      details: {
-        model: "test/model",
-        messages: [{ role: "tool", content: "one candidate" }],
-      },
-    },
-    {
-      name: "final_model_response",
+      name: "thinking",
       status: "ok",
       duration_ms: 120,
       details: {
-        model: "test/model",
-        provider: "test-provider",
-        choices: [
+        phase: "final_ranking",
+        reasoning: "Ghalta is the strongest title match.",
+        reasoning_details: [
           {
-            finish_reason: "stop",
-            message: {
-              role: "assistant",
-              content: JSON.stringify({
-                interpretation: "Ghalta title matches.",
-                ranked_ids: [1],
-              }),
-              reasoning_details: [{ type: "reasoning.summary" }],
-            },
+            type: "reasoning.summary",
+            summary: "Rank Ghalta first.",
           },
         ],
-        usage: { total_tokens: 100, cost: 0.001 },
       },
     },
     {
-      name: "validation",
+      name: "output_response",
       status: "ok",
       duration_ms: 0,
       details: {
-        status: "accepted",
-        candidate_count: 2,
+        content: JSON.stringify({
+          interpretation: "Ghalta title matches.",
+          ranked_ids: [1],
+        }),
+        interpretation: "Ghalta title matches.",
         ranked_ids: [1],
-        omitted_ids: [2],
-        ranked_ids_valid: true,
-        invented_ids: [],
+        ranked_cards: [{ rank: 1, name: "Ghalta, Primal Hunger" }],
       },
     },
   ];
@@ -149,15 +111,19 @@ it("renders readable content for every agentic trace stage", async () => {
   const { container } = render(<SearchTracePanel debug={debug} />);
   await userEvent.click(screen.getByText("Search trace"));
 
-  expect(screen.getByText("Planning request")).toBeInTheDocument();
-  expect(screen.getByText("Requested tool call")).toBeInTheDocument();
+  expect(screen.getByText("System prompt")).toBeInTheDocument();
+  expect(screen.getByText("User input prompt")).toBeInTheDocument();
+  expect(screen.getAllByText("Thinking")).toHaveLength(2);
+  expect(screen.getByText("Tool call")).toBeInTheDocument();
+  expect(screen.getByText("Tool response")).toBeInTheDocument();
+  expect(screen.getByText("Output response")).toBeInTheDocument();
   expect(screen.getByText("Exact message returned to agent")).toBeInTheDocument();
-  expect(screen.getByText("Raw tool result")).toBeInTheDocument();
-  expect(screen.getByText("Returned candidates")).toBeInTheDocument();
+  expect(screen.getByText("Raw tool response")).toBeInTheDocument();
   expect(screen.getByText("Ghalta title matches.")).toBeInTheDocument();
-  expect(screen.getByText("Ranking accepted")).toBeInTheDocument();
-  expect(screen.getByText("1 irrelevant candidate omitted")).toBeInTheDocument();
-  expect(container.querySelectorAll(".search-debug-layer__body")).toHaveLength(8);
+  expect(screen.queryByText("Request context")).not.toBeInTheDocument();
+  expect(screen.queryByText("Validation")).not.toBeInTheDocument();
+  expect(screen.queryByText("Full raw trace JSON")).not.toBeInTheDocument();
+  expect(container.querySelectorAll(".search-debug-layer__body")).toHaveLength(7);
   expect(
     [...container.querySelectorAll(".search-debug-layer__body")].every(
       (body) => (body.textContent ?? "").trim().length > 0,

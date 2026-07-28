@@ -326,19 +326,27 @@ def test_agent_runs_one_tool_then_reuses_the_ranked_session(
     assert str(GHALTA.scryfall_id) not in tool_message
     assert first.debug is not None
     assert [stage.name for stage in first.debug.stages] == [
-        "request_context",
-        "initial_model_request",
-        "initial_model_response",
+        "system_prompt",
+        "user_input_prompt",
+        "thinking",
         "tool_call",
-        "tool_result",
-        "final_model_request",
-        "final_model_response",
-        "validation",
+        "tool_response",
+        "thinking",
+        "output_response",
     ]
+    presentation_stages = first.debug.trace["stages"]
+    assert (
+        "You are a Magic: The Gathering card-search agent"
+        in presentation_stages[0]["details"]["content"]
+    )
+    assert '"green big creature"' in presentation_stages[1]["details"]["content"]
+    assert presentation_stages[2]["details"]["reasoning"].startswith("The query asks")
     tool_result_trace = first.debug.trace["stages"][4]["details"]
     assert tool_result_trace["raw_tool_result"]["candidates"]
     assert tool_result_trace["message_to_agent"].startswith("The search tool has finished.")
     assert tool_result_trace["numbered_candidates"][0]["id"] == 1
+    assert presentation_stages[5]["details"]["reasoning"] == "Ranked by fit."
+    assert presentation_stages[6]["details"]["ranked_ids"] == [1, 2]
     assert '"schema_version":2' in trace_path.read_text(encoding="utf-8")
 
     second = asyncio.run(
@@ -416,6 +424,6 @@ def test_agent_can_omit_irrelevant_candidates(
     assert result.cards == [GHALTA]
     assert result.total_results == 1
     assert result.debug is not None
-    validation = result.debug.trace["stages"][7]["details"]
-    assert validation["ranked_ids"] == [1]
-    assert validation["omitted_ids"] == [2]
+    output_response = result.debug.trace["stages"][6]["details"]
+    assert output_response["ranked_ids"] == [1]
+    assert output_response["ranked_cards"] == [{"rank": 1, "name": "Ghalta, Primal Hunger"}]

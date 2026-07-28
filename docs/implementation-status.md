@@ -144,8 +144,8 @@ Implemented:
 - Strict final interpretation/ranked-ID output using temporary integers,
   runtime guards against invented IDs, and permission to omit irrelevant
   candidates.
-- Versioned eight-stage complete agent trace, secret redaction, and untruncated
-  JSONL persistence contracts.
+- Versioned complete internal agent audit trace, secret redaction, and
+  untruncated JSONL persistence contracts.
 - Local exact-condition tool execution against the complete derived catalog.
 - Bounded live Scryfall search tool with paper-only queries, provider pacing,
   immutable UI-filter enforcement, and validated card mapping.
@@ -155,8 +155,8 @@ Implemented:
 - Drawer handoff that keeps confident previews visible while the agent runs.
 - In-memory ranked search sessions so **Load more** does not call the model
   again.
-- Expandable full raw JSON for all eight agent stages in the current trace
-  panel.
+- Focused seven-step inline agent trace with system prompt, user input,
+  provider-returned thinking, tool call/response, final thinking, and output.
 - Natural URL-free user prompts, explicit already-shown fuzzy IDs, and an exact
   readable tool-role message stored beside the untouched raw tool result.
 
