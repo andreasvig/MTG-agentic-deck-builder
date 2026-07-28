@@ -6,10 +6,10 @@ clear the stricter 75% preview-confidence boundary, the drawer keeps those
 confident cards visible and starts one bounded agentic search.
 
 The agent makes exactly one local or Scryfall tool call, sees the result in the
-same conversation, and makes one final structured call that ranks every
-candidate ID. Semantic embeddings remain disabled; descriptive constraints
-that the local catalog cannot execute, such as power or toughness, use
-Scryfall. See
+same conversation, and makes one final structured call that ranks the relevant
+candidate IDs. Semantic embeddings remain disabled; descriptive constraints
+that the local catalog cannot execute, such as power or toughness, use Scryfall.
+See
 [`ADR 0009`](decisions/0009-progressive-one-tool-agentic-search.md).
 
 ## Data Source
@@ -53,8 +53,10 @@ user query
   -> otherwise: return only confident previews immediately
        -> model selects exactly one tool
        -> execute search_local_cards or bounded live Scryfall
-       -> same model context ranks the preview/tool candidate union
-       -> return 12 agent-ranked cards and store the complete ranking
+       -> assign temporary IDs 1..N, preserving preview IDs and "already shown"
+       -> send a concise URL-free card list back to the same model context
+       -> model ranks the relevant subset and may omit weak candidates
+       -> return 12 agent-ranked cards and store the selected ranking
        -> Load more reads the stored ranking without another model call
 ```
 
@@ -184,6 +186,8 @@ Debug mode:
 - Renders agentic stages as a chronological trace with readable prompt
   messages, provider metadata, reasoning relay JSON, normalized tool
   arguments, candidate cards, final interpretation, and validation checks.
+- Shows the exact simplified tool-role message sent to the model, using local
+  numeric IDs, beside the expandable untouched raw tool result.
 - Exposes the complete raw trace JSON in an expandable inline panel.
 - Records `minimum_score: null` to make the absence of a threshold explicit.
 - Appends the complete trace to `local-data/search-debug.jsonl`.
@@ -218,8 +222,9 @@ The GET returns the fuzzy page or immediate confident preview plus
 `agentic_required`. The POST starts the one-tool agent run, or accepts
 `search_session_id` with a later page to reuse a completed ranking.
 
-`total_results` is the number of results in the active fuzzy or agentic
-ranking. `has_more` means a later numbered page exists. `name_match_scores`
+`total_results` is the number of results in the active fuzzy ranking or the
+agent-selected relevant subset. `has_more` means a later numbered page exists.
+`name_match_scores`
 maps each returned
 `scryfall_id` to its broad normalized WRatio score.
 `title_confidence_scores` maps the same IDs to the coverage-aware score shown
@@ -244,10 +249,10 @@ in debug mode and used by the progressive preview phase.
 - `test_title_search.py`: exact-first threshold-free ordering, local filters,
   simple pagination, preview confidence, and trace evidence.
 - `test_agentic_search_contracts.py`: all-optional local-tool fields, multiset
-  symbols, result bounds, complete ranked-ID validation, versioned trace
+  symbols, result bounds, numeric relevant-subset validation, versioned trace
   completeness, full raw JSON persistence, and secret redaction.
 - `test_agentic_card_search.py`: one-tool orchestration, duplicate mana-symbol
-  execution, full trace stages, alias-aware confidence preservation, final
-  ranking, and session pagination.
+  execution, natural prompts, raw/simplified tool trace payloads, candidate
+  omission, alias-aware confidence preservation, and session pagination.
 - Frontend component and browser tests: progressive preview, animated agent
   handoff, readable eight-stage traces, scores, filters, and Load more.

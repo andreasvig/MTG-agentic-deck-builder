@@ -300,7 +300,7 @@ function ModelResponse({
   const toolCalls = recordList(message?.tool_calls);
   const reasoning = textValue(message?.reasoning);
   const reasoningDetails = message?.reasoning_details;
-  const rankedIds = parsedContent ? stringList(parsedContent.ranked_ids) : [];
+  const rankedIds = parsedContent ? numberList(parsedContent.ranked_ids) : [];
   const interpretation = parsedContent
     ? textValue(parsedContent.interpretation)
     : null;
@@ -425,23 +425,53 @@ function ToolResult({
 }: {
   details: Record<string, unknown> | undefined;
 }) {
-  const candidates = recordList(details?.candidates);
-  const compiledQuery = recordValue(details?.compiled_query);
-  const request = recordValue(details?.request);
+  const rawToolResult = recordValue(details?.raw_tool_result);
+  const numberedCandidates = recordList(details?.numbered_candidates);
+  const candidates =
+    numberedCandidates.length > 0
+      ? numberedCandidates
+      : recordList(rawToolResult?.candidates ?? details?.candidates);
+  const compiledQuery = recordValue(
+    rawToolResult?.compiled_query ?? details?.compiled_query,
+  );
+  const request = recordValue(rawToolResult?.request ?? details?.request);
+  const messageToAgent = textValue(details?.message_to_agent);
 
   return (
     <>
       <TraceMeta
         values={[
-          ["Catalog", numberValue(details?.total_candidates)],
+          ["Tool", textValue(details?.tool)],
+          [
+            "Catalog",
+            numberValue(rawToolResult?.total_candidates ?? details?.total_candidates),
+          ],
           ["Returned", candidates.length],
           ["Engine", textValue(compiledQuery?.engine)],
           ["Semantic", textValue(compiledQuery?.semantic_mode)],
           ["Limit", numberValue(compiledQuery?.result_limit)],
         ]}
       />
+      {messageToAgent ? (
+        <details className="search-debug-nested search-debug-nested--message">
+          <summary>
+            Exact message returned to agent
+            <span>plain text · temporary numeric IDs</span>
+          </summary>
+          <pre>{messageToAgent}</pre>
+        </details>
+      ) : null}
+      {rawToolResult ? (
+        <details className="search-debug-nested search-debug-nested--raw">
+          <summary>
+            Raw tool result
+            <span>unaltered internal payload</span>
+          </summary>
+          <pre>{JSON.stringify(rawToolResult, null, 2)}</pre>
+        </details>
+      ) : null}
       {request ? (
-        <details className="search-debug-nested" open>
+        <details className="search-debug-nested">
           <summary>
             Search specification
             <span>local tool filters</span>
@@ -472,6 +502,8 @@ function ValidationResult({
   details: Record<string, unknown> | undefined;
 }) {
   const inventedIds = stringList(details?.invented_ids);
+  const rankedIds = numberList(details?.ranked_ids);
+  const omittedIds = numberList(details?.omitted_ids);
   const status = textValue(details?.status) ?? "unknown";
 
   return (
@@ -479,18 +511,26 @@ function ValidationResult({
       <section className="search-debug-card search-debug-card--validation">
         <header>
           <strong>{status === "accepted" ? "Ranking accepted" : humanize(status)}</strong>
-          <span>{numberValue(details?.candidate_count) ?? 0} candidates</span>
+          <span>
+            {rankedIds.length} ranked · {omittedIds.length} omitted
+          </span>
         </header>
         <div className="search-debug-checks">
           <span>
-            <b>{details?.all_candidates_ranked === true ? "✓" : "!"}</b>
-            Every candidate ranked
+            <b>{details?.ranked_ids_valid === false ? "!" : "✓"}</b>
+            Every ranked ID is a real candidate
           </span>
           <span>
             <b>{inventedIds.length === 0 ? "✓" : "!"}</b>
             {inventedIds.length === 0
               ? "No invented card IDs"
               : `${inventedIds.length} invented IDs rejected`}
+          </span>
+          <span>
+            <b>–</b>
+            {omittedIds.length === 0
+              ? "No candidates omitted"
+              : `${omittedIds.length} irrelevant candidate${omittedIds.length === 1 ? "" : "s"} omitted`}
           </span>
         </div>
       </section>
@@ -628,15 +668,18 @@ function CardCandidateList({
       <div>
         {candidates.slice(0, 12).map((candidate, index) => {
           const card = recordValue(candidate.card) ?? candidate;
+          const candidateId = numberValue(candidate.id) ?? index + 1;
+          const alreadyShown = candidate.already_shown === true;
           return (
             <span key={`${textValue(card.scryfall_id) ?? textValue(card.name)}-${index}`}>
-              <b>{index + 1}</b>
+              <b>{candidateId}</b>
               <span>
                 <strong>{textValue(card.name) ?? "Unknown card"}</strong>
                 <small>
                   {[textValue(card.mana_cost), textValue(card.type_line)]
                     .filter(Boolean)
                     .join(" · ")}
+                  {alreadyShown ? " · already shown" : ""}
                 </small>
               </span>
             </span>
@@ -835,6 +878,12 @@ function recordList(value: unknown): Record<string, unknown>[] {
 function stringList(value: unknown): string[] {
   return Array.isArray(value)
     ? value.flatMap((item) => (typeof item === "string" ? [item] : []))
+    : [];
+}
+
+function numberList(value: unknown): number[] {
+  return Array.isArray(value)
+    ? value.flatMap((item) => (typeof item === "number" ? [item] : []))
     : [];
 }
 

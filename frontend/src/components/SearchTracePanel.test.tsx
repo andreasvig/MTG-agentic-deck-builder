@@ -81,14 +81,22 @@ it("renders readable content for every agentic trace stage", async () => {
       status: "ok",
       duration_ms: 25,
       details: {
-        total_candidates: 33253,
-        request: { name: { query: "Ghalta" } },
-        compiled_query: {
-          engine: "local_sqlite_catalog",
-          semantic_mode: "disabled",
-          result_limit: 24,
+        tool: "search_local_cards",
+        message_to_agent:
+          "The search tool has finished.\nID 1 [ALREADY SHOWN]\nName: Ghalta, Primal Hunger",
+        numbered_candidates: [
+          { id: 1, already_shown: true, card: ghalta },
+        ],
+        raw_tool_result: {
+          total_candidates: 33253,
+          request: { name: { query: "Ghalta" } },
+          compiled_query: {
+            engine: "local_sqlite_catalog",
+            semantic_mode: "disabled",
+            result_limit: 24,
+          },
+          candidates: [{ card: ghalta }],
         },
-        candidates: [{ card: ghalta }],
       },
     },
     {
@@ -97,9 +105,7 @@ it("renders readable content for every agentic trace stage", async () => {
       duration_ms: 0,
       details: {
         model: "test/model",
-        tool_choice: "none",
         messages: [{ role: "tool", content: "one candidate" }],
-        tools: [],
       },
     },
     {
@@ -116,7 +122,7 @@ it("renders readable content for every agentic trace stage", async () => {
               role: "assistant",
               content: JSON.stringify({
                 interpretation: "Ghalta title matches.",
-                ranked_ids: [ghalta.scryfall_id],
+                ranked_ids: [1],
               }),
               reasoning_details: [{ type: "reasoning.summary" }],
             },
@@ -131,8 +137,10 @@ it("renders readable content for every agentic trace stage", async () => {
       duration_ms: 0,
       details: {
         status: "accepted",
-        candidate_count: 1,
-        all_candidates_ranked: true,
+        candidate_count: 2,
+        ranked_ids: [1],
+        omitted_ids: [2],
+        ranked_ids_valid: true,
         invented_ids: [],
       },
     },
@@ -143,9 +151,12 @@ it("renders readable content for every agentic trace stage", async () => {
 
   expect(screen.getByText("Planning request")).toBeInTheDocument();
   expect(screen.getByText("Requested tool call")).toBeInTheDocument();
+  expect(screen.getByText("Exact message returned to agent")).toBeInTheDocument();
+  expect(screen.getByText("Raw tool result")).toBeInTheDocument();
   expect(screen.getByText("Returned candidates")).toBeInTheDocument();
   expect(screen.getByText("Ghalta title matches.")).toBeInTheDocument();
   expect(screen.getByText("Ranking accepted")).toBeInTheDocument();
+  expect(screen.getByText("1 irrelevant candidate omitted")).toBeInTheDocument();
   expect(container.querySelectorAll(".search-debug-layer__body")).toHaveLength(8);
   expect(
     [...container.querySelectorAll(".search-debug-layer__body")].every(

@@ -214,11 +214,11 @@ class AgentRankedSearchOutput(AgentSearchModel):
     """Final structured output after the single allowed tool call."""
 
     interpretation: BoundedString
-    ranked_ids: list[UUID] = Field(max_length=90)
+    ranked_ids: list[Annotated[int, Field(ge=1, le=90)]] = Field(max_length=90)
 
     @field_validator("ranked_ids")
     @classmethod
-    def ranked_ids_must_be_unique(cls, value: list[UUID]) -> list[UUID]:
+    def ranked_ids_must_be_unique(cls, value: list[int]) -> list[int]:
         if len(value) != len(set(value)):
             raise ValueError("ranked_ids must be unique")
         return value

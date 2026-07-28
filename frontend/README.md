@@ -112,7 +112,9 @@ The debug viewer presents agentic execution as eight chronological,
 color-coded stages. Each stage has a readable summary for prompts, provider
 metadata, reasoning relay JSON, tool arguments/results, candidate cards, final
 interpretation, or validation. Raw stage and full-trace JSON remain
-expandable.
+expandable. The tool-result stage shows the exact simplified plain-text message
+sent to the model with IDs `1..N`, plus the untouched raw tool JSON. Validation
+shows how many irrelevant candidates the model omitted.
 
 When the backend changes `CardSearchPage`, update:
 

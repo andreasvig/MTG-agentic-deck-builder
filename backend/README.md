@@ -21,6 +21,9 @@ The backend currently owns:
 - Structured debug traces and JSONL persistence.
 - Strict local-tool, final-ranking, and complete agent-trace contracts.
 - One-tool OpenRouter orchestration with local and live Scryfall search tools.
+- Natural model-facing prompts with temporary numeric candidate IDs and no
+  image/provider URLs.
+- Relevant-subset ranking that permits weak candidates to be omitted.
 - Stored agent-ranked pagination that does not repeat model calls.
 
 The backend does not currently own:
@@ -92,6 +95,10 @@ src/mtg_deck_builder/
 - Agentic result scores must use the same title aliases as fuzzy previews so a
   rerank cannot lower confidence merely by switching to the complete card
   title.
+- Model-facing candidates use search-local integer IDs; public card UUIDs stay
+  outside the prompt and are restored only after validation.
+- Final rankings may omit irrelevant candidates but may not duplicate or
+  invent candidate IDs.
 - Search debug records candidates, WRatio, title confidence, and filter
   outcomes, not secret headers.
 

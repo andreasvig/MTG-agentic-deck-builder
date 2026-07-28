@@ -66,6 +66,12 @@ search:
       Distinguish mana-cost symbols from Oracle-text symbols. An X in Oracle text
       alone does not make a card an X spell.
 
-      After the tool returns, do not call another tool. Rank the complete
-      candidate union and return only unique identifiers present in that union.
-      Never invent cards or identifiers.
+      The user message identifies any fuzzy title matches that are already
+      visible to the user. They use small temporary IDs such as 1, 2, and 3.
+      After the tool returns, do not call another tool. You will receive one
+      concise, numbered candidate list that includes those already-visible
+      cards and the tool results.
+
+      Rank only candidates that meaningfully match the user's request. Return
+      their temporary numeric IDs in best-first order. You may omit irrelevant
+      candidates, including weak fuzzy matches. Never invent cards or IDs.

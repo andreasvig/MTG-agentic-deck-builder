@@ -363,7 +363,14 @@ class AgenticCardSearchService:
                 "query": request.q,
                 "filters": request.filters.model_dump(mode="json"),
                 "debug": request.debug,
-                "preview_candidates": [card.model_dump(mode="json") for card in preview.cards],
+                "preview_candidates": [
+                    _numbered_candidate_payload(
+                        candidate_id,
+                        card,
+                        already_shown=True,
+                    )
+                    for candidate_id, card in enumerate(preview.cards, start=1)
+                ],
             }
         )
         try:
@@ -447,20 +454,7 @@ class AgenticCardSearchService:
             },
             {
                 "role": "user",
-                "content": json.dumps(
-                    {
-                        "search_query": request.q,
-                        "immutable_ui_filters": request.filters.model_dump(mode="json"),
-                        "confident_fuzzy_title_preview": [
-                            card.model_dump(mode="json") for card in preview.cards
-                        ],
-                        "required_workflow": (
-                            "Call exactly one tool. After its result, rank every "
-                            "candidate from the preview/tool union."
-                        ),
-                    },
-                    ensure_ascii=True,
-                ),
+                "content": _render_initial_user_message(request, preview.cards),
             },
         ]
         initial_payload = {
@@ -509,32 +503,44 @@ class AgenticCardSearchService:
                 tool_call.arguments,
                 immutable_filters=request.filters,
             )
-        trace.add_stage(
-            "tool_result",
-            executed.payload,
-            duration_ms=_elapsed_ms(started),
-        )
+        tool_duration_ms = _elapsed_ms(started)
 
         union = _candidate_union(preview.cards, executed.candidates)
-        tool_message_content = {
-            **executed.payload,
-            "required_candidate_union_ids": [str(card.scryfall_id) for card in union],
-            "required_candidate_union": [_compact_card_for_model(card) for card in union],
-        }
+        preview_oracle_ids = {card.oracle_id for card in preview.cards}
+        numbered_candidates = [
+            _numbered_candidate_payload(
+                candidate_id,
+                card,
+                already_shown=card.oracle_id in preview_oracle_ids,
+            )
+            for candidate_id, card in enumerate(union, start=1)
+        ]
+        tool_message_content = _render_tool_result_message(
+            executed,
+            numbered_candidates,
+        )
+        trace.add_stage(
+            "tool_result",
+            {
+                "tool": executed.name,
+                "raw_tool_result": executed.payload,
+                "message_to_agent": tool_message_content,
+                "numbered_candidates": numbered_candidates,
+            },
+            duration_ms=tool_duration_ms,
+        )
         final_messages = [
             *messages,
             _assistant_tool_call_message(assistant_message),
             {
                 "role": "tool",
                 "tool_call_id": call_id,
-                "content": json.dumps(tool_message_content, ensure_ascii=True),
+                "content": tool_message_content,
             },
         ]
         final_payload = {
             "model": self._settings.model,
             "messages": final_messages,
-            "tools": tools,
-            "tool_choice": "none",
             "temperature": 0,
             "reasoning": {"effort": "minimal", "exclude": False},
             "provider": {"require_parameters": True},
@@ -558,19 +564,19 @@ class AgenticCardSearchService:
         output = _parse_final_output(final_response)
         ranked_ids = validate_final_ranking(
             output,
-            preview_ids=(),
-            tool_candidate_ids=(card.scryfall_id for card in union),
+            candidate_ids=range(1, len(union) + 1),
             max_candidate_count=self._page_size + self._settings.max_tool_results,
         )
-        by_id = {card.scryfall_id: card for card in union}
-        ranked_cards = tuple(by_id[card_id] for card_id in ranked_ids)
+        ranked_cards = tuple(union[candidate_id - 1] for candidate_id in ranked_ids)
+        omitted_ids = sorted(set(range(1, len(union) + 1)) - set(ranked_ids))
         trace.add_stage(
             "validation",
             {
                 "status": "accepted",
                 "candidate_count": len(union),
-                "ranked_ids": [str(card_id) for card_id in ranked_ids],
-                "all_candidates_ranked": True,
+                "ranked_ids": list(ranked_ids),
+                "omitted_ids": omitted_ids,
+                "ranked_ids_valid": True,
                 "invented_ids": [],
             },
         )
@@ -964,16 +970,142 @@ def _candidate_union(
     return tuple(cards)
 
 
-def _compact_card_for_model(card: CardSearchResult) -> dict[str, Any]:
+def _numbered_candidate_payload(
+    candidate_id: int,
+    card: CardSearchResult,
+    *,
+    already_shown: bool,
+) -> dict[str, Any]:
+    """Build the compact, URL-free card shape used in agent messages and traces."""
+
     return {
-        "scryfall_id": str(card.scryfall_id),
-        "name": card.name,
-        "mana_cost": card.mana_cost,
-        "mana_value": card.mana_value,
-        "type_line": card.type_line,
-        "oracle_text": card.oracle_text,
-        "color_identity": card.color_identity,
+        "id": candidate_id,
+        "already_shown": already_shown,
+        "card": {
+            "name": card.name,
+            "mana_cost": _card_mana_cost(card) or None,
+            "mana_value": card.mana_value,
+            "type_line": _card_type_line(card),
+            "oracle_text": _card_oracle_text(card) or None,
+            "color_identity": card.color_identity,
+        },
     }
+
+
+def _render_initial_user_message(
+    request: AgenticCardSearchRequest,
+    preview_cards: list[CardSearchResult],
+) -> str:
+    """Render the user's search as short natural text without provider fields."""
+
+    lines = [
+        "Please find Magic: The Gathering cards for this request:",
+        f'"{request.q}"',
+        "",
+        "Filters already chosen in the interface:",
+        *_render_filter_lines(request.filters),
+        "",
+    ]
+    if preview_cards:
+        lines.extend(
+            [
+                "The fuzzy title search has already shown these cards to the user:",
+                *[
+                    (
+                        f"{candidate_id}. {card.name} — "
+                        f"{_card_mana_cost(card) or 'no mana cost'} — "
+                        f"{_card_type_line(card)}"
+                    )
+                    for candidate_id, card in enumerate(preview_cards, start=1)
+                ],
+                (
+                    "Keep these temporary IDs when the same cards appear in the "
+                    "final candidate list."
+                ),
+            ]
+        )
+    else:
+        lines.append("No fuzzy title matches have been shown to the user yet.")
+    lines.extend(
+        [
+            "",
+            (
+                "Call exactly one search tool now. Wait for its result before "
+                "producing the final ranking."
+            ),
+        ]
+    )
+    return "\n".join(lines)
+
+
+def _render_filter_lines(filters: CardSearchFilters) -> list[str]:
+    lines: list[str] = []
+    if filters.colors:
+        mode = "exactly" if filters.color_mode == "exact" else "can include"
+        lines.append(f"- Color identity {mode}: {', '.join(filters.colors)}")
+    if filters.include_colorless:
+        lines.append("- Colorless cards may be included")
+    if filters.mana_value_min is not None or filters.mana_value_max is not None:
+        lines.append(
+            "- Mana value: " + _format_range(filters.mana_value_min, filters.mana_value_max)
+        )
+    if filters.price_eur_min is not None or filters.price_eur_max is not None:
+        lines.append("- EUR price: " + _format_range(filters.price_eur_min, filters.price_eur_max))
+    return lines or ["- None"]
+
+
+def _format_range(minimum: object | None, maximum: object | None) -> str:
+    if minimum is not None and maximum is not None:
+        return f"{minimum} to {maximum}"
+    if minimum is not None:
+        return f"at least {minimum}"
+    return f"at most {maximum}"
+
+
+def _render_tool_result_message(
+    executed: ExecutedSearchTool,
+    candidates: list[dict[str, Any]],
+) -> str:
+    """Return the exact concise plain-text tool message sent to the final model."""
+
+    lines = [
+        "The search tool has finished.",
+        f"Tool used: {executed.name}",
+        f"Candidate count: {len(candidates)}",
+        (
+            "Candidate IDs are temporary numbers for this search only. Cards marked "
+            "ALREADY SHOWN were visible to the user before this tool finished."
+        ),
+        "",
+    ]
+    for candidate in candidates:
+        card = candidate["card"]
+        shown = " [ALREADY SHOWN]" if candidate["already_shown"] else ""
+        colors = ", ".join(card["color_identity"]) or "colorless"
+        lines.extend(
+            [
+                f"ID {candidate['id']}{shown}",
+                f"Name: {card['name']}",
+                (
+                    f"Mana: {card['mana_cost'] or 'no mana cost'} "
+                    f"(mana value {card['mana_value']:g})"
+                ),
+                f"Type: {card['type_line']}",
+                f"Color identity: {colors}",
+                f"Rules: {card['oracle_text'] or 'No rules text'}",
+                "",
+            ]
+        )
+    lines.extend(
+        [
+            (
+                "Return the relevant candidate IDs in best-first order. You may "
+                "omit any candidate that does not meaningfully match the request."
+            ),
+            "Never invent an ID.",
+        ]
+    )
+    return "\n".join(lines)
 
 
 def _card_title_scores(

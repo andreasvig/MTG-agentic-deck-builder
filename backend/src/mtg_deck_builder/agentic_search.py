@@ -1,7 +1,6 @@
 """Non-network runtime guards for progressive agentic card search."""
 
 from collections.abc import Iterable
-from uuid import UUID
 
 from mtg_deck_builder.domain import (
     AgentRankedSearchOutput,
@@ -38,25 +37,21 @@ def resolve_local_tool_limit(
 def validate_final_ranking(
     output: AgentRankedSearchOutput,
     *,
-    preview_ids: Iterable[UUID],
-    tool_candidate_ids: Iterable[UUID],
+    candidate_ids: Iterable[int],
     max_candidate_count: int,
-) -> tuple[UUID, ...]:
-    """Require the final model to rank every candidate and invent no IDs."""
+) -> tuple[int, ...]:
+    """Accept a relevant candidate subset while rejecting invented IDs."""
 
-    candidate_union = tuple(dict.fromkeys((*preview_ids, *tool_candidate_ids)))
-    if len(candidate_union) > max_candidate_count:
+    candidates = tuple(dict.fromkeys(candidate_ids))
+    if len(candidates) > max_candidate_count:
         raise AgentSearchContractError("candidate union exceeds the configured maximum")
 
     ranked = tuple(output.ranked_ids)
-    candidate_set = set(candidate_union)
+    candidate_set = set(candidates)
     ranked_set = set(ranked)
     unknown = ranked_set - candidate_set
-    missing = candidate_set - ranked_set
     if unknown:
         raise AgentSearchContractError("final ranking contains IDs outside the candidate union")
-    if missing:
-        raise AgentSearchContractError("final ranking omitted candidate IDs")
     return ranked
 
 

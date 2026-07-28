@@ -31,10 +31,20 @@ fully observable in debug mode.
   `search_scryfall`. Prefer the local tool; use live Scryfall only for a
   requirement that the local schema cannot represent or when fresh provider
   data is explicitly required.
-- After the tool result, the same agent run must return an interpretation and a
-  ranking containing every ID in the deduplicated preview/tool candidate union.
-  Runtime code validates tool-call count, candidate membership, completeness,
-  uniqueness, limits, and immutable UI filters.
+- Give fuzzy previews stable temporary numeric IDs (`1`, `2`, `3`, and so on)
+  and explicitly tell the agent that those cards are already visible to the
+  user. Preserve those IDs when the same cards appear in the deduplicated
+  preview/tool union.
+- Render the model-facing user request as concise natural text. Do not serialize
+  printing IDs, image URLs, provider URLs, prices, legalities, or other
+  presentation-only card fields into the prompt.
+- After the tool result, send the same agent a concise plain-text candidate
+  list using only temporary numeric IDs and ranking-relevant card text. The
+  final response contains an interpretation and the relevant IDs in best-first
+  order. The agent may omit irrelevant candidates.
+- Runtime code validates tool-call count, candidate membership, uniqueness,
+  limits, and immutable UI filters. It does not require complete candidate
+  coverage.
 - Put semantic retrieval inside `search_local_cards`, under
   `oracle_text.semantic_query`. Hard filters narrow candidates before semantic
   similarity sorts them.
@@ -53,10 +63,10 @@ fully observable in debug mode.
   `request_context`, `initial_model_request`, `initial_model_response`,
   `tool_call`, `tool_result`, `final_model_request`, `final_model_response`,
   and `validation`.
-- Preserve full raw provider and tool JSON without truncation. Redact secrets.
-  “Provider reasoning” means fields actually returned by the provider; hidden
-  internal chain-of-thought is not available and must not be represented as
-  captured.
+- Preserve full raw provider and tool JSON without truncation alongside the
+  exact simplified tool message sent to the model. Redact secrets. “Provider
+  reasoning” means fields actually returned by the provider; hidden internal
+  chain-of-thought is not available and must not be represented as captured.
 - Enable agentic execution only after model calls, progressive API behavior,
   tool execution, session pagination, and tests land. Keep semantic embeddings
   independently disabled until a real index is implemented.
@@ -70,7 +80,8 @@ Positive:
   layered routing graph.
 - Semantic retrieval and structured filters can work together in one local
   tool.
-- The final model can rank concrete card payloads and may not invent IDs.
+- The final model sees readable numbered cards, can discard weak results, and
+  may not invent IDs.
 - Debugging has one stable trace schema from request through validation.
 - Contract work can ship without adding a model dependency, API key, or network
   behavior.

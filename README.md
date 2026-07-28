@@ -154,7 +154,8 @@ The full scoring contract is in [`docs/search.md`](docs/search.md) and
 The progressive agentic phase is active. It keeps confident title matches
 visible, shows an animated ranking state, calls exactly one local or Scryfall
 tool when the first page is under-filled, and ranks only returned candidate
-IDs. See
+IDs. Fuzzy previews and tool candidates use small temporary IDs (`1`, `2`,
+`3`), and the model may omit irrelevant results. See
 [`ADR 0009`](docs/decisions/0009-progressive-one-tool-agentic-search.md).
 
 ## Search Debugging
@@ -170,6 +171,8 @@ The inline trace viewer exposes:
   current page.
 - A chronological eight-stage agent trace with model messages, reasoning relay
   JSON, tool arguments/results, candidate cards, final ranking, and validation.
+- The exact compact tool message sent to the model alongside the untouched raw
+  tool JSON.
 - Expandable raw payloads for every stage plus the complete trace JSON.
 
 The backend also appends one complete JSON object per line:

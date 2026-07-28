@@ -8,7 +8,8 @@ All notable changes to this project will be documented in this file.
 
 - Implemented ADR 0009 progressive one-tool agentic card search: confident
   fuzzy previews return immediately, one OpenRouter-selected local or Scryfall
-  tool runs, and the same model context returns a validated complete ID ranking.
+  tool runs, and the same model context returns a validated relevant-subset
+  ranking.
 - Added `POST /api/v1/cards/search/agentic` and in-memory ranked sessions so
   **Load more** never repeats the model/tool run.
 - Added bounded local exact-condition execution and a paced paper-only live
@@ -25,8 +26,8 @@ All notable changes to this project will be documented in this file.
 - Added strict all-optional local card-search tool contracts, merged mana
   filters, semantic Oracle-text input, multiset exact conditions, and 24/60
   candidate bounds.
-- Added final candidate-union ranking guards that reject invented, duplicate,
-  omitted, or over-limit IDs.
+- Added final candidate-subset ranking guards that reject invented, duplicate,
+  or over-limit IDs while allowing irrelevant candidates to be omitted.
 - Added a versioned eight-stage agent debug trace, provider-reasoning payload
   capture, recursive secret redaction, and untruncated JSONL persistence.
 - Added an expandable full raw JSON view to the inline search debug panel.
@@ -35,6 +36,9 @@ All notable changes to this project will be documented in this file.
 - Added readable chronological cards for all eight agent trace stages,
   including prompts, provider usage, reasoning relay JSON, tool
   arguments/results, candidates, interpretation, and validation.
+- Added natural URL-free agent user prompts, temporary numeric candidate IDs,
+  explicit already-shown fuzzy markers, and a readable exact tool message
+  stored beside the untouched raw tool result.
 - Added a streaming Scryfall `default_cards` importer, timestamp-aware refresh
   command, atomic SQLite installation, and local catalog reload after swaps.
 - Added canonical Oracle-card search rows while retaining every eligible paper

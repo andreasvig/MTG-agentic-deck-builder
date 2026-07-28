@@ -156,15 +156,17 @@ JSONL lines.
 
 ### `agentic_search.py`
 
-Non-network guards for local-tool result limits and final candidate-union
-ranking. These prevent empty unconstrained tool requests, invented IDs, omitted
-candidates, and configured-bound violations.
+Non-network guards for local-tool result limits and final candidate-subset
+ranking. These prevent empty unconstrained tool requests, invented IDs, and
+configured-bound violations while allowing irrelevant candidates to be
+omitted.
 
 ### `agentic_card_search.py`
 
 Executes exact local conditions, bounded paced Scryfall queries, the two-call
-OpenRouter conversation with one intervening tool, complete candidate-union
-validation, debug adaptation, and in-memory ranked-session pagination.
+OpenRouter conversation with one intervening tool, temporary numeric candidate
+IDs, relevant-subset validation, debug adaptation, and in-memory ranked-session
+pagination.
 
 ### `agentic_search_debug.py`
 

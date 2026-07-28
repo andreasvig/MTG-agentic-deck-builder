@@ -98,14 +98,14 @@ def test_local_tool_rejects_invalid_ranges_limits_and_unknown_fields(
 def test_final_agent_output_requires_unique_candidate_ids() -> None:
     valid = AgentRankedSearchOutput(
         interpretation="Artifact creatures that scale with counters",
-        ranked_ids=[FIRST_ID, SECOND_ID],
+        ranked_ids=[1, 2],
     )
 
-    assert valid.ranked_ids == [FIRST_ID, SECOND_ID]
+    assert valid.ranked_ids == [1, 2]
     with pytest.raises(ValidationError):
         AgentRankedSearchOutput(
             interpretation="Duplicate result",
-            ranked_ids=[FIRST_ID, FIRST_ID],
+            ranked_ids=[1, 1],
         )
 
 
@@ -136,38 +136,37 @@ def test_local_tool_limit_requires_criteria_or_immutable_filters() -> None:
         )
 
 
-def test_final_ranking_must_cover_the_candidate_union_without_inventing_ids() -> None:
+def test_final_ranking_accepts_a_relevant_subset_without_inventing_ids() -> None:
     output = AgentRankedSearchOutput(
-        interpretation="All candidates ranked",
-        ranked_ids=[SECOND_ID, FIRST_ID],
+        interpretation="Only the strongest candidate is relevant",
+        ranked_ids=[2],
     )
 
     ranked = validate_final_ranking(
         output,
-        preview_ids=[FIRST_ID],
-        tool_candidate_ids=[FIRST_ID, SECOND_ID],
+        candidate_ids=[1, 2],
         max_candidate_count=60,
     )
 
-    assert ranked == (SECOND_ID, FIRST_ID)
-    with pytest.raises(AgentSearchContractError, match="omitted"):
+    assert ranked == (2,)
+    assert (
         validate_final_ranking(
             AgentRankedSearchOutput(
-                interpretation="Incomplete",
-                ranked_ids=[FIRST_ID],
+                interpretation="No candidates are relevant",
+                ranked_ids=[],
             ),
-            preview_ids=[FIRST_ID],
-            tool_candidate_ids=[SECOND_ID],
+            candidate_ids=[1, 2],
             max_candidate_count=60,
         )
+        == ()
+    )
     with pytest.raises(AgentSearchContractError, match="outside"):
         validate_final_ranking(
             AgentRankedSearchOutput(
                 interpretation="Invented",
-                ranked_ids=[FIRST_ID, SECOND_ID],
+                ranked_ids=[1, 3],
             ),
-            preview_ids=[FIRST_ID],
-            tool_candidate_ids=[],
+            candidate_ids=[1, 2],
             max_candidate_count=60,
         )
 

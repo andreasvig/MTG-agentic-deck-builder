@@ -2650,6 +2650,15 @@ select {
   border-left-color: #8877b2;
 }
 
+.search-debug-nested--message {
+  background: #f2f8f8;
+  border-left-color: #4a8791;
+}
+
+.search-debug-nested--raw {
+  border-left-color: #7c8580;
+}
+
 .search-debug-message > summary,
 .search-debug-nested > summary {
   display: grid;
@@ -2823,6 +2832,10 @@ select {
   font-size: 7px;
   background: #4d7c5b;
   border-radius: 50%;
+}
+
+.search-debug-checks span:last-child b {
+  background: #7a857e;
 }
 
 .search-debug-raw--stage {

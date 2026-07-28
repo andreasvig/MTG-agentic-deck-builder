@@ -141,8 +141,9 @@ Implemented:
   bounded candidate counts.
 - Multiset `must_contain_all` semantics for duplicate symbols such as two
   `{X}` values.
-- Strict final interpretation/ranked-ID output and runtime guards requiring the
-  complete candidate union without invented IDs.
+- Strict final interpretation/ranked-ID output using temporary integers,
+  runtime guards against invented IDs, and permission to omit irrelevant
+  candidates.
 - Versioned eight-stage complete agent trace, secret redaction, and untruncated
   JSONL persistence contracts.
 - Local exact-condition tool execution against the complete derived catalog.
@@ -156,6 +157,8 @@ Implemented:
   again.
 - Expandable full raw JSON for all eight agent stages in the current trace
   panel.
+- Natural URL-free user prompts, explicit already-shown fuzzy IDs, and an exact
+  readable tool-role message stored beside the untouched raw tool result.
 
 Missing:
 

@@ -204,8 +204,14 @@ class StubTool:
 
 
 class StubModelClient:
-    def __init__(self, cards: list[CardSearchResult]) -> None:
+    def __init__(
+        self,
+        cards: list[CardSearchResult],
+        *,
+        ranked_ids: list[int] | None = None,
+    ) -> None:
         self.payloads: list[dict[str, object]] = []
+        final_ids = ranked_ids if ranked_ids is not None else list(range(1, len(cards) + 1))
         self._responses = [
             {
                 "id": "initial",
@@ -251,7 +257,7 @@ class StubModelClient:
                                     "interpretation": (
                                         "Large mono-green creatures, strongest matches first."
                                     ),
-                                    "ranked_ids": [str(card.scryfall_id) for card in cards],
+                                    "ranked_ids": final_ids,
                                 }
                             ),
                             "reasoning": "Ranked by fit.",
@@ -304,7 +310,20 @@ def test_agent_runs_one_tool_then_reuses_the_ranked_session(
     assert scryfall_tool.calls == 1
     assert len(model.payloads) == 2
     assert model.payloads[0]["tool_choice"] == "required"
-    assert model.payloads[1]["tool_choice"] == "none"
+    assert "tool_choice" not in model.payloads[1]
+    assert "tools" not in model.payloads[1]
+    initial_messages = model.payloads[0]["messages"]
+    assert isinstance(initial_messages, list)
+    initial_user_message = initial_messages[1]["content"]
+    assert isinstance(initial_user_message, str)
+    assert '"green big creature"' in initial_user_message
+    assert "image_uris" not in initial_user_message
+    final_messages = model.payloads[1]["messages"]
+    assert isinstance(final_messages, list)
+    tool_message = final_messages[-1]["content"]
+    assert isinstance(tool_message, str)
+    assert "ID 1" in tool_message
+    assert str(GHALTA.scryfall_id) not in tool_message
     assert first.debug is not None
     assert [stage.name for stage in first.debug.stages] == [
         "request_context",
@@ -316,6 +335,10 @@ def test_agent_runs_one_tool_then_reuses_the_ranked_session(
         "final_model_response",
         "validation",
     ]
+    tool_result_trace = first.debug.trace["stages"][4]["details"]
+    assert tool_result_trace["raw_tool_result"]["candidates"]
+    assert tool_result_trace["message_to_agent"].startswith("The search tool has finished.")
+    assert tool_result_trace["numbered_candidates"][0]["id"] == 1
     assert '"schema_version":2' in trace_path.read_text(encoding="utf-8")
 
     second = asyncio.run(
@@ -355,3 +378,44 @@ def test_agentic_results_keep_short_title_alias_confidence(
     assert result.cards == [GHALTA]
     assert result.name_match_scores[GHALTA.scryfall_id] > 0.8
     assert result.title_confidence_scores[GHALTA.scryfall_id] > 0.8
+    initial_user_message = model.payloads[0]["messages"][1]["content"]
+    assert "1. Ghalta, Primal Hunger" in initial_user_message
+    assert "image_uris" not in initial_user_message
+    tool_message = model.payloads[1]["messages"][-1]["content"]
+    assert "ID 1 [ALREADY SHOWN]" in tool_message
+    assert str(GHALTA.scryfall_id) not in tool_message
+
+
+def test_agent_can_omit_irrelevant_candidates(
+    tmp_path: Path,
+) -> None:
+    cards = [GHALTA, GIGANTOSAURUS]
+    model = StubModelClient(cards, ranked_ids=[1])
+    trace_path = tmp_path / "search.jsonl"
+    service = AgenticCardSearchService(
+        fuzzy_provider=StubFuzzyProvider(),  # type: ignore[arg-type]
+        local_tool=StubTool([]),  # type: ignore[arg-type]
+        scryfall_tool=StubTool(cards),  # type: ignore[arg-type]
+        model_client=model,  # type: ignore[arg-type]
+        settings=AgenticSearchSettings(enabled=True),
+        page_size=12,
+        trace_logger=JsonlAgentSearchTraceLogger(trace_path),
+        trace_log_path=str(trace_path),
+        debug_default_enabled=False,
+    )
+
+    result = asyncio.run(
+        service.search(
+            AgenticCardSearchRequest(
+                q="green big creature",
+                debug=True,
+            )
+        )
+    )
+
+    assert result.cards == [GHALTA]
+    assert result.total_results == 1
+    assert result.debug is not None
+    validation = result.debug.trace["stages"][7]["details"]
+    assert validation["ranked_ids"] == [1]
+    assert validation["omitted_ids"] == [2]
