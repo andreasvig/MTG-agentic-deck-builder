@@ -51,6 +51,11 @@ All notable changes to this project are documented here.
 - Added continuation prompts containing all visible cards, local exclusion of
   displayed and previously examined Oracle cards, retryable empty rounds, and
   per-session serialization.
+- Added the normalized `0-1` semantic closeness beneath every semantically
+  sorted candidate in the clean tool message sent to the final ranking model.
+- Added prior local-tool request history to every later continuation prompt.
+  Load-more rounds now explicitly ask the agent to change or broaden its earlier
+  strategy while preserving the request and immutable interface filters.
 - Added an animated agentic-search loading state and larger search-result cards.
 - Added debug-only fuzzy traces and a focused seven-step agent trace: system
   prompt, user input prompt, thinking, tool call, tool response, final thinking,

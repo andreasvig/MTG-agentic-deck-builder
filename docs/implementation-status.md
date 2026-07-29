@@ -157,6 +157,8 @@ Implemented:
 - Filter-before-sort semantic execution with no score cutoff, per-candidate
   cosine evidence, and automatic fallback to the original user intent when the
   model omits `semantic_sort`.
+- Normalized `0-1` semantic closeness in each semantically sorted card's clean
+  model-facing tool block.
 - A single agent-visible local search tool; live Scryfall query generation is
   not exposed to the model.
 - Direct OpenRouter two-call orchestration with exactly one intervening tool
@@ -166,7 +168,8 @@ Implemented:
 - In-memory ranked search sessions that serve cached **Load more** batches
   without a model call and run one user-triggered continuation after exhaustion.
 - Continuation prompts with full **Already showing** details, canonical
-  displayed/considered-card exclusions, retryable empty rounds, and per-round
+  displayed/considered-card exclusions, every prior structured tool request,
+  explicit broaden-or-change guidance, retryable empty rounds, and per-round
   seven-step traces.
 - Focused seven-step inline agent trace with system prompt, user input,
   provider-returned thinking, tool call/response, final thinking, and output.

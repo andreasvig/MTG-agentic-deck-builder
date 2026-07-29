@@ -24,11 +24,14 @@ The backend currently owns:
   search tool.
 - Always-on local FastEmbed semantic sorting after hard filters, with no
   similarity cutoff.
+- Model-facing tool results include each sorted card's normalized `0-1`
+  semantic closeness.
 - Natural model-facing prompts with temporary numeric candidate IDs and no
   image/provider URLs.
 - Relevant-subset ranking that permits weak candidates to be omitted.
 - Stored agent-ranked pagination that serves cached batches without a model
-  call and starts one continuation round only after exhaustion.
+  call and starts one continuation round only after exhaustion. Later rounds
+  receive every prior tool request and must deliberately broaden their search.
 
 The backend does not currently own:
 

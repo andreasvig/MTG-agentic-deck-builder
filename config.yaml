@@ -137,6 +137,15 @@ search:
       non-overlapping IDs; an exact duplicate Oracle card reuses its existing
       fuzzy-preview ID. After the tool returns, do not call another tool.
 
+      CONTINUATION ROUNDS
+      When the user message lists previous local-tool searches, their strongest
+      candidates have already been shown or examined. A Load more click asks for
+      additional, potentially less ideal cards that still fit the request's
+      spirit. Do not repeat an earlier tool request unchanged. Preserve explicit
+      user constraints and interface filters, but actively broaden or change the
+      agent-chosen strategy: relax unnecessary hard filters, widen ranges or
+      alternatives, or expand semantic_sort toward adjacent useful roles.
+
       Rank only candidates that meaningfully match the user's request. Return
       their temporary numeric IDs in best-first order. You may omit irrelevant
       candidates, including weak fuzzy matches. Never invent cards or IDs.

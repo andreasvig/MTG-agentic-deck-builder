@@ -347,19 +347,16 @@ class StubTool:
         candidates = tuple(
             AgentSearchCandidate(
                 card=card,
+                semantic_score=max(0.0, 0.9 - index * 0.01),
                 exact_match_evidence=["stub query matched"],
                 filter_decisions={"immutable_ui_filters": True},
             )
-            for card in self._candidates
+            for index, card in enumerate(self._candidates)
             if card.oracle_id not in excluded_oracle_ids
         )
         return ExecutedSearchTool(
             name="search_local_cards",
-            arguments={
-                "types": {"must_contain_all": ["Creature"]},
-                "colors": {"identity": ["G"]},
-                "power": {"minimum": 4},
-            },
+            arguments=request.model_dump(mode="json", exclude_none=True),
             candidates=candidates,
             payload={
                 "compiled_query": {
@@ -393,18 +390,21 @@ class RoundStubTool(StubTool):
         round_cards = self._rounds[self.calls]
         self.calls += 1
         self.exclusions.append(excluded_oracle_ids)
+        assert isinstance(request, LocalCardSearchRequest)
+        self.requests.append(request)
         candidates = tuple(
             AgentSearchCandidate(
                 card=card,
+                semantic_score=max(0.0, 0.9 - index * 0.01),
                 exact_match_evidence=["stub query matched"],
                 filter_decisions={"immutable_ui_filters": True},
             )
-            for card in round_cards
+            for index, card in enumerate(round_cards)
             if card.oracle_id not in excluded_oracle_ids
         )
         return ExecutedSearchTool(
             name="search_local_cards",
-            arguments={"power": {"minimum": 4}},
+            arguments=request.model_dump(mode="json", exclude_none=True),
             candidates=candidates,
             payload={
                 "compiled_query": {
@@ -689,6 +689,7 @@ def test_agent_runs_one_tool_then_reuses_the_ranked_session(
     tool_message = final_messages[-1]["content"]
     assert isinstance(tool_message, str)
     assert "ID 1" in tool_message
+    assert "Semantic closeness: 0.9000 (0-1)" in tool_message
     assert str(GHALTA.scryfall_id) not in tool_message
     assert first.debug is not None
     assert [stage.name for stage in first.debug.stages] == [
@@ -711,6 +712,7 @@ def test_agent_runs_one_tool_then_reuses_the_ranked_session(
     assert tool_result_trace["raw_tool_result"]["candidates"]
     assert tool_result_trace["message_to_agent"].startswith("The search tool has finished.")
     assert tool_result_trace["numbered_candidates"][0]["id"] == 1
+    assert tool_result_trace["numbered_candidates"][0]["semantic_score"] == 0.9
     assert presentation_stages[5]["details"]["reasoning"] == "Ranked by fit."
     assert presentation_stages[6]["details"]["ranked_ids"] == [1, 2]
     assert '"schema_version":2' in trace_path.read_text(encoding="utf-8")
@@ -781,6 +783,12 @@ def test_exhausted_session_runs_one_continuation_with_already_shown_cards(
     continuation_prompt = continuation_messages[1]["content"]
     assert isinstance(continuation_prompt, str)
     assert "Please find additional Magic" in continuation_prompt
+    assert "Previous local-tool searches already completed:" in continuation_prompt
+    assert "Search round 1:" in continuation_prompt
+    assert '"semantic_sort": "green big creature"' in continuation_prompt
+    assert '"minimum": 4.0' in continuation_prompt
+    assert "Do not submit any earlier tool request unchanged." in continuation_prompt
+    assert "less ideal than the first results" in continuation_prompt
     assert "Already showing" in continuation_prompt
     assert "Ghalta, Primal Hunger" in continuation_prompt
     assert "Power/Toughness: 12/12" in continuation_prompt
@@ -834,6 +842,13 @@ def test_empty_continuation_is_successful_and_can_be_retried(
     assert retried.cards == [KALONIAN_TWINGROVE]
     assert retried.total_results == 2
     assert local_tool.calls == 3
+    third_round_messages = model.payloads[4]["messages"]
+    assert isinstance(third_round_messages, list)
+    third_round_prompt = third_round_messages[1]["content"]
+    assert isinstance(third_round_prompt, str)
+    assert third_round_prompt.count("Search round ") == 2
+    assert "Search round 1:" in third_round_prompt
+    assert "Search round 2:" in third_round_prompt
 
 
 def test_empty_initial_result_can_start_a_continuation(

@@ -87,6 +87,9 @@ def test_settings_load_repository_search_yaml() -> None:
         settings.search.agentic.system_prompt
     )
     assert '"grave yard things that give me value"' in (settings.search.agentic.system_prompt)
+    assert "Do not repeat an earlier tool request unchanged." in (
+        settings.search.agentic.system_prompt
+    )
     prompt_lines = settings.search.agentic.system_prompt.splitlines()
     example_payloads = [
         json.loads(prompt_lines[index + 1])

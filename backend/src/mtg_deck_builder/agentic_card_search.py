@@ -94,6 +94,7 @@ class _StoredAgentSearch:
     debug_runs: tuple[SearchDebugSummary, ...]
     debug_page: int
     considered_oracle_ids: frozenset[UUID]
+    tool_request_history: tuple[dict[str, Any], ...]
     next_candidate_id: int
     round_number: int
     created_at: float
@@ -269,6 +270,7 @@ class AgenticCardSearchService:
             ),
             candidate_id_start=(len(already_shown) + 1 if is_continuation else 1),
             round_number=1,
+            previous_tool_requests=(),
         )
         session_id = uuid4()
         cards = _deduplicate_cards(completed.cards)
@@ -303,6 +305,7 @@ class AgenticCardSearchService:
             considered_oracle_ids=frozenset(
                 candidate.card.oracle_id for candidate in completed.tool.candidates
             ),
+            tool_request_history=(completed.tool.arguments,),
             next_candidate_id=completed.next_candidate_id,
             round_number=1,
             created_at=monotonic(),
@@ -319,6 +322,7 @@ class AgenticCardSearchService:
         excluded_oracle_ids: frozenset[UUID],
         candidate_id_start: int,
         round_number: int,
+        previous_tool_requests: tuple[dict[str, Any], ...],
     ) -> tuple[_CompletedAgentRun, SearchDebugSummary | None]:
         trace_enabled = self._debug_default_enabled or request.debug
         trace = AgentSearchTraceBuilder(
@@ -327,6 +331,7 @@ class AgenticCardSearchService:
                 "filters": request.filters.model_dump(mode="json"),
                 "debug": request.debug,
                 "round_number": round_number,
+                "previous_tool_requests": list(previous_tool_requests),
                 "preview_candidates": [
                     _numbered_candidate_payload(
                         candidate_id,
@@ -348,6 +353,7 @@ class AgenticCardSearchService:
                 excluded_oracle_ids=excluded_oracle_ids,
                 candidate_id_start=candidate_id_start,
                 round_number=round_number,
+                previous_tool_requests=previous_tool_requests,
                 trace=trace,
             )
         except asyncio.CancelledError as exc:
@@ -390,6 +396,7 @@ class AgenticCardSearchService:
         excluded_oracle_ids: frozenset[UUID],
         candidate_id_start: int,
         round_number: int,
+        previous_tool_requests: tuple[dict[str, Any], ...],
         trace: AgentSearchTraceBuilder,
     ) -> _CompletedAgentRun:
         tools = _tool_definitions()
@@ -405,6 +412,7 @@ class AgenticCardSearchService:
                     selectable_preview=selectable_preview,
                     already_shown=already_shown,
                     round_number=round_number,
+                    previous_tool_requests=previous_tool_requests,
                     include_full_card_details=(
                         self._settings.continuation.include_full_card_details_in_prompt
                     ),
@@ -465,6 +473,9 @@ class AgenticCardSearchService:
 
         union = _candidate_union(selectable_preview, executed.candidates)
         preview_oracle_ids = {card.oracle_id for card in selectable_preview}
+        semantic_scores = {
+            candidate.card.oracle_id: candidate.semantic_score for candidate in executed.candidates
+        }
         numbered_cards = list(
             enumerate(
                 union,
@@ -476,6 +487,7 @@ class AgenticCardSearchService:
                 candidate_id,
                 card,
                 already_shown=card.oracle_id in preview_oracle_ids,
+                semantic_score=semantic_scores.get(card.oracle_id),
             )
             for candidate_id, card in numbered_cards
         ]
@@ -604,6 +616,7 @@ class AgenticCardSearchService:
             ),
             candidate_id_start=stored.next_candidate_id,
             round_number=stored.round_number + 1,
+            previous_tool_requests=stored.tool_request_history,
         )
         existing_ids = {
             *(card.oracle_id for card in already_shown),
@@ -643,6 +656,10 @@ class AgenticCardSearchService:
             considered_oracle_ids=(
                 stored.considered_oracle_ids
                 | frozenset(candidate.card.oracle_id for candidate in completed.tool.candidates)
+            ),
+            tool_request_history=(
+                *stored.tool_request_history,
+                completed.tool.arguments,
             ),
             next_candidate_id=completed.next_candidate_id,
             round_number=stored.round_number + 1,
@@ -1144,12 +1161,14 @@ def _numbered_candidate_payload(
     card: CardSearchResult,
     *,
     already_shown: bool,
+    semantic_score: float | None = None,
 ) -> dict[str, Any]:
     """Build the compact, URL-free card shape used in agent messages and traces."""
 
     return {
         "id": candidate_id,
         "already_shown": already_shown,
+        "semantic_score": semantic_score,
         "card": {
             "name": card.name,
             "mana_cost": _card_mana_cost(card) or None,
@@ -1169,6 +1188,7 @@ def _render_agent_user_message(
     selectable_preview: list[CardSearchResult],
     already_shown: list[CardSearchResult],
     round_number: int,
+    previous_tool_requests: tuple[dict[str, Any], ...],
     include_full_card_details: bool,
 ) -> str:
     """Render the user's search as short natural text without provider fields."""
@@ -1187,6 +1207,46 @@ def _render_agent_user_message(
         "",
     ]
     if is_continuation:
+        if previous_tool_requests:
+            lines.extend(
+                [
+                    "Previous local-tool searches already completed:",
+                    *[
+                        line
+                        for search_round, arguments in enumerate(
+                            previous_tool_requests,
+                            start=1,
+                        )
+                        for line in (
+                            f"Search round {search_round}:",
+                            json.dumps(
+                                arguments,
+                                ensure_ascii=False,
+                                indent=2,
+                                sort_keys=True,
+                            ),
+                        )
+                    ],
+                    "",
+                    (
+                        "Those searches were conclusive first passes: their strongest "
+                        "candidates have already been shown or examined. The user clicked "
+                        "Load more because they now want additional options."
+                    ),
+                    (
+                        "Actively change or broaden the next tool request. Do not submit "
+                        "any earlier tool request unchanged. Preserve the user's actual "
+                        "request and all interface filters, but relax agent-chosen hard "
+                        "filters, widen ranges or alternatives, remove unnecessary literal "
+                        "conditions, or expand semantic_sort toward adjacent useful roles."
+                    ),
+                    (
+                        "Later recommendations may be less ideal than the first results, "
+                        "but they must still fit the spirit of the request."
+                    ),
+                    "",
+                ]
+            )
         lines.append("Already showing — these cards must not be returned or ranked again:")
         if already_shown:
             for candidate_id, card in enumerate(already_shown, start=1):
@@ -1292,6 +1352,10 @@ def _render_tool_result_message(
         (f"Semantic sort intent: {executed.arguments.get('semantic_sort', 'not requested')}"),
         ("Hard filters ran before semantic sorting. No semantic score cutoff was applied."),
         (
+            "Semantic closeness uses a 0-1 scale, where a larger value means the "
+            "card is closer to the semantic sort intent."
+        ),
+        (
             "Candidate IDs are temporary numbers for this search only. Cards marked "
             "ALREADY SHOWN were visible to the user before this tool finished."
         ),
@@ -1301,10 +1365,17 @@ def _render_tool_result_message(
         card = candidate["card"]
         shown = " [ALREADY SHOWN]" if candidate["already_shown"] else ""
         colors = ", ".join(card["color_identity"]) or "colorless"
+        semantic_score = candidate["semantic_score"]
+        semantic_closeness = (
+            f"{semantic_score:.4f} (0-1)"
+            if semantic_score is not None
+            else "not scored (fuzzy title preview only)"
+        )
         lines.extend(
             [
                 f"ID {candidate['id']}{shown}",
                 f"Name: {card['name']}",
+                f"Semantic closeness: {semantic_closeness}",
                 (
                     f"Mana: {card['mana_cost'] or 'no mana cost'} "
                     f"(mana value {card['mana_value']:g})"

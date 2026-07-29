@@ -211,6 +211,12 @@ intent, avoid overly strict Oracle-text guesses, and use examples such as
 `untapping elves`, `big green creatures`, `grave yard things`, double-X
 artifacts, and `galta`.
 
+The clean tool-role message includes `Semantic closeness: N (0-1)` for every
+semantically sorted candidate. Larger values mean closer embedding similarity
+to `semantic_sort`; the value is ranking evidence, not a relevance threshold.
+A fuzzy preview that was not returned by the local tool is explicitly labelled
+`not scored` rather than receiving an invented value.
+
 **Load more** is always available after a search response. `has_more: true`
 means the next ranked batch is already cached. `has_more: false` means the
 next click explicitly authorizes one additional two-call/one-tool agent round.
@@ -218,6 +224,13 @@ The existing cards remain visible while that round runs.
 
 Every continuation prompt includes the complete displayed-card list with
 temporary IDs, mana, type, power/toughness, EUR estimate, and Oracle text.
+It also includes the exact structured local-tool request from every completed
+agent round. The prompt treats those earlier searches as conclusive first
+passes and tells the next agent not to repeat one unchanged. The next round
+must preserve the user's intent and interface filters while deliberately
+relaxing unnecessary agent-chosen filters, widening alternatives, or expanding
+`semantic_sort` toward adjacent useful roles. Its recommendations may be less
+ideal than the first set, but must still fit the request's spirit.
 Displayed `oracle_id` values and every local candidate examined by an earlier
 round are excluded before the local result limit is applied. This prevents
 duplicates and forces later rounds to inspect fresh catalog candidates. A
@@ -264,8 +277,9 @@ Debug mode:
   evidence, and later steps are marked skipped.
 - Shows the exact simplified tool-role message sent to the model, using local
   numeric IDs, beside the expandable untouched raw tool result.
-- Records the semantic intent, model, vector dimensions, scored-candidate
-  count, and per-candidate score while explicitly recording no minimum cutoff.
+- Shows each candidate's normalized semantic closeness in that readable
+  message, and records the intent, model, vector dimensions, scored-candidate
+  count, and raw per-candidate score while explicitly recording no cutoff.
 - Records `minimum_score: null` to make the absence of a threshold explicit.
 - Appends the complete trace to `local-data/search-debug.jsonl`.
 
