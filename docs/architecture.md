@@ -247,10 +247,14 @@ compatibility layer preserves strict domain contracts while repairing known
 serialization mistakes: nested JSON object strings, comma-joined alternative
 types, and abstract type concepts that do not literally occur on printed type
 lines. Type intersections remain `must_contain_all`; alternatives become
-`must_contain_any`. A second execution guard removes interface-owned legality,
-unrequested colors, duplicate interface types, and inferred type restrictions
-before local filtering. The validated arguments and every removal remain
-visible in the debug trace.
+`must_contain_any`. It also discards stale runtime-owned `format` and
+`legality` keys, which the interface owns exclusively.
+
+That normalization layer is the only place a tool call is altered, and it
+repairs schema shape rather than judging intent. Validated agent `types` and
+`colors` reach local filtering unmodified; the system prompt, not runtime code,
+teaches when a printed type belongs in a filter (ADR 0019). The validated
+arguments and every repair remain visible in the debug trace.
 
 ### `agentic_search_debug.py`
 

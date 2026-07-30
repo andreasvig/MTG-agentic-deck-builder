@@ -115,7 +115,7 @@ def test_settings_load_repository_search_yaml() -> None:
         for index, line in enumerate(prompt_lines)
         if line == "Tool:"
     ]
-    assert len(example_payloads) == 8
+    assert len(example_payloads) == 11
     assert all("semantic_sort" in payload for payload in example_payloads)
 
 

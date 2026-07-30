@@ -11,13 +11,12 @@ from mtg_deck_builder.agentic_card_search import (
     AgenticCardSearchUnavailable,
     ExecutedSearchTool,
     LocalCardSearchTool,
-    _apply_agent_filter_guardrails,
     _normalize_tool_arguments,
     _render_filter_lines,
 )
 from mtg_deck_builder.agentic_search_debug import JsonlAgentSearchTraceLogger
 from mtg_deck_builder.card_catalog import CatalogEntry, card_title_aliases
-from mtg_deck_builder.config import AgenticSearchSettings
+from mtg_deck_builder.config import AgenticSearchSettings, Settings
 from mtg_deck_builder.domain import (
     AgenticCardSearchRequest,
     AgentSearchCandidate,
@@ -414,74 +413,19 @@ def test_provider_shorthand_is_normalized_before_strict_validation() -> None:
     ]
 
 
-def test_inferred_type_and_color_filters_are_removed_before_execution() -> None:
-    guarded, changes = _apply_agent_filter_guardrails(
-        LocalCardSearchRequest.model_validate(
-            {
-                "semantic_sort": "powerful late-game card draw",
-                "types": {"must_contain_all": ["Creature"]},
-                "colors": {"identity": ["G"], "mode": "subset"},
-            }
-        ),
-        user_query="great card draw for late game",
-        immutable_filters=CardSearchFilters(commander_color_identity=["G"]),
-    )
+def test_agent_prompt_teaches_functional_versus_printed_type_vocabulary() -> None:
+    prompt = Settings().search.agentic.system_prompt
 
-    assert guarded.types is None
-    assert guarded.colors is None
-    assert changes == [
-        "removed colors because the user's request did not ask to restrict result colors",
-        "removed redundant or unrequested type filters: Creature",
-    ]
-
-
-def test_explicit_result_type_and_color_filters_are_preserved() -> None:
-    request = LocalCardSearchRequest.model_validate(
-        {
-            "types": {"must_contain_all": ["Creature"]},
-            "colors": {"identity": ["G"], "mode": "subset"},
-        }
-    )
-
-    guarded, changes = _apply_agent_filter_guardrails(
-        request,
-        user_query="big green creatures",
-        immutable_filters=CardSearchFilters(),
-    )
-
-    assert guarded == request
-    assert changes == []
-
-
-def test_type_mentioned_as_an_effect_subject_is_not_a_result_filter() -> None:
-    guarded, changes = _apply_agent_filter_guardrails(
-        LocalCardSearchRequest.model_validate(
-            {"types": {"must_contain_all": ["Creature"]}}
-        ),
-        user_query="card draw whenever creatures enter",
-        immutable_filters=CardSearchFilters(),
-    )
-
-    assert guarded.types is None
-    assert changes == ["removed redundant or unrequested type filters: Creature"]
-
-
-def test_interface_selected_type_is_not_duplicated_by_agent() -> None:
-    guarded, changes = _apply_agent_filter_guardrails(
-        LocalCardSearchRequest.model_validate(
-            {
-                "types": {
-                    "must_contain_all": ["Creature", "Artifact"],
-                }
-            }
-        ),
-        user_query="artifact creatures",
-        immutable_filters=CardSearchFilters(card_types=["Creature"]),
-    )
-
-    assert guarded.types is not None
-    assert guarded.types.must_contain_all == ["Artifact"]
-    assert changes == ["removed redundant or unrequested type filters: Creature"]
+    assert "HOW COMMANDER PLAYERS DESCRIBE CARDS" in prompt
+    assert "YOU OWN YOUR FILTERS" in prompt
+    # Functional categories the model must leave semantic.
+    for category in ("removal", "ramp", "board wipe", "tutors"):
+        assert category in prompt
+    # Definitional terms that do justify a printed-type filter.
+    assert "mana rock" in prompt
+    assert "elves -> Elf" in prompt
+    # The superseded lexical rule must not reappear.
+    assert "only when the user's typed request names the color" not in prompt
 
 
 def test_comma_joined_alternative_types_are_not_treated_as_one_literal() -> None:
@@ -906,6 +850,23 @@ class StubModelClient:
         return self._responses.pop(0)
 
 
+class VernacularModelClient(StubModelClient):
+    """Returns a printed-type filter the user's wording never names."""
+
+    def __init__(self, cards: list[CardSearchResult]) -> None:
+        super().__init__(cards)
+        self._responses[0]["choices"][0]["message"]["tool_calls"][0]["function"][
+            "arguments"
+        ] = json.dumps(
+            {
+                "semantic_sort": "low-cost artifacts that produce mana",
+                "types": {"must_contain_all": ["Artifact"]},
+                "mana": {"value_maximum": 2},
+                "max_results": 24,
+            }
+        )
+
+
 class FailingModelClient:
     async def chat_completion(
         self,
@@ -997,6 +958,49 @@ def test_unconfigured_agent_still_returns_system_and_user_trace_steps(
         "Magic: The Gathering card-search agent" in (debug.trace["stages"][0]["details"]["content"])
     )
     assert '"green big creature"' in (debug.trace["stages"][1]["details"]["content"])
+
+
+def test_agent_filters_reach_the_tool_even_when_the_query_never_names_them(
+    tmp_path: Path,
+) -> None:
+    """Vernacular queries keep the agent's own hard filters.
+
+    "cheap mana rocks" names no printed type, so the superseded runtime
+    guardrail deleted the agent's Artifact filter. The agent now owns that
+    decision and the tool must receive it verbatim.
+    """
+
+    cards = [GHALTA, GIGANTOSAURUS]
+    model = VernacularModelClient(cards)
+    local_tool = StubTool(cards)
+    trace_path = tmp_path / "search.jsonl"
+    service = AgenticCardSearchService(
+        fuzzy_provider=StubFuzzyProvider(),  # type: ignore[arg-type]
+        local_tool=local_tool,  # type: ignore[arg-type]
+        model_client=model,  # type: ignore[arg-type]
+        settings=AgenticSearchSettings(enabled=True),
+        page_size=2,
+        trace_logger=JsonlAgentSearchTraceLogger(trace_path),
+        trace_log_path=str(trace_path),
+        debug_default_enabled=False,
+    )
+
+    result = asyncio.run(
+        service.search(AgenticCardSearchRequest(q="cheap mana rocks", debug=True))
+    )
+
+    assert result.strategy == "agentic"
+    assert local_tool.calls == 1
+    executed = local_tool.requests[0]
+    assert executed.types is not None
+    assert executed.types.must_contain_all == ["Artifact"]
+    assert executed.mana is not None
+    assert executed.mana.value_maximum == 2
+    # No stage of the persisted trace may report a stripped filter.
+    trace = trace_path.read_text()
+    assert "Artifact" in trace
+    assert "removed redundant or unrequested type filters" not in trace
+    assert "did not ask to restrict result colors" not in trace
 
 
 def test_agent_runs_one_tool_then_reuses_the_ranked_session(
@@ -1194,16 +1198,12 @@ def test_agent_prompt_and_tool_response_include_commander_theme_and_edhrec_score
     assert edhrec_service.ranking_calls == [(GHALTA.oracle_id, "tokens")]
     assert result.debug is not None
     tool_call = result.debug.trace["stages"][3]["details"]
-    assert "types" not in tool_call["arguments"]
-    assert "colors" not in tool_call["arguments"]
-    assert (
-        "removed colors because the user's request did not ask to restrict result colors"
-        in tool_call["provider_boundary_normalizations"]
-    )
-    assert (
-        "removed redundant or unrequested type filters: Creature"
-        in tool_call["provider_boundary_normalizations"]
-    )
+    # The agent owns its own hard filters; nothing strips them after validation.
+    assert tool_call["arguments"]["types"]["must_contain_all"] == ["Creature"]
+    assert tool_call["arguments"]["colors"]["identity"] == ["G"]
+    assert tool_call["provider_boundary_normalizations"] == [
+        "semantic_sort defaulted to the user's request"
+    ]
 
 
 def test_exhausted_session_runs_one_continuation_with_already_shown_cards(

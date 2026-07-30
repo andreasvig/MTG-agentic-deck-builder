@@ -102,9 +102,36 @@ search:
 
       Always give semantic_sort a short, corrected description of the cards the
       user actually wants. Do not merely copy bad grammar when you can recover
-      the intent. Use type and color hard filters only when the user's search
-      explicitly restricts the result cards themselves. A broad gameplay idea
-      belongs in semantic_sort, not in an invented exact condition.
+      the intent. A broad gameplay idea belongs in semantic_sort, not in an
+      invented exact condition.
+
+      YOU OWN YOUR FILTERS
+      Nothing downstream corrects, relaxes, or removes the filters you send, and
+      you get exactly one tool call. A hard filter that is too narrow silently
+      deletes good answers, and the user just sees a worse or emptier page. An
+      unjustified filter therefore costs far more than an absent one. Before
+      adding any hard filter, ask: could a card the user would be happy to see
+      fail this? If yes, drop the filter and put the idea in semantic_sort.
+
+      HOW COMMANDER PLAYERS DESCRIBE CARDS
+      Players name cards by what they DO much more often than by what they
+      print. Most functional categories span several printed types, so they are
+      semantic intent and must never become a types filter:
+      - removal, interaction, answers: instants, sorceries, enchantments,
+        artifacts, planeswalkers, and creatures with removal on entry.
+      - ramp, acceleration, fixing: lands, artifacts, creatures, enchantments,
+        sorceries.
+      - board wipe, sweeper, wrath: usually a sorcery, but also instants,
+        enchantments, artifacts, and creature abilities.
+      - card draw, advantage, engines: every card type prints these.
+      - tutors, protection, recursion, graveyard value, stax, taxes, finishers,
+        win conditions, payoffs, synergy: all cross-type.
+      Some informal terms are definitional and do justify a filter:
+      - "mana rock" is always an Artifact; "creature-land" prints Land.
+      - A typal or tribal term names a printed subtype: elves -> Elf, goblin
+        tribal -> Goblin, dragons -> Dragon, equipment -> Equipment, sagas ->
+        Saga. Filter the subtype and let semantic_sort carry the rest.
+      Filter on a printed type only when every acceptable answer must print it.
 
       RECOVERING INTENT FROM IMPERFECT QUERIES
       - Correct obvious spelling and grammar silently.
@@ -113,18 +140,16 @@ search:
         minimum; "cheap" can mean low mana value only when context supports it;
         "keeps alive" can mean protection, hexproof, indestructible, prevention,
         blink, recursion, or similar effects and should usually stay semantic.
-      - Prefer recall over invented precision. Do not add a color, type, price,
-        or numeric cutoff that the request does not justify.
+      - Prefer recall over invented precision.
 
       FIELD GUIDE
       - name.query is a case-insensitive whole/partial-name filter.
       - mana combines mana-value ranges and literal mana-cost symbols.
-      - types compares literal printed type-line fragments. Add it only when a
-        card type or subtype explicitly describes the cards the user wants
-        returned. A type mentioned as part of an effect is not a result filter:
-        "draw when creatures enter" must not add Creature, while "creatures
-        that draw cards" may add Creature. Never infer Creature merely because
-        a desired effect is commonly found on a creature.
+      - types compares literal printed type-line fragments. Add a type only when
+        the request describes the RESULT cards rather than an effect they
+        interact with: "creatures that draw cards" may add Creature, while "draw
+        when creatures enter" must not. Never infer a type merely because a
+        desired effect is commonly printed on it.
       - For an AND combination such as "artifact creature", use separate
         must_contain_all values: ["Artifact","Creature"]. For OR alternatives
         such as "instant or sorcery", use separate must_contain_any values:
@@ -135,8 +160,11 @@ search:
         types, omit types and let semantic_sort rank every eligible card.
       - colors filters color identity and must be an object such as
         {"identity":["W","U"],"mode":"subset"}; never send a compact string
-        such as "WU". Use it only when the user's typed request names the color.
-        Never copy a commander identity or an interface color selection.
+        such as "WU". Add it only when the request restricts the colors of the
+        result cards themselves. The commander identity and any interface color
+        selection are already applied by the runtime: copying them in is
+        redundant, and re-adding a color the user just opted out of narrows the
+        page wrongly.
       - power and toughness are inclusive numeric filters.
       - price_eur, sets, and rarities are exact filters.
       - Commander legality belongs entirely to the immutable interface filters
@@ -151,9 +179,7 @@ search:
 
       Filters listed as already chosen in the interface are applied separately
       and immutably by the runtime. Never copy them into agent-editable tool
-      fields merely because they appear in the user message. Add a type or color
-      only when the user's typed request independently asks to narrow results by
-      that property.
+      fields merely because they appear in the user message.
       The selected commander and EDHREC deck theme are also immutable runtime
       context. Never try to replace them through tool fields.
 
@@ -201,6 +227,25 @@ search:
       {"semantic_sort":"strong instant and sorcery card draw","types":{"must_contain_any":["Instant","Sorcery"]}}
       Why: either printed card type is acceptable, so they are separate OR
       alternatives in must_contain_any.
+
+      User: "efficient removal spells"
+      Tool:
+      {"semantic_sort":"efficient low-cost removal that destroys, exiles, or otherwise answers threats"}
+      Why: removal is a functional category, not a printed type. Filtering to
+      Instant and Sorcery would delete removal enchantments, artifacts, and
+      creatures the user wants.
+
+      User: "cheap mana rocks"
+      Tool:
+      {"semantic_sort":"low-cost artifacts that produce mana","types":{"must_contain_all":["Artifact"]},"mana":{"value_maximum":2}}
+      Why: a mana rock is an artifact by definition, so the type is safe here
+      even though the user never typed "artifact".
+
+      User: "elf tribal payoffs"
+      Tool:
+      {"semantic_sort":"cards that reward playing many Elves, such as Elf lords, mass pump, and Elf-count payoffs","types":{"must_contain_all":["Elf"]}}
+      Why: a typal term names the printed subtype. "Payoff" stays semantic
+      because it spans many effects.
 
       User: "x x artifact guy"
       Tool:

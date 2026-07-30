@@ -223,18 +223,21 @@ agent prompt includes examples for recovering intent from imperfect queries.
 Type filters compare literal printed type-line fragments: combinations such as
 Artifact Creature use separate `must_contain_all` values, while alternatives
 such as Instant or Sorcery use `must_contain_any`. Broad requests such as
-late-game card draw do not receive an invented type restriction. Before
-execution, the runtime removes type conditions not requested as result types,
-including `Creature` when creatures merely enable or receive an effect. It also
-removes agent colors unless the typed query itself asks for that color.
-Commander legality, deck identity, and all selected interface filters are
-applied separately and never copied into the validated tool call. A narrow
-provider-boundary compatibility layer repairs safe shorthands and records every
-discarded redundant constraint in the debug trace.
+late-game card draw do not receive an invented type restriction.
+
+The agent owns its `types` and `colors`: validated filters reach the local tool
+unmodified. Rather than stripping them afterwards, the system prompt teaches
+when a printed type is the right filter. Functional categories that span
+several types — removal, ramp, sweepers, draw, tutors, protection — stay in
+`semantic_sort`, while definitional and typal terms such as mana rock
+(Artifact) or elves (Elf) justify a hard filter. Commander legality, deck
+identity, and all selected interface filters are applied separately and never
+copied into the validated tool call. A narrow provider-boundary compatibility
+layer repairs safe shorthands and records each repair in the debug trace.
 See [`ADR 0010`](docs/decisions/0010-always-on-semantic-sort.md),
 [`ADR 0012`](docs/decisions/0012-immutable-commander-and-tagger-filters.md),
 and
-[`ADR 0018`](docs/decisions/0018-runtime-owned-and-query-explicit-filters.md).
+[`ADR 0019`](docs/decisions/0019-prompt-taught-agent-filters.md).
 
 ## Search Debugging
 

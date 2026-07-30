@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import re
 from collections import Counter
 from dataclasses import dataclass, replace
 from decimal import Decimal
@@ -634,14 +633,6 @@ class AgenticCardSearchService:
         call_id, tool_call, raw_arguments, normalizations = _parse_single_tool_call(
             assistant_message
         )
-        guarded_arguments, guardrail_changes = _apply_agent_filter_guardrails(
-            tool_call.arguments,
-            user_query=request.q,
-            immutable_filters=request.filters,
-        )
-        if guarded_arguments != tool_call.arguments:
-            tool_call = tool_call.model_copy(update={"arguments": guarded_arguments})
-        normalizations.extend(guardrail_changes)
         if tool_call.arguments.semantic_sort is None:
             tool_call = tool_call.model_copy(
                 update={
@@ -1443,176 +1434,6 @@ def _normalize_tool_arguments(
             changes.append(f"{key} string -> {key} list")
 
     return normalized, changes
-
-
-def _apply_agent_filter_guardrails(
-    request: LocalCardSearchRequest,
-    *,
-    user_query: str,
-    immutable_filters: CardSearchFilters,
-) -> tuple[LocalCardSearchRequest, list[str]]:
-    """Remove inferred or duplicated hard filters before local execution."""
-
-    updates: dict[str, Any] = {}
-    changes: list[str] = []
-
-    if request.colors is not None and not _query_requests_color_filter(user_query):
-        updates["colors"] = None
-        changes.append(
-            "removed colors because the user's request did not ask to restrict result colors"
-        )
-
-    if request.types is not None:
-        immutable_types = {
-            *(value.casefold() for value in immutable_filters.card_types),
-            *(value.casefold() for value in immutable_filters.subtypes),
-        }
-        kept_required = [
-            value
-            for value in request.types.must_contain_all
-            if value.casefold() not in immutable_types
-            and _query_requests_type_filter(user_query, value)
-        ]
-        kept_alternatives = [
-            value
-            for value in request.types.must_contain_any
-            if value.casefold() not in immutable_types
-            and _query_requests_type_filter(user_query, value)
-        ]
-        kept_exclusions = [
-            value
-            for value in request.types.must_not_contain
-            if value.casefold() not in immutable_types
-            and _query_requests_type_filter(user_query, value, excluded=True)
-        ]
-        kept_values = kept_required + kept_alternatives + kept_exclusions
-        original_values = (
-            request.types.must_contain_all
-            + request.types.must_contain_any
-            + request.types.must_not_contain
-        )
-        if kept_values != original_values:
-            updates["types"] = (
-                request.types.model_copy(
-                    update={
-                        "must_contain_all": kept_required,
-                        "must_contain_any": kept_alternatives,
-                        "must_not_contain": kept_exclusions,
-                    }
-                )
-                if kept_values
-                else None
-            )
-            removed = [
-                value
-                for value in original_values
-                if value not in kept_values
-            ]
-            changes.append(
-                "removed redundant or unrequested type filters: " + ", ".join(removed)
-            )
-
-    if not updates:
-        return request, changes
-    return request.model_copy(update=updates), changes
-
-
-def _query_requests_color_filter(query: str) -> bool:
-    normalized = normalize_card_title(query)
-    words = set(normalized.split())
-    if words.intersection({"white", "blue", "black", "red", "green", "colorless"}):
-        return True
-    return bool(re.search(r"(?<![A-Za-z])[WUBRG]{1,5}(?![A-Za-z])", query)) or bool(
-        re.search(r"\b[wubrg]{2,5}\b", query.casefold())
-    )
-
-
-def _query_requests_type_filter(
-    query: str,
-    type_name: str,
-    *,
-    excluded: bool = False,
-) -> bool:
-    normalized_query = normalize_card_title(query)
-    variants = _type_phrase_variants(normalize_card_title(type_name))
-    query_words = normalized_query.split()
-    negative_predecessors = {
-        "another",
-        "cast",
-        "casts",
-        "control",
-        "controls",
-        "each",
-        "my",
-        "other",
-        "sacrifice",
-        "target",
-        "their",
-        "untap",
-        "your",
-    }
-    contextual_successors = {
-        "attack",
-        "attacks",
-        "die",
-        "dies",
-        "enter",
-        "enters",
-        "leave",
-        "leaves",
-        "matters",
-        "support",
-        "synergy",
-        "tribal",
-        "you",
-    }
-
-    for variant in variants:
-        variant_words = variant.split()
-        width = len(variant_words)
-        for index in range(len(query_words) - width + 1):
-            if query_words[index : index + width] != variant_words:
-                continue
-            previous = query_words[index - 1] if index else None
-            following = query_words[index + width] if index + width < len(query_words) else None
-            if excluded:
-                negative_context = {
-                    "exclude",
-                    "excluding",
-                    "no",
-                    "non",
-                    "not",
-                    "without",
-                }
-                if previous in negative_context:
-                    return True
-                continue
-            if previous in negative_predecessors or following in contextual_successors:
-                continue
-            if previous in {"when", "whenever"}:
-                continue
-            return True
-    return False
-
-
-def _type_phrase_variants(type_name: str) -> set[str]:
-    if not type_name:
-        return set()
-    words = type_name.split()
-    final = words[-1]
-    irregular = {
-        "elf": "elves",
-        "sorcery": "sorceries",
-    }
-    if final in irregular:
-        plural = irregular[final]
-    elif final.endswith("y") and len(final) > 1 and final[-2] not in "aeiou":
-        plural = final[:-1] + "ies"
-    elif final.endswith(("s", "x", "z", "ch", "sh")):
-        plural = final + "es"
-    else:
-        plural = final + "s"
-    return {type_name, " ".join([*words[:-1], plural])}
 
 
 def _normalize_type_search(value: object) -> tuple[object, list[str]]:

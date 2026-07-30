@@ -403,23 +403,34 @@ turn an inferred sentence into a brittle hard filter. Requests such as
 “creatures that draw cards when other creatures enter” therefore stay in
 `semantic_sort`.
 
-The runtime also guards type and color filters after model validation:
+The agent owns its `types` and `colors`. Validated filters reach local
+execution unmodified; no runtime pass deletes or relaxes them based on the
+wording of the query. That responsibility sits in the system prompt, which
+teaches the Magic distinction the runtime could not:
 
-- `types` values survive only when the original typed query asks for that
-  printed type or subtype as a property of the returned cards.
-- A type used as part of the desired effect does not count. For example,
-  “card draw whenever creatures enter” cannot become a Creature-only search.
-- Types and subtypes already selected in the interface are removed from the
-  agent arguments because the immutable filter already applies them.
-- `colors` survives only when the original typed query names a color. A
-  commander identity or interface color shown in prompt context is never
-  copied into the effective tool call.
-- `format` and `legality` are not tool fields. Commander legality and its
-  exception switch belong entirely to the immutable interface filters.
+- Functional categories span several printed types and stay in `semantic_sort`:
+  removal, ramp and fixing, board wipes, card draw, tutors, protection,
+  recursion, graveyard value, stax, and payoffs.
+- Definitional and typal terms name a printed type and justify a filter: a mana
+  rock is an Artifact, elves are Elf, sagas are Saga.
+- Filter a printed type only when every acceptable answer must print it.
+- A type naming an effect's subject is not a result filter. “Creatures that draw
+  cards” may filter Creature; “card draw whenever creatures enter” may not.
+- The prompt states the stakes: nothing downstream relaxes an agent filter and
+  there is one tool call, so an unjustified filter costs more than an absent one.
+
+An earlier runtime guard enforced this by requiring the type word to appear in
+the query. It deleted correct filters for ordinary vernacular such as “cheap
+mana rocks” and “elf tribal payoffs” and was removed in
+[ADR 0019](decisions/0019-prompt-taught-agent-filters.md).
+
+`format` and `legality` are not tool fields. Commander legality and its
+exception switch belong entirely to the immutable interface filters, and stale
+provider-supplied copies are discarded before validation.
 
 The debug tool-call step shows the final validated arguments and lists every
-removed provider or runtime constraint. The untouched provider message remains
-available only in the raw JSONL audit trace.
+provider-boundary repair. The untouched provider message remains available only
+in the raw JSONL audit trace.
 
 All structured search conditions are hard filters. `semantic_sort` and
 `sort_by` are ranking controls: `semantic_sort` is a natural-language intent
@@ -667,7 +678,8 @@ semantic fallback.
   persistence, and secret redaction.
 - `test_agentic_card_search.py`: one-tool orchestration, duplicate mana-symbol
   execution, filter-before-sort behavior, semantic/inclusion/synergy ranking,
-  query-explicit type/color guards, commander/theme prompts and score evidence,
+  agent-owned type/color pass-through, prompt filter vocabulary,
+  commander/theme prompts and score evidence,
   natural prompts, raw/simplified tool trace payloads, candidate omission,
   alias-aware confidence preservation, cached pagination, exclusions, empty
   continuation retries, and multi-round agent sessions.

@@ -1,8 +1,15 @@
 # ADR 0018: Runtime-Owned And Query-Explicit Agent Filters
 
-- Status: Accepted
+- Status: Partly superseded by ADR 0019
 - Date: 2026-07-30
 - Amends: ADR 0012 and ADR 0017
+
+> The runtime-owned `format`/`legality` removal below remains in force.
+> The query-explicit type and color guard was removed by
+> [ADR 0019](0019-prompt-taught-agent-filters.md): its lexical predicate
+> deleted correct filters for ordinary Commander vernacular such as "mana
+> rocks" and "elf tribal". Type and color intent is now taught in the system
+> prompt instead.
 
 ## Context
 

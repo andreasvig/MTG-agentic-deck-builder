@@ -206,12 +206,13 @@ Implemented:
   than an agent-generated exact-text filter.
 - Literal type-line filtering with separate AND combinations and OR
   alternatives. Broad gameplay requests omit unrequested type constraints.
-  Runtime guards remove inferred type restrictions when a named type is only
-  part of the requested effect, and remove type constraints already selected
-  in the interface.
-- Commander legality and format are absent from the agent-editable schema.
-  Runtime guards also remove agent colors unless the user's typed request
-  independently asks to restrict result colors.
+- Prompt-taught type and color intent. Validated agent `types` and `colors`
+  reach the local tool unmodified; the system prompt distinguishes cross-type
+  functional categories, which stay semantic, from definitional and typal terms,
+  which justify a printed-type filter. The former query-wording guard was
+  removed in ADR 0019.
+- Commander legality and format are absent from the agent-editable schema, and
+  stale provider-supplied copies are discarded before validation.
 - Provider-boundary normalization repairs comma-joined alternatives, abstract
   type concepts, and nested objects accidentally serialized as JSON strings.
 - Multiset `must_contain_all` semantics for duplicate symbols such as two

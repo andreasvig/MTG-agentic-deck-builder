@@ -33,7 +33,8 @@ tradeoffs; they are not task lists.
 | [0015](0015-on-demand-edhrec-commander-ranking.md) | Superseded | Initial blank-query EDHREC commander ranking |
 | [0016](0016-commander-theme-evidence-in-agentic-search.md) | Accepted | Commander themes and EDHREC evidence in agentic search |
 | [0017](0017-remove-exact-oracle-text-filter.md) | Accepted | Remove brittle exact Oracle-text filtering from the agent tool |
-| [0018](0018-runtime-owned-and-query-explicit-filters.md) | Accepted | Runtime-owned legality and query-explicit type/color filters |
+| [0018](0018-runtime-owned-and-query-explicit-filters.md) | Partly superseded | Runtime-owned legality and query-explicit type/color filters |
+| [0019](0019-prompt-taught-agent-filters.md) | Accepted | Agent owns its type/color filters; intent taught in the prompt |
 
 ## Updating Decisions
 

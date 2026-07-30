@@ -71,8 +71,8 @@ All notable changes to this project are documented here.
   separate OR values for type alternatives, and defensively repairs
   comma-joined or abstract type conditions at the provider boundary. Nested
   tool objects accidentally serialized as JSON strings are decoded there too.
-- Added local agent-tool conditions for name, mana symbols, query-explicit
-  types and colors, power/toughness, price, sets, and rarities.
+- Added local agent-tool conditions for name, mana symbols, types, colors,
+  power/toughness, price, sets, and rarities.
 - Added multiset exact matching so duplicate symbols such as `["{X}", "{X}"]`
   remain meaningful.
 - Added natural model prompts with selectable fuzzy-preview IDs and
@@ -118,10 +118,13 @@ All notable changes to this project are documented here.
 
 - Made Commander legality and format exclusively runtime-owned and removed them
   from the agent tool schema. The trace now discards stale model-supplied copies.
-- Added a pre-execution guard that removes unrequested color filters, inferred
-  result types, and type constraints already selected in the interface.
-  Gameplay references such as “when creatures enter” now stay semantic instead
-  of becoming Creature-only searches.
+- Made the agent own its own `types` and `colors`. Validated filters now reach
+  the local tool unmodified, and the system prompt teaches when a printed type
+  is the right filter: cross-type functional categories such as removal, ramp,
+  sweepers, and tutors stay semantic, while definitional and typal terms such as
+  mana rock or elves justify a hard filter. This replaces the pre-execution
+  guard that required the type word to appear in the query, which deleted
+  correct filters for ordinary Commander vernacular (ADR 0019).
 - Removed the exact Oracle-text field from the agent search tool. Rules text
   remains embedded for semantic retrieval and visible to the ranking model,
   without allowing invented wording to eliminate valid cards.

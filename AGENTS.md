@@ -135,6 +135,14 @@ Do not mutate deck state directly inside presentation components. Extend
   alternatives, and no type condition for a broad role that does not name a
   type. Interface-selected card types and subtypes are immutable AND filters.
   Keep defensive provider-boundary normalization covered by tests.
+- The agent owns its own `types` and `colors`. Do not add runtime logic that
+  deletes, relaxes, or rewrites a validated agent filter based on the wording of
+  the user's query; that guard existed and was removed by ADR 0019 because a
+  lexical predicate cannot tell "mana rocks" (Artifact is correct) from
+  "removal spells" (no type is correct). Correct filter intent by teaching the
+  system prompt, and pin the teaching with a prompt-content test.
+  `_normalize_tool_arguments` remains the one place that may alter a tool call,
+  and only to repair schema shape or drop runtime-owned `format`/`legality`.
 - Normal search must not call Scryfall; refresh the derived SQLite catalog from
   `default_cards` through the explicit sync command.
 - Normal search must not call the Tagger network. `tagger:sync` owns the
