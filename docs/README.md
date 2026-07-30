@@ -12,7 +12,8 @@ research, and future plans.
    and ownership.
 4. [`development.md`](development.md) - environment, commands, testing, and
    common change workflows.
-5. [`search.md`](search.md) - fuzzy title scoring, filters, configuration, and traces.
+5. [`search.md`](search.md) - fuzzy/agentic search, filters, EDHREC commander/theme evidence,
+   configuration, and traces.
 6. [`decisions/README.md`](decisions/README.md) - accepted and proposed ADRs.
 7. [`../plan.md`](../plan.md) - product scope and roadmap.
 

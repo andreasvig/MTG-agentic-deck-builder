@@ -1,6 +1,8 @@
 import { defineConfig, devices } from "@playwright/test";
 
 const frontendUrl = "http://127.0.0.1:41737";
+const reuseExistingServer =
+  process.env.PLAYWRIGHT_REUSE_EXISTING_SERVER === "true";
 
 export default defineConfig({
   testDir: "./e2e",
@@ -25,7 +27,7 @@ export default defineConfig({
     command: "npm run dev",
     cwd: ".",
     url: frontendUrl,
-    reuseExistingServer: false,
+    reuseExistingServer,
     timeout: 120_000,
     stdout: "pipe",
     stderr: "pipe",

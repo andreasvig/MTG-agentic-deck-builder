@@ -4,11 +4,21 @@ export type CardFinish = "nonfoil" | "foil" | "etched";
 export type ColorMatchMode = "subset" | "exact";
 export type SearchStrategy = "fuzzy" | "agentic";
 export type SearchDebugStageStatus = "ok" | "skipped" | "error";
+export type EdhrecEnhancementStatus =
+  | "not_requested"
+  | "applied"
+  | "unavailable";
 
 export interface CardSearchFilters {
   colors: MagicColor[];
   includeColorless: boolean;
   colorMode: ColorMatchMode;
+  includeNonCommanderLegal: boolean;
+  includeOutsideCommanderColorIdentity: boolean;
+  commanderColorIdentity: MagicColor[] | null;
+  tags: CardTagFilter[];
+  cardTypes: string[];
+  subtypes: string[];
   manaValueMin: number | null;
   manaValueMax: number | null;
   priceEurMin: number | null;
@@ -19,6 +29,12 @@ export const EMPTY_CARD_SEARCH_FILTERS: CardSearchFilters = {
   colors: [],
   includeColorless: false,
   colorMode: "subset",
+  includeNonCommanderLegal: false,
+  includeOutsideCommanderColorIdentity: false,
+  commanderColorIdentity: null,
+  tags: [],
+  cardTypes: [],
+  subtypes: [],
   manaValueMin: null,
   manaValueMax: null,
   priceEurMin: null,
@@ -80,6 +96,40 @@ export interface CardSearchResult {
   cardmarket_url: string | null;
 }
 
+export interface CardTag {
+  id: string;
+  name: string;
+  slug: string;
+  description: string | null;
+}
+
+export interface CardTagMatch extends CardTag {
+  match_score: number;
+}
+
+export interface CardTagFilter {
+  id: string;
+  name: string;
+}
+
+export interface CardSubtypeMatch {
+  name: string;
+  match_score: number;
+}
+
+export interface RelatedOracleCard {
+  oracle_id: string;
+  name: string;
+}
+
+export interface CardEnrichment {
+  oracle_id: string;
+  tags: CardTag[];
+  similar_cards: RelatedOracleCard[];
+  references: RelatedOracleCard[];
+  referenced_by: RelatedOracleCard[];
+}
+
 export interface CardSearchPage {
   query: string;
   page: number;
@@ -94,8 +144,30 @@ export interface CardSearchPage {
   reranked: boolean;
   agentic_required: boolean;
   search_session_id: string | null;
+  edhrec: EdhrecSearchEnhancement;
   debug: SearchDebugSummary | null;
   debug_runs: SearchDebugSummary[];
+}
+
+export interface EdhrecSearchEnhancement {
+  status: EdhrecEnhancementStatus;
+  source: "cache" | "network" | null;
+  message: string | null;
+}
+
+export interface EdhrecDeckTheme {
+  slug: string;
+  name: string;
+  deck_count: number;
+}
+
+export interface EdhrecCommanderContext {
+  status: EdhrecEnhancementStatus;
+  source: "cache" | "network" | null;
+  commander_oracle_id: string;
+  commander_name: string | null;
+  themes: EdhrecDeckTheme[];
+  message: string | null;
 }
 
 export interface SearchDebugStage {

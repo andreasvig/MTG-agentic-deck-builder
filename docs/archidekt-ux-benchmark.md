@@ -90,7 +90,8 @@ were also inspected with Playwright at desktop and mobile viewport sizes.
 - Hosted accounts, collaboration, public deck discovery, and social features.
 - Collection ownership and buy/sell cart integrations.
 - Full playtester and game simulation.
-- EDHREC automation without a permitted, stable provider agreement.
+- Bulk or background EDHREC automation without a permitted, stable provider
+  agreement.
 - Salt or Commander bracket scoring until the product model is chosen.
 
 ## Product Lesson

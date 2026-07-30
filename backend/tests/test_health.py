@@ -50,6 +50,9 @@ def test_settings_load_prefixed_environment_variables(monkeypatch: MonkeyPatch) 
     monkeypatch.setenv("MTG_SEARCH_DEBUG_LOG_PATH", "tmp/search-debug.jsonl")
     monkeypatch.setenv("MTG_SEARCH_DEBUG_RESULT_LIMIT", "12")
     monkeypatch.setenv("MTG_CARD_CATALOG_PATH", "tmp/cards.sqlite3")
+    monkeypatch.setenv("MTG_TAGGER__DATABASE_PATH", "tmp/tagger.sqlite3")
+    monkeypatch.setenv("MTG_EDHREC__DATABASE_PATH", "tmp/edhrec.sqlite3")
+    monkeypatch.setenv("MTG_EDHREC__REFRESH_AFTER_DAYS", "45")
     monkeypatch.setenv("MTG_SCRYFALL_BULK_TIMEOUT_SECONDS", "1200")
     monkeypatch.setenv("MTG_SEARCH__TITLE_MATCH__PAGE_SIZE", "9")
     monkeypatch.setenv("MTG_SEARCH__TITLE_MATCH__PREVIEW_MIN_CONFIDENCE", "0.8")
@@ -64,6 +67,9 @@ def test_settings_load_prefixed_environment_variables(monkeypatch: MonkeyPatch) 
     assert str(settings.search_debug_log_path) == "tmp/search-debug.jsonl"
     assert settings.search_debug_result_limit == 12
     assert str(settings.card_catalog_path) == "tmp/cards.sqlite3"
+    assert str(settings.tagger.database_path) == "tmp/tagger.sqlite3"
+    assert str(settings.edhrec.database_path) == "tmp/edhrec.sqlite3"
+    assert settings.edhrec.refresh_after_days == 45
     assert settings.scryfall_bulk_timeout_seconds == 1_200
     assert settings.search.title_match.page_size == 9
     assert settings.search.title_match.preview_min_confidence == 0.8
@@ -78,14 +84,27 @@ def test_settings_load_repository_search_yaml() -> None:
     assert settings.search.semantic_sort.model == "BAAI/bge-small-en-v1.5"
     assert str(settings.search.semantic_sort.index_path) == ("local-data/card-semantic.sqlite3")
     assert settings.search.semantic_sort.threads == 4
+    assert settings.search.semantic_sort.document.version == 2
+    assert settings.search.semantic_sort.document.include_name is False
+    assert settings.search.semantic_sort.document.tags.enabled is True
+    assert settings.search.semantic_sort.document.tags.maximum_per_card == 12
+    assert settings.search.semantic_sort.document.relationships.include_in_document is False
+    assert settings.tagger.base_url == "https://tagger.scryfall.com"
+    assert str(settings.tagger.database_path) == "local-data/card-tagger.sqlite3"
+    assert settings.tagger.concurrent_requests == 4
+    assert settings.edhrec.enabled is True
+    assert settings.edhrec.base_url == "https://json.edhrec.com"
+    assert str(settings.edhrec.database_path) == "local-data/card-edhrec.sqlite3"
+    assert settings.edhrec.refresh_after_days == 30
     assert settings.search.agentic.enabled is True
     assert settings.search.agentic.max_tool_calls == 1
     assert settings.search.agentic.local_tool.default_max_results == 24
     assert "{T}" in settings.search.agentic.system_prompt
     assert '["{X}", "{X}"]' in settings.search.agentic.system_prompt
-    assert "semantic_sort is the only non-filtering field" in (
+    assert "sort_by chooses the primary ordering" in (
         settings.search.agentic.system_prompt
     )
+    assert "edhrec_synergy favors cards" in settings.search.agentic.system_prompt
     assert '"grave yard things that give me value"' in (settings.search.agentic.system_prompt)
     assert "Do not repeat an earlier tool request unchanged." in (
         settings.search.agentic.system_prompt
@@ -96,7 +115,7 @@ def test_settings_load_repository_search_yaml() -> None:
         for index, line in enumerate(prompt_lines)
         if line == "Tool:"
     ]
-    assert len(example_payloads) == 5
+    assert len(example_payloads) == 8
     assert all("semantic_sort" in payload for payload in example_payloads)
 
 

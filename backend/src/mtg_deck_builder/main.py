@@ -15,10 +15,16 @@ from mtg_deck_builder.agentic_search_debug import JsonlAgentSearchTraceLogger
 from mtg_deck_builder.api.router import router as api_router
 from mtg_deck_builder.card_catalog import SQLiteCardCatalog
 from mtg_deck_builder.config import Settings, get_settings
+from mtg_deck_builder.edhrec_catalog import (
+    EdhrecCommanderService,
+    SQLiteEdhrecCatalog,
+)
+from mtg_deck_builder.providers.edhrec import EdhrecJsonClient
 from mtg_deck_builder.providers.openrouter import OpenRouterClient
 from mtg_deck_builder.search import FuzzyTitleSearchProvider
 from mtg_deck_builder.search_debug import JsonlSearchDebugLogger
 from mtg_deck_builder.semantic_index import SemanticCardIndex
+from mtg_deck_builder.tagger_catalog import SQLiteTaggerCatalog
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -32,10 +38,27 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         agentic = runtime_settings.search.agentic
         semantic_sort = runtime_settings.search.semantic_sort
         catalog = SQLiteCardCatalog(runtime_settings.card_catalog_path)
+        tagger_catalog = SQLiteTaggerCatalog(runtime_settings.tagger.database_path)
+        edhrec = runtime_settings.edhrec
+        edhrec_service = (
+            EdhrecCommanderService(
+                cache=SQLiteEdhrecCatalog(edhrec.database_path),
+                card_catalog=catalog,
+                client=EdhrecJsonClient(
+                    base_url=edhrec.base_url,
+                    user_agent=edhrec.user_agent,
+                    timeout_seconds=edhrec.timeout_seconds,
+                ),
+                refresh_after_days=edhrec.refresh_after_days,
+            )
+            if edhrec.enabled
+            else None
+        )
         semantic_index = SemanticCardIndex(
             path=semantic_sort.index_path,
             catalog=catalog,
             settings=semantic_sort,
+            tagger_catalog=tagger_catalog,
         )
         fuzzy_provider = FuzzyTitleSearchProvider(
             catalog,
@@ -47,8 +70,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             page_size=title_match.page_size,
             preview_min_confidence=title_match.preview_min_confidence,
             agentic_enabled=agentic.enabled,
+            tagger_catalog=tagger_catalog,
+            edhrec_service=edhrec_service,
         )
+        application.state.card_catalog = catalog
         application.state.card_search_provider = fuzzy_provider
+        application.state.tagger_catalog = tagger_catalog
+        application.state.edhrec_service = edhrec_service
         api_key = (
             runtime_settings.openrouter_api_key.get_secret_value()
             if runtime_settings.openrouter_api_key is not None
@@ -70,6 +98,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 default_max_results=agentic.local_tool.default_max_results,
                 hard_max_results=agentic.local_tool.hard_max_results,
                 semantic_index=semantic_index,
+                tagger_catalog=tagger_catalog,
             ),
             model_client=model_client,
             settings=agentic,
@@ -77,6 +106,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             trace_logger=JsonlAgentSearchTraceLogger(runtime_settings.search_debug_log_path),
             trace_log_path=str(runtime_settings.search_debug_log_path),
             debug_default_enabled=runtime_settings.search_debug_enabled,
+            edhrec_service=edhrec_service,
         )
         yield
 

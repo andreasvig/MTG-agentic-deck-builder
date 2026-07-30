@@ -22,8 +22,12 @@ the documentation in the same change when drift is found.
 
 - The frontend is React 19, TypeScript, and Vite.
 - The backend is FastAPI with Pydantic domain contracts.
-- Scryfall is the bulk card-data authority; normal search reads derived local
+- Scryfall is the bulk card-data authority; typed search reads derived local
   SQLite data.
+- An explicit resumable Tagger sync stores Oracle tags and relationships in a
+  separate SQLite sidecar. Card details and explicit immutable tag filters
+  consume it, and bounded deduplicated tag concepts enrich semantic document
+  v2. Exact card relationships remain outside semantic ranking.
 - Every search starts with one fuzzy card-title path. Weak-title and
   natural-language requests continue through the one-tool OpenRouter search
   agent.
@@ -47,13 +51,19 @@ Do not change these without an explicit product decision and ADR update:
 - The first screen is the working deck editor, not a marketing page.
 - Card search is one unified workflow. Do not restore a separate Quick Add.
 - Grouping modes are `Custom` and derived `Card types`.
+- New editor sessions default to derived `Card types`; `Custom` is the
+  explicitly selected editable mode.
 - Custom groups begin with permanent Command zone and Not assigned groups.
 - Cards may be moved only in Custom grouping. Card-type grouping is derived.
 - There is no standalone maybeboard in the active editor model.
 - Card details open in a centered dialog, not a permanent right inspector.
 - The right side of the workspace is reserved for a later deck agent.
 - Deck names are edited inline through double-click or the edit control.
+- Deck deletion requires confirmation and remains restorable during the
+  current session.
 - The deck rail uses commander art and ends with Create new deck.
+- Command-zone cards have quantity one; a second requires a recognized legal
+  co-commander pairing and a third is never accepted.
 - Color-identity warnings must appear before and after an illegal addition.
 - Agent edits must eventually use the same typed operations as manual edits,
   show a proposed diff, require confirmation, and remain undoable.
@@ -106,8 +116,9 @@ Do not mutate deck state directly inside presentation components. Extend
 - Do not cap the fuzzy title match set.
 - Return fuzzy-ranked cards in `search.title_match.page_size` pages and keep
   `has_more` accurate for the **Load more** action.
-- Apply color, mana-value, and EUR filters locally before slicing numbered
-  result pages.
+- Apply Commander legality, commander identity, selected card types, selected
+  subtypes, selected tags, color, mana-value, and EUR filters locally before
+  slicing numbered result pages.
 - Use coverage-aware title confidence only for the progressive phase boundary.
   If fewer than six first-page cards reach `0.75`, return those previews and
   start the agentic phase.
@@ -119,8 +130,22 @@ Do not mutate deck state directly inside presentation components. Extend
 - Treat every local-tool field except `semantic_sort` as a hard filter.
   `semantic_sort` must run after filters, must never discard by score, and must
   use the catalog-coupled local embedding sidecar.
+- Treat type conditions as literal printed type-line fragments. Use separate
+  `must_contain_all` values for true intersections, `must_contain_any` for
+  alternatives, and no type condition for a broad role that does not name a
+  type. Interface-selected card types and subtypes are immutable AND filters.
+  Keep defensive provider-boundary normalization covered by tests.
 - Normal search must not call Scryfall; refresh the derived SQLite catalog from
   `default_cards` through the explicit sync command.
+- Normal search must not call the Tagger network. `tagger:sync` owns the
+  optional local sidecar. Card enrichment and explicit tag filters read it at
+  runtime; embedding builds read its bounded concept snapshot only during
+  explicit sync.
+- EDHREC is an optional blank-query sort enhancement only. Fetch at most one
+  selected single-commander page after a 30-day cache miss, keep raw and
+  Oracle-normalized data in its own sidecar, and visibly fall back to the
+  original local order on every failure. Typed fuzzy and agentic search must
+  not use it.
 - Expose every returned score through `name_match_scores`.
 - Expose coverage-aware per-result confidence through
   `title_confidence_scores`; this is the percentage shown in debug mode.
@@ -144,6 +169,9 @@ When the `CardSearchPage` contract changes, update all of:
 
 - `oracle_id` identifies a gameplay card.
 - `scryfall_id` identifies the selected printing.
+- `local-data/card-tagger.sqlite3` is optional derived enrichment keyed by
+  `oracle_id`; explicit tag filters require it, and its bounded concepts are a
+  versioned input to semantic document v2 when installed.
 - The current deck library key is `manabase.deck-library.v2`.
 - `manabase.active-deck.v1` is a legacy migration source, not the active format.
 - Search debug preference uses `manabase.search-debug`.
@@ -161,6 +189,8 @@ Run from the repository root:
 
 ```bash
 npm run setup
+npm run catalog:sync
+npm run tagger:sync
 npm run dev
 npm test
 npm run build

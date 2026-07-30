@@ -40,6 +40,11 @@ export interface DeckLibrary {
   decks: Deck[];
 }
 
+export interface CommandZoneValidation {
+  allowed: boolean;
+  reason: string | null;
+}
+
 export const COMMAND_ZONE_GROUP_ID = "command_zone";
 export const UNASSIGNED_GROUP_ID = "unassigned";
 export const DECK_STORAGE_KEY = "manabase.active-deck.v1";
@@ -135,6 +140,132 @@ export function getColorIdentityWarnings(
           ),
       )
       .map((entry) => entry.card.oracle_id),
+  );
+}
+
+export function validateCommandZoneAddition(
+  entries: DeckCardEntry[],
+  candidate: CardSearchResult,
+): CommandZoneValidation {
+  const commanders = entries.filter(
+    (entry) => entry.section === "command_zone",
+  );
+  if (commanders.length === 0) {
+    return { allowed: true, reason: null };
+  }
+  if (
+    commanders.some(
+      (entry) => entry.card.oracle_id === candidate.oracle_id,
+    )
+  ) {
+    return {
+      allowed: false,
+      reason: `${candidate.name} is already in the command zone. Commanders may only have one copy.`,
+    };
+  }
+  if (commanders.length >= 2) {
+    return {
+      allowed: false,
+      reason:
+        "The command zone already has two legal paired commanders. Move one out before adding another.",
+    };
+  }
+
+  const current = commanders[0];
+  if (!current.card.details || current.quantity !== 1) {
+    return {
+      allowed: false,
+      reason:
+        "The current command zone must contain one known commander before a legal second commander can be checked.",
+    };
+  }
+  if (!canShareCommandZone(current.card.details, candidate)) {
+    return {
+      allowed: false,
+      reason: `${candidate.name} cannot share the command zone with ${current.card.name}. A second commander needs a legal Partner, Partner with, Friends forever, Choose a Background, or Doctor's companion pairing.`,
+    };
+  }
+  return { allowed: true, reason: null };
+}
+
+export function getCommandZoneProblem(
+  entries: DeckCardEntry[],
+): string | null {
+  const commanders = entries.filter(
+    (entry) => entry.section === "command_zone",
+  );
+  if (commanders.length === 0) {
+    return null;
+  }
+  if (commanders.some((entry) => entry.quantity !== 1)) {
+    return "Each commander must appear exactly once in the command zone.";
+  }
+  if (commanders.length === 1) {
+    return null;
+  }
+  if (commanders.length > 2) {
+    return "A Commander deck can have at most two commanders in its command zone.";
+  }
+
+  const [left, right] = commanders;
+  if (!left.card.details || !right.card.details) {
+    return "The two command-zone cards could not be verified as a legal commander pair.";
+  }
+  return canShareCommandZone(left.card.details, right.card.details)
+    ? null
+    : `${left.card.name} and ${right.card.name} are not a legal commander pair.`;
+}
+
+export function canShareCommandZone(
+  left: CardSearchResult,
+  right: CardSearchResult,
+): boolean {
+  if (
+    left.oracle_id === right.oracle_id ||
+    left.legalities.commander !== "legal" ||
+    right.legalities.commander !== "legal"
+  ) {
+    return false;
+  }
+
+  if (
+    hasOracleKeyword(left, "Partner") &&
+    hasOracleKeyword(right, "Partner")
+  ) {
+    return true;
+  }
+  if (
+    hasOracleKeyword(left, "Friends forever") &&
+    hasOracleKeyword(right, "Friends forever")
+  ) {
+    return true;
+  }
+
+  const leftPartner = namedPartner(left);
+  const rightPartner = namedPartner(right);
+  if (
+    leftPartner &&
+    rightPartner &&
+    normalizedCardName(leftPartner) === normalizedCardName(right.name) &&
+    normalizedCardName(rightPartner) === normalizedCardName(left.name)
+  ) {
+    return true;
+  }
+
+  if (
+    (hasOracleKeyword(left, "Choose a Background") &&
+      isLegendaryBackground(right)) ||
+    (hasOracleKeyword(right, "Choose a Background") &&
+      isLegendaryBackground(left))
+  ) {
+    return true;
+  }
+
+  return (
+    (hasOracleKeyword(left, "Doctor's companion") &&
+      isLegendaryTimeLordDoctor(right)) ||
+    (hasOracleKeyword(right, "Doctor's companion") &&
+      isLegendaryTimeLordDoctor(left))
   );
 }
 
@@ -298,4 +429,62 @@ function isCustomGroup(value: unknown): value is DeckCustomGroup {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
+}
+
+function oracleLines(card: CardSearchResult): string[] {
+  const text = [
+    card.oracle_text,
+    ...card.card_faces.map((face) => face.oracle_text),
+  ]
+    .filter((value): value is string => Boolean(value))
+    .join("\n");
+  return text.split("\n").map((line) => line.trim());
+}
+
+function hasOracleKeyword(
+  card: CardSearchResult,
+  keyword: string,
+): boolean {
+  const normalizedKeyword = keyword.toLocaleLowerCase();
+  return oracleLines(card).some((line) => {
+    const normalizedLine = line.toLocaleLowerCase();
+    return (
+      normalizedLine === normalizedKeyword ||
+      normalizedLine.startsWith(`${normalizedKeyword} (`)
+    );
+  });
+}
+
+function namedPartner(card: CardSearchResult): string | null {
+  const partnerLine = oracleLines(card).find((line) =>
+    line.toLocaleLowerCase().startsWith("partner with "),
+  );
+  if (!partnerLine) {
+    return null;
+  }
+  const nameAndReminder = partnerLine.slice("Partner with ".length);
+  const reminderStart = nameAndReminder.indexOf(" (");
+  return (
+    reminderStart >= 0
+      ? nameAndReminder.slice(0, reminderStart)
+      : nameAndReminder
+  ).trim();
+}
+
+function isLegendaryBackground(card: CardSearchResult): boolean {
+  return (
+    /\bLegendary\b/i.test(card.type_line) &&
+    /\bBackground\b/i.test(card.type_line)
+  );
+}
+
+function isLegendaryTimeLordDoctor(card: CardSearchResult): boolean {
+  return (
+    /\bLegendary\b/i.test(card.type_line) &&
+    /\bTime Lord Doctor\b/i.test(card.type_line)
+  );
+}
+
+function normalizedCardName(value: string): string {
+  return value.normalize("NFKC").trim().toLocaleLowerCase();
 }

@@ -15,7 +15,6 @@ from pydantic import (
 )
 
 from mtg_deck_builder.domain.cards import (
-    CardLegality,
     CardSearchResult,
     ColorMatchMode,
     MagicColor,
@@ -91,10 +90,6 @@ class NameSearch(AgentSearchModel):
     )
 
 
-class OracleTextSearch(TextConditions):
-    """Literal Oracle-text filters."""
-
-
 class ManaSearch(TextConditions):
     """Combined mana-value and mana-cost conditions."""
 
@@ -119,7 +114,29 @@ class ManaSearch(TextConditions):
 
 
 class TypeSearch(TextConditions):
-    """Literal type-line filters, such as Creature, Elf, Artifact, or Saga."""
+    """Literal printed type-line fragments, such as Creature, Elf, Artifact, or Saga."""
+
+    must_contain_all: list[NonEmptyString] = Field(
+        default_factory=list,
+        max_length=50,
+        description=(
+            "Every listed literal type-line fragment must occur. Use separate "
+            'values for combinations, such as ["Artifact", "Creature"].'
+        ),
+    )
+    must_contain_any: list[NonEmptyString] = Field(
+        default_factory=list,
+        max_length=50,
+        description=(
+            "At least one listed literal type-line fragment must occur. Use "
+            'separate values for alternatives, such as ["Instant", "Sorcery"].'
+        ),
+    )
+    must_not_contain: list[NonEmptyString] = Field(
+        default_factory=list,
+        max_length=50,
+        description="Cards containing any listed literal type-line fragment are removed.",
+    )
 
 
 class ColorSearch(AgentSearchModel):
@@ -187,22 +204,25 @@ class LocalCardSearchRequest(AgentSearchModel):
             "It sorts surviving candidates by meaning and never filters them."
         ),
     )
+    sort_by: Literal[
+        "semantic",
+        "edhrec_inclusion",
+        "edhrec_synergy",
+    ] | None = Field(
+        default=None,
+        description=(
+            "Primary candidate ordering. Defaults to semantic. EDHREC sorts are "
+            "available only when the runtime says commander evidence is available; "
+            "semantic closeness remains a tie-breaker."
+        ),
+    )
     name: NameSearch | None = None
-    oracle_text: OracleTextSearch | None = None
     mana: ManaSearch | None = None
     types: TypeSearch | None = None
     colors: ColorSearch | None = None
     power: NumericRange | None = None
     toughness: NumericRange | None = None
     price_eur: PriceRange | None = None
-    format: NonEmptyString | None = Field(
-        default=None,
-        description="Format name used for an exact legality filter.",
-    )
-    legality: CardLegality | None = Field(
-        default=None,
-        description="Required legality; format must also be supplied.",
-    )
     sets: list[NonEmptyString] | None = Field(
         default=None,
         max_length=100,
@@ -246,6 +266,10 @@ class AgentSearchCandidate(AgentSearchModel):
 
     card: CardSearchResult
     semantic_score: Annotated[float | None, Field(default=None, ge=0, le=1)] = None
+    edhrec_inclusion: Annotated[float | None, Field(default=None, ge=0, le=1)] = None
+    edhrec_synergy: float | None = None
+    edhrec_num_decks: Annotated[int | None, Field(default=None, ge=0)] = None
+    edhrec_potential_decks: Annotated[int | None, Field(default=None, ge=0)] = None
     exact_match_evidence: list[str] = Field(default_factory=list)
     filter_decisions: dict[str, bool] = Field(default_factory=dict)
 

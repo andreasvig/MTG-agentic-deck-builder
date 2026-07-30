@@ -37,14 +37,114 @@ class TitleMatchSettings(BaseModel):
     preview_min_confidence: Annotated[float, Field(ge=0, le=1)] = 0.75
 
 
-SemanticIndexedField = Literal[
-    "name",
+SemanticDocumentField = Literal[
     "mana_cost",
+    "mana_value",
     "type_line",
     "oracle_text",
     "power_toughness",
     "card_faces",
 ]
+
+
+class SemanticTagDocumentSettings(BaseModel):
+    """Controls for bounded Tagger concepts inside semantic documents."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = True
+    maximum_per_card: Annotated[int, Field(ge=1, le=50)] = 12
+    minimum_card_count: Annotated[int, Field(ge=1)] = 3
+    maximum_card_fraction: Annotated[float, Field(gt=0, le=1)] = 0.2
+    collapse_equivalent_memberships: bool = True
+    include_descriptions: bool = False
+    description_max_characters: Annotated[int, Field(ge=40, le=500)] = 160
+    prefer_specific_tags: bool = True
+    aliases: dict[str, str] = Field(
+        default_factory=lambda: {
+            "pp counters": "+1/+1 counters",
+            "etb": "enters the battlefield",
+        }
+    )
+    excluded: list[str] = Field(
+        default_factory=lambda: [
+            "alliteration",
+            "card name",
+            "card names",
+            "cycle",
+            "errata",
+            "erratum",
+            "flavor",
+            "flavors",
+            "french vanilla",
+            "has identical token",
+            "naming scheme",
+            "token versions of cards",
+            "virtual legendary",
+        ]
+    )
+
+    @field_validator("aliases")
+    @classmethod
+    def aliases_must_be_nonempty(cls, value: dict[str, str]) -> dict[str, str]:
+        normalized: dict[str, str] = {}
+        for source, replacement in value.items():
+            clean_source = source.strip().casefold()
+            clean_replacement = replacement.strip()
+            if not clean_source or not clean_replacement:
+                raise ValueError("semantic tag aliases must not be blank")
+            normalized[clean_source] = clean_replacement
+        return normalized
+
+    @field_validator("excluded")
+    @classmethod
+    def excluded_tags_must_be_unique(cls, value: list[str]) -> list[str]:
+        normalized = [tag.strip().casefold() for tag in value]
+        if any(not tag for tag in normalized):
+            raise ValueError("excluded semantic tags must not be blank")
+        return list(dict.fromkeys(normalized))
+
+
+class SemanticRelationshipDocumentSettings(BaseModel):
+    """Keep exact Tagger relationships outside dense gameplay documents."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    include_in_document: Literal[False] = False
+
+
+class SemanticDocumentSettings(BaseModel):
+    """Deterministic gameplay-document template for card embeddings."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    version: Literal[2] = 2
+    fields: list[SemanticDocumentField] = Field(
+        default_factory=lambda: [
+            "mana_cost",
+            "mana_value",
+            "type_line",
+            "oracle_text",
+            "power_toughness",
+            "card_faces",
+        ],
+        min_length=1,
+    )
+    include_name: bool = False
+    normalize_self_references: bool = True
+    explain_symbols: bool = True
+    tags: SemanticTagDocumentSettings = Field(default_factory=SemanticTagDocumentSettings)
+    relationships: SemanticRelationshipDocumentSettings = Field(
+        default_factory=SemanticRelationshipDocumentSettings
+    )
+
+    @field_validator("fields")
+    @classmethod
+    def fields_must_be_unique(
+        cls,
+        value: list[SemanticDocumentField],
+    ) -> list[SemanticDocumentField]:
+        return list(dict.fromkeys(value))
 
 
 class SemanticSortSettings(BaseModel):
@@ -57,17 +157,7 @@ class SemanticSortSettings(BaseModel):
     cache_dir: Path = Path("local-data/embedding-models")
     batch_size: Annotated[int, Field(ge=1, le=2_048)] = 256
     threads: Annotated[int, Field(ge=1, le=64)] = 4
-    indexed_fields: list[SemanticIndexedField] = Field(
-        default_factory=lambda: [
-            "name",
-            "mana_cost",
-            "type_line",
-            "oracle_text",
-            "power_toughness",
-            "card_faces",
-        ],
-        min_length=1,
-    )
+    document: SemanticDocumentSettings = Field(default_factory=SemanticDocumentSettings)
 
     @field_validator("model")
     @classmethod
@@ -86,14 +176,6 @@ class SemanticSortSettings(BaseModel):
                 raise ValueError("semantic paths must not be blank")
             return stripped
         return value
-
-    @field_validator("indexed_fields")
-    @classmethod
-    def indexed_fields_must_be_unique(
-        cls,
-        value: list[SemanticIndexedField],
-    ) -> list[SemanticIndexedField]:
-        return list(dict.fromkeys(value))
 
 
 class AgentDebugSettings(BaseModel):
@@ -177,6 +259,92 @@ class SearchSettings(BaseModel):
     agentic: AgenticSearchSettings = Field(default_factory=AgenticSearchSettings)
 
 
+class TaggerSettings(BaseModel):
+    """Offline synchronization settings for optional Tagger enrichment data."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    base_url: str = "https://tagger.scryfall.com"
+    database_path: Path = Path("local-data/card-tagger.sqlite3")
+    timeout_seconds: Annotated[float, Field(gt=0, le=300)] = 30
+    request_interval_seconds: Annotated[float, Field(ge=0.1, le=10)] = 0.12
+    concurrent_requests: Annotated[int, Field(ge=1, le=8)] = 4
+    max_retries: Annotated[int, Field(ge=0, le=10)] = 5
+    refresh_after_hours: Annotated[float, Field(gt=0, le=720)] = 24
+
+    @field_validator("base_url")
+    @classmethod
+    def validate_base_url(cls, value: str) -> str:
+        base_url = value.strip().rstrip("/")
+        url = _http_url_adapter.validate_python(base_url)
+        if (
+            url.username is not None
+            or url.password is not None
+            or url.query is not None
+            or url.fragment is not None
+        ):
+            raise ValueError("tagger base_url must not contain credentials, query, or fragment")
+        return base_url
+
+    @field_validator("database_path", mode="before")
+    @classmethod
+    def database_path_must_not_be_blank(cls, value: object) -> object:
+        if isinstance(value, str):
+            stripped = value.strip()
+            if not stripped:
+                raise ValueError("tagger database_path must not be blank")
+            return stripped
+        return value
+
+
+class EdhrecSettings(BaseModel):
+    """On-demand commander recommendation cache settings."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = True
+    base_url: str = "https://json.edhrec.com"
+    database_path: Path = Path("local-data/card-edhrec.sqlite3")
+    timeout_seconds: Annotated[float, Field(gt=0, le=300)] = 20
+    refresh_after_days: Annotated[int, Field(ge=1, le=365)] = 30
+    user_agent: str = (
+        f"MTG-Agentic-Deck-Builder/{__version__} "
+        "(personal local testing; +https://github.com/andreasvig/MTG-agentic-deck-builder)"
+    )
+
+    @field_validator("base_url")
+    @classmethod
+    def validate_base_url(cls, value: str) -> str:
+        base_url = value.strip().rstrip("/")
+        url = _http_url_adapter.validate_python(base_url)
+        if (
+            url.username is not None
+            or url.password is not None
+            or url.query is not None
+            or url.fragment is not None
+        ):
+            raise ValueError("edhrec base_url must not contain credentials, query, or fragment")
+        return base_url
+
+    @field_validator("database_path", mode="before")
+    @classmethod
+    def database_path_must_not_be_blank(cls, value: object) -> object:
+        if isinstance(value, str):
+            stripped = value.strip()
+            if not stripped:
+                raise ValueError("edhrec database_path must not be blank")
+            return stripped
+        return value
+
+    @field_validator("user_agent")
+    @classmethod
+    def user_agent_must_not_be_blank(cls, value: str) -> str:
+        stripped = value.strip()
+        if not stripped:
+            raise ValueError("edhrec user_agent must not be blank")
+        return stripped
+
+
 class Settings(BaseSettings):
     """Runtime settings loaded from environment variables and an optional .env file."""
 
@@ -208,6 +376,8 @@ class Settings(BaseSettings):
     )
     openrouter_base_url: str = "https://openrouter.ai/api/v1"
     search: SearchSettings = Field(default_factory=SearchSettings)
+    tagger: TaggerSettings = Field(default_factory=TaggerSettings)
+    edhrec: EdhrecSettings = Field(default_factory=EdhrecSettings)
     search_debug_enabled: bool = False
     search_debug_log_path: Path = Path("local-data/search-debug.jsonl")
     search_debug_result_limit: Annotated[int, Field(ge=1, le=100)] = 25

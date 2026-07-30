@@ -14,6 +14,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Annotated, Any, BinaryIO, Literal
 from urllib.request import Request, urlopen
+from uuid import UUID
 
 import ijson
 from pydantic import AnyHttpUrl, BaseModel, ConfigDict, Field, ValidationError
@@ -91,6 +92,34 @@ class SQLiteCardCatalog:
             self._loaded_mtime_ns = mtime_ns
             return entries
 
+    async def card_by_oracle_id(self, oracle_id: str) -> CardSearchResult | None:
+        """Resolve one canonical printing by its stable Oracle identity."""
+
+        return next(
+            (
+                entry.card
+                for entry in await self.entries()
+                if str(entry.card.oracle_id) == str(oracle_id)
+            ),
+            None,
+        )
+
+    async def oracle_ids_by_scryfall_ids(
+        self,
+        scryfall_ids: list[UUID],
+    ) -> dict[UUID, UUID]:
+        """Map any known paper printing identities to stable Oracle identities."""
+
+        if not scryfall_ids:
+            return {}
+        try:
+            return await asyncio.to_thread(
+                self._read_oracle_ids_by_scryfall_ids,
+                scryfall_ids,
+            )
+        except (OSError, sqlite3.Error, ValueError) as exc:
+            raise CardSearchUnavailable from exc
+
     def metadata(self) -> dict[str, str]:
         """Read catalog metadata without loading card payloads."""
 
@@ -119,6 +148,32 @@ class SQLiteCardCatalog:
                 )
                 for card_json, aliases_json in rows
             )
+
+    def _read_oracle_ids_by_scryfall_ids(
+        self,
+        scryfall_ids: list[UUID],
+    ) -> dict[UUID, UUID]:
+        unique_ids = list(dict.fromkeys(scryfall_ids))
+        resolved: dict[UUID, UUID] = {}
+        with _read_only_connection(self.path) as connection:
+            for start in range(0, len(unique_ids), 500):
+                chunk = unique_ids[start : start + 500]
+                placeholders = ",".join("?" for _ in chunk)
+                rows = connection.execute(
+                    f"""
+                    SELECT scryfall_id, oracle_id
+                    FROM printings
+                    WHERE scryfall_id IN ({placeholders})
+                    """,
+                    [str(scryfall_id) for scryfall_id in chunk],
+                )
+                resolved.update(
+                    {
+                        UUID(scryfall_id): UUID(oracle_id)
+                        for scryfall_id, oracle_id in rows
+                    }
+                )
+        return resolved
 
 
 class ScryfallBulkCatalogSync:

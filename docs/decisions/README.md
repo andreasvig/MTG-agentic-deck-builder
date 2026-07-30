@@ -26,6 +26,14 @@ tradeoffs; they are not task lists.
 | [0008](0008-local-catalog-serves-search.md) | Accepted | Local catalog search reads and pagination |
 | [0009](0009-progressive-one-tool-agentic-search.md) | Accepted | Progressive one-tool agentic search |
 | [0010](0010-always-on-semantic-sort.md) | Accepted | Always-on local semantic sorting |
+| [0011](0011-tagger-enrichment-sidecar.md) | Accepted (transitional) | Optional local Tagger data acquisition |
+| [0012](0012-immutable-commander-and-tagger-filters.md) | Accepted | Immutable Commander and explicit Tagger filters |
+| [0013](0013-recoverable-deck-deletion-and-command-zone-guards.md) | Accepted (transitional) | Local deck deletion and command-zone enforcement |
+| [0014](0014-title-resistant-tagger-enriched-semantic-documents.md) | Accepted | Semantic document v2 and bounded Tagger concepts |
+| [0015](0015-on-demand-edhrec-commander-ranking.md) | Superseded | Initial blank-query EDHREC commander ranking |
+| [0016](0016-commander-theme-evidence-in-agentic-search.md) | Accepted | Commander themes and EDHREC evidence in agentic search |
+| [0017](0017-remove-exact-oracle-text-filter.md) | Accepted | Remove brittle exact Oracle-text filtering from the agent tool |
+| [0018](0018-runtime-owned-and-query-explicit-filters.md) | Accepted | Runtime-owned legality and query-explicit type/color filters |
 
 ## Updating Decisions
 

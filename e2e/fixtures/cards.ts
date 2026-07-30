@@ -1,4 +1,5 @@
 import type {
+  CardEnrichment,
   CardImageUris,
   CardSearchPage,
   CardSearchResult,
@@ -51,6 +52,42 @@ const baseCard: CardSearchResult = {
 
 export const solRing = baseCard;
 
+export const solRingEnrichment: CardEnrichment = {
+  oracle_id: solRing.oracle_id,
+  tags: [
+    {
+      id: "tag-mana-rock",
+      name: "mana rock",
+      slug: "mana-rock",
+      description: "Artifacts that produce mana.",
+    },
+  ],
+  similar_cards: [
+    {
+      oracle_id: "c3c5d5eb-925f-4d32-9b8f-3451c6284c4f",
+      name: "Mana Vault",
+    },
+  ],
+  references: [],
+  referenced_by: [],
+};
+
+export const manaVault: CardSearchResult = {
+  ...baseCard,
+  oracle_id: "c3c5d5eb-925f-4d32-9b8f-3451c6284c4f",
+  scryfall_id: "bb81002c-8fa3-4bc9-9bb8-65b08c34c8e3",
+  name: "Mana Vault",
+  mana_cost: "{1}",
+  mana_value: 1,
+  oracle_text:
+    "Mana Vault doesn't untap during your untap step.\n{T}: Add {C}{C}{C}.",
+  set_code: "2xm",
+  set_name: "Double Masters",
+  collector_number: "270",
+  rarity: "mythic",
+  prices: { ...baseCard.prices, eur: "42.00" },
+};
+
 export const llanowarElves: CardSearchResult = {
   ...baseCard,
   oracle_id: "68954295-54e3-4303-a6bc-fc4547a4e3a3",
@@ -86,6 +123,37 @@ export const ghalta: CardSearchResult = {
   set_name: "Rivals of Ixalan",
   collector_number: "130",
   rarity: "rare",
+};
+
+export const thrasios: CardSearchResult = {
+  ...ghalta,
+  oracle_id: "oracle-thrasios",
+  scryfall_id: "printing-thrasios",
+  name: "Thrasios, Triton Hero",
+  mana_cost: "{G}{U}",
+  mana_value: 2,
+  type_line: "Legendary Creature — Merfolk Wizard",
+  oracle_text:
+    "Partner\n{4}: Scry 1, then reveal the top card of your library.",
+  power: "1",
+  toughness: "3",
+  colors: ["G", "U"],
+  color_identity: ["G", "U"],
+};
+
+export const tymna: CardSearchResult = {
+  ...ghalta,
+  oracle_id: "oracle-tymna",
+  scryfall_id: "printing-tymna",
+  name: "Tymna the Weaver",
+  mana_cost: "{1}{W}{B}",
+  mana_value: 3,
+  type_line: "Legendary Creature — Human Cleric",
+  oracle_text: "Lifelink\nPartner",
+  power: "2",
+  toughness: "2",
+  colors: ["W", "B"],
+  color_identity: ["W", "B"],
 };
 
 export const counterspell: CardSearchResult = {
@@ -140,6 +208,11 @@ export function searchPage(
     reranked: false,
     agentic_required: false,
     search_session_id: null,
+    edhrec: {
+      status: "not_requested",
+      source: null,
+      message: null,
+    },
     debug: null,
     debug_runs: [],
   };

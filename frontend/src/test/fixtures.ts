@@ -116,6 +116,11 @@ export function cardSearchPage(
     reranked: false,
     agentic_required: false,
     search_session_id: null,
+    edhrec: {
+      status: "not_requested",
+      source: null,
+      message: null,
+    },
     debug: null,
     debug_runs: [],
   };

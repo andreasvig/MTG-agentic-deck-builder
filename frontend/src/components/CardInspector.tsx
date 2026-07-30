@@ -8,14 +8,20 @@ import {
 } from "lucide-react";
 import { useEffect, useRef } from "react";
 
-import type { CardSearchResult, MagicColor } from "../domain/card";
+import type {
+  CardSearchResult,
+  CardTagFilter,
+  MagicColor,
+} from "../domain/card";
 import { formatEuro, getCardPrice } from "../domain/card";
 import type { DeckCustomGroup } from "../domain/deck";
 import {
   COMMAND_ZONE_GROUP_ID,
   UNASSIGNED_GROUP_ID,
 } from "../domain/deck";
+import { apiClient, type ApiClient } from "../lib/api";
 import { CardArt } from "./CardArt";
+import { CardEnrichmentPanel } from "./CardEnrichmentPanel";
 
 interface CardInspectorProps {
   card: CardSearchResult | null;
@@ -26,10 +32,13 @@ interface CardInspectorProps {
   singletonWarning: boolean;
   colorIdentityWarning: boolean;
   commanderColorIdentity: ReadonlySet<MagicColor> | null;
+  client?: ApiClient;
   onAdd: (card: CardSearchResult) => void;
   onSetQuantity: (scryfallId: string, quantity: number) => void;
   onMove: (scryfallId: string, groupId: string) => void;
   onRemove: (scryfallId: string) => void;
+  onOpenCard?: (card: CardSearchResult) => void;
+  onSelectTag?: (tag: CardTagFilter) => void;
   onClose: () => void;
 }
 
@@ -42,17 +51,21 @@ export function CardInspector({
   singletonWarning,
   colorIdentityWarning,
   commanderColorIdentity,
+  client = apiClient,
   onAdd,
   onSetQuantity,
   onMove,
   onRemove,
+  onOpenCard,
+  onSelectTag,
   onClose,
 }: CardInspectorProps) {
   const dialogRef = useRef<HTMLElement>(null);
   const closeButtonRef = useRef<HTMLButtonElement>(null);
+  const isOpen = card !== null;
 
   useEffect(() => {
-    if (!card) {
+    if (!isOpen) {
       return;
     }
     const previousFocus =
@@ -95,7 +108,7 @@ export function CardInspector({
       document.removeEventListener("keydown", handleKeyDown);
       window.setTimeout(() => previousFocus?.focus(), 0);
     };
-  }, [card, onClose]);
+  }, [isOpen, onClose]);
 
   if (!card) {
     return null;
@@ -160,6 +173,13 @@ export function CardInspector({
                   )
                   .join("\n\n")}
             </p>
+            <CardEnrichmentPanel
+              key={card.oracle_id}
+              oracleId={card.oracle_id}
+              client={client}
+              onOpenCard={onOpenCard}
+              onSelectTag={onSelectTag}
+            />
 
             {singletonWarning ? (
               <div className="singleton-warning" role="status">

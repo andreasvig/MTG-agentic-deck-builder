@@ -8,13 +8,14 @@ import numpy as np
 import pytest
 
 from mtg_deck_builder.card_catalog import CatalogEntry, card_title_aliases
-from mtg_deck_builder.config import SemanticSortSettings
-from mtg_deck_builder.domain import CardPrices, CardSearchResult
+from mtg_deck_builder.config import SemanticDocumentSettings, SemanticSortSettings
+from mtg_deck_builder.domain import CardFace, CardPrices, CardSearchResult
 from mtg_deck_builder.providers.cards import CardSearchUnavailable
 from mtg_deck_builder.semantic_index import (
     SemanticCardIndex,
     render_semantic_document,
 )
+from mtg_deck_builder.tagger_catalog import TaggerSemanticSnapshot
 
 _NAMESPACE = UUID("f3c7af78-93ea-4d1b-8873-0eac5b4f6c5f")
 
@@ -101,6 +102,28 @@ class FakeEmbeddingModel:
         return np.array([-1.0, 0.0], dtype=np.float32)
 
 
+class StubSemanticTagger:
+    def __init__(self) -> None:
+        self.version = "one"
+
+    def semantic_metadata(self) -> dict[str, str]:
+        return {"status": "available", "version": self.version}
+
+    def semantic_snapshot(
+        self,
+        _settings: object,
+        *,
+        total_cards: int,
+    ) -> TaggerSemanticSnapshot:
+        assert total_cards == 1
+        return TaggerSemanticSnapshot(
+            concepts_by_oracle_id={
+                DAMAGER.oracle_id: ("repeatable untap support",),
+            },
+            metadata=self.semantic_metadata(),
+        )
+
+
 def settings(tmp_path: Path) -> SemanticSortSettings:
     return SemanticSortSettings(
         model="fake-semantic-model",
@@ -158,22 +181,75 @@ def test_semantic_index_rejects_a_stale_catalog(tmp_path: Path) -> None:
         asyncio.run(index.score("untap", [UNTAPPER.oracle_id]))
 
 
+def test_semantic_index_embeds_tags_and_rejects_a_stale_tagger_snapshot(
+    tmp_path: Path,
+) -> None:
+    catalog = StubCatalog(tmp_path / "cards.sqlite3", [DAMAGER])
+    tagger = StubSemanticTagger()
+    index = SemanticCardIndex(
+        path=tmp_path / "semantic.sqlite3",
+        catalog=catalog,  # type: ignore[arg-type]
+        settings=settings(tmp_path),
+        tagger_catalog=tagger,  # type: ignore[arg-type]
+        model=FakeEmbeddingModel(),
+    )
+
+    asyncio.run(index.sync())
+    scores = asyncio.run(index.score("untap", [DAMAGER.oracle_id]))
+    assert scores.scores[DAMAGER.oracle_id] == pytest.approx(1.0)
+
+    tagger.version = "two"
+    with pytest.raises(CardSearchUnavailable, match="missing or stale"):
+        asyncio.run(index.score("untap", [DAMAGER.oracle_id]))
+
+
 def test_semantic_document_contains_gameplay_fields_without_provider_urls() -> None:
     document = render_semantic_document(
         UNTAPPER,
-        [
-            "name",
-            "mana_cost",
-            "type_line",
-            "oracle_text",
-            "power_toughness",
-            "card_faces",
-        ],
+        SemanticDocumentSettings(),
+        ["repeatable untap", "activated ability"],
     )
 
-    assert "Name: Helpful Untapper" in document
+    assert "Helpful Untapper" not in document
     assert "Mana cost: {2}{G}" in document
+    assert "Mana value: 3" in document
     assert "Type: Creature — Test" in document
-    assert "Rules: {T}: Untap target creature." in document
+    assert "Abilities:\n- {T} (tap): Untap target creature." in document
     assert "Power/toughness: 3/3" in document
+    assert "Gameplay concepts: repeatable untap; activated ability" in document
     assert "scryfall.com" not in document
+
+
+def test_semantic_document_normalizes_self_references_and_renders_faces_once() -> None:
+    card = make_card(
+        "Front Face // Back Face",
+        oracle_text="Front Face should not be rendered twice.",
+        type_line="Creature — Test // Land",
+    ).model_copy(
+        update={
+            "card_faces": [
+                CardFace(
+                    name="Front Face",
+                    mana_cost="{X}{G}",
+                    type_line="Creature — Test",
+                    oracle_text="When Front Face dies, draw a card.",
+                    power="2",
+                    toughness="2",
+                ),
+                CardFace(
+                    name="Back Face",
+                    type_line="Land",
+                    oracle_text="{T}: Add {G}.",
+                ),
+            ]
+        }
+    )
+
+    document = render_semantic_document(card, SemanticDocumentSettings())
+
+    assert "Front Face" not in document
+    assert "Back Face" not in document
+    assert document.count("When this card dies, draw a card.") == 1
+    assert document.count("Type: Creature — Test") == 1
+    assert "Mana cost: {X}{G} (contains variable X mana)" in document
+    assert "Abilities:\n- {T} (tap): Add {G}." in document

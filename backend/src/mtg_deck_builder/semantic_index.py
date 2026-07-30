@@ -19,12 +19,13 @@ import numpy as np
 from numpy.typing import NDArray
 
 from mtg_deck_builder.card_catalog import CatalogEntry, SQLiteCardCatalog
-from mtg_deck_builder.config import SemanticSortSettings
-from mtg_deck_builder.domain import CardSearchResult
+from mtg_deck_builder.config import SemanticDocumentSettings, SemanticSortSettings
+from mtg_deck_builder.domain import CardFace, CardSearchResult
 from mtg_deck_builder.providers.cards import CardSearchUnavailable
+from mtg_deck_builder.tagger_catalog import SQLiteTaggerCatalog, TaggerCatalogUnavailable
 
 _SCHEMA_VERSION = 1
-_DOCUMENT_TEMPLATE_VERSION = 1
+_DOCUMENT_TEMPLATE_VERSION = 2
 _SQLITE_PARAMETER_BATCH = 900
 
 
@@ -118,12 +119,14 @@ class SemanticCardIndex:
         path: Path,
         catalog: SQLiteCardCatalog,
         settings: SemanticSortSettings,
+        tagger_catalog: SQLiteTaggerCatalog | None = None,
         model: EmbeddingModel | None = None,
         progress: Callable[[int, int], None] | None = None,
     ) -> None:
         self.path = path
         self._catalog = catalog
         self._settings = settings
+        self._tagger_catalog = tagger_catalog
         self._model = model or FastEmbedModel(
             model_name=settings.model,
             cache_dir=settings.cache_dir,
@@ -148,7 +151,28 @@ class SemanticCardIndex:
                     path=self.path,
                 )
             entries = await self._catalog.entries()
-            return await asyncio.to_thread(self._build, entries, expected)
+            concepts: dict[UUID, tuple[str, ...]] = {}
+            if self._settings.document.tags.enabled and self._tagger_catalog is not None:
+                try:
+                    snapshot = await asyncio.to_thread(
+                        self._tagger_catalog.semantic_snapshot,
+                        self._settings.document.tags,
+                        total_cards=len(entries),
+                    )
+                except TaggerCatalogUnavailable as exc:
+                    raise CardSearchUnavailable(
+                        "Tagger concepts could not be loaded for semantic indexing"
+                    ) from exc
+                concepts = snapshot.concepts_by_oracle_id
+                expected = self._expected_metadata(
+                    tagger_metadata=snapshot.metadata,
+                )
+            return await asyncio.to_thread(
+                self._build,
+                entries,
+                expected,
+                concepts,
+            )
 
     async def score(
         self,
@@ -178,26 +202,52 @@ class SemanticCardIndex:
                 installed,
             )
 
-    def _expected_metadata(self) -> dict[str, str]:
+    def _expected_metadata(
+        self,
+        *,
+        tagger_metadata: dict[str, str] | None = None,
+    ) -> dict[str, str]:
         catalog_metadata = self._catalog.metadata()
         try:
             catalog_mtime_ns = self._catalog.path.stat().st_mtime_ns
         except OSError as exc:
             raise CardSearchUnavailable("card catalog is unavailable") from exc
+        resolved_tagger_metadata = (
+            tagger_metadata if tagger_metadata is not None else self._semantic_tagger_metadata()
+        )
         return {
             "schema_version": str(_SCHEMA_VERSION),
             "document_template_version": str(_DOCUMENT_TEMPLATE_VERSION),
             "model": self._settings.model,
-            "indexed_fields": json.dumps(
-                self._settings.indexed_fields,
+            "document_settings": json.dumps(
+                self._settings.document.model_dump(mode="json"),
                 ensure_ascii=True,
                 separators=(",", ":"),
+                sort_keys=True,
+            ),
+            "tagger_snapshot": json.dumps(
+                resolved_tagger_metadata,
+                ensure_ascii=True,
+                separators=(",", ":"),
+                sort_keys=True,
             ),
             "catalog_schema_version": catalog_metadata.get("schema_version", ""),
             "catalog_source_updated_at": catalog_metadata.get("source_updated_at", ""),
             "catalog_card_count": catalog_metadata.get("card_count", ""),
             "catalog_mtime_ns": str(catalog_mtime_ns),
         }
+
+    def _semantic_tagger_metadata(self) -> dict[str, str]:
+        if not self._settings.document.tags.enabled:
+            return {"status": "disabled"}
+        if self._tagger_catalog is None:
+            return {"status": "absent"}
+        try:
+            return self._tagger_catalog.semantic_metadata()
+        except TaggerCatalogUnavailable as exc:
+            raise CardSearchUnavailable(
+                "Tagger metadata could not be loaded for semantic indexing"
+            ) from exc
 
     def _read_metadata(self) -> dict[str, str]:
         if not self.path.is_file():
@@ -212,6 +262,7 @@ class SemanticCardIndex:
         self,
         entries: tuple[CatalogEntry, ...],
         expected: dict[str, str],
+        concepts_by_oracle_id: dict[UUID, tuple[str, ...]],
     ) -> SemanticIndexSyncResult:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         file_descriptor, temporary_name = tempfile.mkstemp(
@@ -244,7 +295,11 @@ class SemanticCardIndex:
                 """
             )
             documents = (
-                render_semantic_document(entry.card, self._settings.indexed_fields)
+                render_semantic_document(
+                    entry.card,
+                    self._settings.document,
+                    concepts_by_oracle_id.get(entry.card.oracle_id, ()),
+                )
                 for entry in entries
             )
             vectors = self._model.embed_passages(
@@ -254,7 +309,11 @@ class SemanticCardIndex:
             for entry, document, raw_vector in zip(
                 entries,
                 (
-                    render_semantic_document(card.card, self._settings.indexed_fields)
+                    render_semantic_document(
+                        card.card,
+                        self._settings.document,
+                        concepts_by_oracle_id.get(card.card.oracle_id, ()),
+                    )
                     for card in entries
                 ),
                 vectors,
@@ -355,55 +414,143 @@ class SemanticCardIndex:
 
 def render_semantic_document(
     card: CardSearchResult,
-    indexed_fields: Sequence[str],
+    settings: SemanticDocumentSettings,
+    gameplay_concepts: Sequence[str] = (),
 ) -> str:
-    """Render stable gameplay text for one card embedding."""
+    """Render one deterministic, title-resistant gameplay document."""
 
-    fields = set(indexed_fields)
+    fields = set(settings.fields)
     sections: list[str] = []
-    if "name" in fields:
-        sections.append(f"Name: {card.name}")
-    if "mana_cost" in fields:
-        mana = " // ".join(
-            filter(None, [card.mana_cost, *(face.mana_cost for face in card.card_faces)])
+    self_names = tuple(
+        sorted(
+            {card.name, *(face.name for face in card.card_faces)},
+            key=len,
+            reverse=True,
         )
-        sections.append(f"Mana cost: {mana or 'none'}")
-    if "type_line" in fields:
-        types = " // ".join(
-            filter(None, [card.type_line, *(face.type_line for face in card.card_faces)])
-        )
-        sections.append(f"Type: {types}")
-    if "oracle_text" in fields:
-        oracle = "\n".join(
-            filter(None, [card.oracle_text, *(face.oracle_text for face in card.card_faces)])
-        )
-        sections.append(f"Rules: {oracle or 'none'}")
-    if "power_toughness" in fields:
-        characteristics = _power_toughness_text(card)
-        sections.append(f"Power/toughness: {characteristics or 'not applicable'}")
-    if "card_faces" in fields and card.card_faces:
-        faces = "\n".join(
-            (
-                f"{face.name}: {face.mana_cost or 'no mana cost'}; "
-                f"{face.type_line or 'no type'}; {face.oracle_text or 'no rules text'}; "
-                f"{face.power or '?'}/{face.toughness or '?'}"
+    )
+    if settings.include_name:
+        sections.append(f"Card: {card.name}")
+    if "mana_value" in fields:
+        sections.append(f"Mana value: {_format_number(card.mana_value)}")
+
+    if card.card_faces and "card_faces" in fields:
+        face_sections = [
+            _render_face_section(
+                face,
+                index=index,
+                fields=fields,
+                settings=settings,
+                self_names=self_names,
             )
-            for face in card.card_faces
+            for index, face in enumerate(card.card_faces, start=1)
+        ]
+        sections.append("Card faces:\n" + "\n\n".join(face_sections))
+    else:
+        sections.extend(
+            _render_gameplay_fields(
+                card,
+                fields=fields,
+                settings=settings,
+                self_names=self_names,
+            )
         )
-        sections.append(f"Faces:\n{faces}")
-    return "\n".join(sections)
+
+    concepts = list(
+        dict.fromkeys(concept.strip() for concept in gameplay_concepts if concept.strip())
+    )
+    if concepts and settings.tags.enabled:
+        sections.append("Gameplay concepts: " + "; ".join(concepts))
+    return "\n\n".join(section for section in sections if section)
 
 
-def _power_toughness_text(card: CardSearchResult) -> str:
-    if card.card_faces:
-        return " // ".join(
-            f"{face.power or '?'}/{face.toughness or '?'}"
-            for face in card.card_faces
-            if face.power is not None or face.toughness is not None
+def _render_face_section(
+    face: CardFace,
+    *,
+    index: int,
+    fields: set[str],
+    settings: SemanticDocumentSettings,
+    self_names: tuple[str, ...],
+) -> str:
+    heading = f"Face {index}"
+    if settings.include_name:
+        heading += f": {face.name}"
+    details = _render_gameplay_fields(
+        face,
+        fields=fields,
+        settings=settings,
+        self_names=self_names,
+    )
+    return "\n".join([heading, *details])
+
+
+def _render_gameplay_fields(
+    card: CardSearchResult | CardFace,
+    *,
+    fields: set[str],
+    settings: SemanticDocumentSettings,
+    self_names: tuple[str, ...],
+) -> list[str]:
+    details: list[str] = []
+    if "type_line" in fields and card.type_line:
+        details.append(f"Type: {card.type_line}")
+    if "mana_cost" in fields:
+        details.append(
+            "Mana cost: "
+            + _semantic_mana_cost(
+                card.mana_cost,
+                explain_symbols=settings.explain_symbols,
+            )
         )
-    if card.power is None and card.toughness is None:
-        return ""
-    return f"{card.power or '?'}/{card.toughness or '?'}"
+    if "power_toughness" in fields and (card.power is not None or card.toughness is not None):
+        details.append(f"Power/toughness: {card.power or '?'}/{card.toughness or '?'}")
+    if "oracle_text" in fields and card.oracle_text:
+        rules = _semantic_rules_text(
+            card.oracle_text,
+            self_names=self_names,
+            normalize_self_references=settings.normalize_self_references,
+            explain_symbols=settings.explain_symbols,
+        )
+        if rules:
+            details.append("Abilities:\n" + "\n".join(f"- {line}" for line in rules))
+    return details
+
+
+def _semantic_mana_cost(
+    mana_cost: str | None,
+    *,
+    explain_symbols: bool,
+) -> str:
+    if not mana_cost:
+        return "none"
+    if not explain_symbols or "{X}" not in mana_cost.upper():
+        return mana_cost
+    return f"{mana_cost} (contains variable X mana)"
+
+
+def _semantic_rules_text(
+    oracle_text: str,
+    *,
+    self_names: tuple[str, ...],
+    normalize_self_references: bool,
+    explain_symbols: bool,
+) -> list[str]:
+    text = oracle_text
+    if normalize_self_references:
+        for self_name in self_names:
+            text = text.replace(self_name, "this card")
+    if explain_symbols:
+        replacements = {
+            "{T}": "{T} (tap)",
+            "{Q}": "{Q} (untap)",
+            "{X}": "{X} (variable mana amount)",
+        }
+        for symbol, explanation in replacements.items():
+            text = text.replace(symbol, explanation)
+    return [line.strip() for line in text.splitlines() if line.strip()]
+
+
+def _format_number(value: float) -> str:
+    return str(int(value)) if value.is_integer() else str(value)
 
 
 def _normalized_vector(raw_vector: NDArray[np.floating]) -> NDArray[np.float32]:

@@ -14,13 +14,49 @@ search:
     cache_dir: local-data/embedding-models
     batch_size: 256
     threads: 4
-    indexed_fields:
-      - name
-      - mana_cost
-      - type_line
-      - oracle_text
-      - power_toughness
-      - card_faces
+    document:
+      version: 2
+      fields:
+        - mana_cost
+        - mana_value
+        - type_line
+        # Rules text informs semantic meaning but is not exposed as an exact filter.
+        - oracle_text
+        - power_toughness
+        - card_faces
+      # Names are handled by fuzzy/name search and can bias gameplay meaning.
+      include_name: false
+      normalize_self_references: true
+      explain_symbols: true
+      tags:
+        enabled: true
+        maximum_per_card: 12
+        minimum_card_count: 3
+        maximum_card_fraction: 0.20
+        collapse_equivalent_memberships: true
+        include_descriptions: false
+        description_max_characters: 160
+        prefer_specific_tags: true
+        aliases:
+          pp counters: +1/+1 counters
+          etb: enters the battlefield
+        excluded:
+          - alliteration
+          - card name
+          - card names
+          - cycle
+          - errata
+          - erratum
+          - flavor
+          - flavors
+          - french vanilla
+          - has identical token
+          - naming scheme
+          - token versions of cards
+          - virtual legendary
+      relationships:
+        # Exact graph relationships remain outside dense-vector text.
+        include_in_document: false
 
   agentic:
     enabled: true
@@ -56,6 +92,7 @@ search:
       Call exactly one search_local_cards tool. It is the only search tool.
       Never send raw SQL. Every schema field is optional, and nested categories
       must stay objects rather than shorthand strings.
+      Omit unused fields completely; never send placeholders such as "...".
 
       Every structured field is a HARD FILTER except semantic_sort. Hard filters
       remove cards that fail them. semantic_sort never removes a card and has no
@@ -65,9 +102,9 @@ search:
 
       Always give semantic_sort a short, corrected description of the cards the
       user actually wants. Do not merely copy bad grammar when you can recover
-      the intent. Use hard filters only for constraints that are explicit or
-      strongly implied. A broad idea belongs in semantic_sort, not in a guessed
-      literal Oracle-text filter.
+      the intent. Use type and color hard filters only when the user's search
+      explicitly restricts the result cards themselves. A broad gameplay idea
+      belongs in semantic_sort, not in an invented exact condition.
 
       RECOVERING INTENT FROM IMPERFECT QUERIES
       - Correct obvious spelling and grammar silently.
@@ -77,33 +114,61 @@ search:
         "keeps alive" can mean protection, hexproof, indestructible, prevention,
         blink, recursion, or similar effects and should usually stay semantic.
       - Prefer recall over invented precision. Do not add a color, type, price,
-        format, or numeric cutoff that the request does not justify.
-      - Use literal Oracle-text conditions only when the word or symbol is likely
-        to appear in official rules text. Use canonical wording such as "untap"
-        instead of "untapping".
+        or numeric cutoff that the request does not justify.
 
       FIELD GUIDE
       - name.query is a case-insensitive whole/partial-name filter.
-      - oracle_text must_contain_all/any/must_not_contain are literal rules-text
-        filters. They are not semantic.
       - mana combines mana-value ranges and literal mana-cost symbols.
-      - types filters the type line. colors filters color identity.
+      - types compares literal printed type-line fragments. Add it only when a
+        card type or subtype explicitly describes the cards the user wants
+        returned. A type mentioned as part of an effect is not a result filter:
+        "draw when creatures enter" must not add Creature, while "creatures
+        that draw cards" may add Creature. Never infer Creature merely because
+        a desired effect is commonly found on a creature.
+      - For an AND combination such as "artifact creature", use separate
+        must_contain_all values: ["Artifact","Creature"]. For OR alternatives
+        such as "instant or sorcery", use separate must_contain_any values:
+        ["Instant","Sorcery"]. Never join alternatives into one comma-separated
+        string.
+      - "Permanent" and "spell" are rules concepts, not printed type-line
+        fragments. Do not use them in types. If the request is broad across card
+        types, omit types and let semantic_sort rank every eligible card.
+      - colors filters color identity and must be an object such as
+        {"identity":["W","U"],"mode":"subset"}; never send a compact string
+        such as "WU". Use it only when the user's typed request names the color.
+        Never copy a commander identity or an interface color selection.
       - power and toughness are inclusive numeric filters.
-      - price_eur, format/legality, sets, and rarities are exact filters.
-      - semantic_sort is the only non-filtering field.
+      - price_eur, sets, and rarities are exact filters.
+      - Commander legality belongs entirely to the immutable interface filters
+        and is intentionally absent from this tool.
+      - semantic_sort is always non-filtering semantic evidence.
+      - sort_by chooses the primary ordering. Use semantic by default.
+        edhrec_inclusion favors cards commonly played with the selected
+        commander or theme. edhrec_synergy favors cards that overperform their
+        general baseline for that commander or theme. Use an EDHREC sort only
+        when the user message says commander evidence is available. EDHREC
+        scores rank candidates; they never filter them.
+
+      Filters listed as already chosen in the interface are applied separately
+      and immutably by the runtime. Never copy them into agent-editable tool
+      fields merely because they appear in the user message. Add a type or color
+      only when the user's typed request independently asks to narrow results by
+      that property.
+      The selected commander and EDHREC deck theme are also immutable runtime
+      context. Never try to replace them through tool fields.
 
       SYMBOLS
       Preserve braces. Use "{T}" for tap, "{Q}" for untap, and "{X}" in mana
       filters for X spells. Duplicate a symbol in must_contain_all when occurrence
       count matters: ["{X}", "{X}"] requires two X symbols in the mana cost.
-      An X in Oracle text alone does not make a card an X spell.
+      An X in rules text alone does not make a card an X spell.
 
       EXAMPLES OF INTENT RECOVERY
       User: "untapping elves"
       Tool:
-      {"semantic_sort":"Elf creatures with useful repeatable untap effects","types":{"must_contain_all":["Elf"]},"oracle_text":{"must_contain_any":["untap"]}}
-      Why: Elf and the literal word untap are clear filters; semantic_sort ranks
-      the most useful repeatable untap effects first.
+      {"semantic_sort":"Elf creatures with useful repeatable untap effects","types":{"must_contain_all":["Elf"]}}
+      Why: Elf is an explicit type filter. The gameplay effect stays semantic so
+      differently worded but relevant untap cards remain eligible.
 
       User: "big green creatures"
       Tool:
@@ -115,14 +180,33 @@ search:
       User: "grave yard things that give me value"
       Tool:
       {"semantic_sort":"cards that fill, recur from, cast from, or repeatedly gain value from the graveyard"}
-      Why: the request is broad. A literal "graveyard" filter would wrongly remove
-      cards whose mechanics still support the plan, so do not over-filter it.
+      Why: the request is broad, so semantic meaning should retrieve the relevant
+      mechanics without guessing an exact type or numeric constraint.
+
+      User: "great card draw for late game"
+      Tool:
+      {"semantic_sort":"powerful late-game card draw, repeatable draw engines, and sustained card advantage"}
+      Why: the user did not request a specific card type. Instant, sorcery,
+      enchantment, artifact, and creature are alternatives, not one combined
+      requirement, so omit types and rank all eligible cards semantically.
+
+      User: "card draw whenever creatures enter"
+      Tool:
+      {"semantic_sort":"cards that repeatedly draw cards or generate card advantage when creatures enter"}
+      Why: Creature describes the event that enables the effect, not the type of
+      card the user wants returned. Do not add a Creature type filter.
+
+      User: "instant or sorcery card draw"
+      Tool:
+      {"semantic_sort":"strong instant and sorcery card draw","types":{"must_contain_any":["Instant","Sorcery"]}}
+      Why: either printed card type is acceptable, so they are separate OR
+      alternatives in must_contain_any.
 
       User: "x x artifact guy"
       Tool:
-      {"semantic_sort":"artifact creatures whose strength or utility scales with X","types":{"must_contain_all":["Artifact","Creature"]},"mana":{"must_contain_all":["{X}","{X}"]}}
-      Why: "x x" describes two mana-cost symbols, not two appearances anywhere
-      in the card text.
+      {"semantic_sort":"artifact creatures whose strength or utility scales with X","types":{"must_contain_all":["Artifact"]},"mana":{"must_contain_all":["{X}","{X}"]}}
+      Why: Artifact and the two X mana symbols are explicit. "Guy" informs the
+      semantic intent but is not precise enough to add another hard type.
 
       User: "galta"
       Tool:
@@ -149,3 +233,28 @@ search:
       Rank only candidates that meaningfully match the user's request. Return
       their temporary numeric IDs in best-first order. You may omit irrelevant
       candidates, including weak fuzzy matches. Never invent cards or IDs.
+
+tagger:
+  # Explicit offline sync only. Runtime never calls the Tagger network; card
+  # details and explicit tag filters read this installed local sidecar.
+  # Scryfall's bulk tag path and Tagger's GraphQL relationship interface are
+  # undocumented, so the importer keeps this data in a replaceable sidecar.
+  base_url: https://tagger.scryfall.com
+  database_path: local-data/card-tagger.sqlite3
+  timeout_seconds: 30
+  request_interval_seconds: 0.12
+  concurrent_requests: 4
+  max_retries: 5
+  refresh_after_hours: 24
+
+edhrec:
+  # Optional on-demand commander-page enrichment. Fresh normalized results are
+  # reused for 30 days; a failed refresh never blocks local card search.
+  enabled: true
+  base_url: https://json.edhrec.com
+  database_path: local-data/card-edhrec.sqlite3
+  timeout_seconds: 20
+  refresh_after_days: 30
+  user_agent: >-
+    MTG-Agentic-Deck-Builder/0.1.0
+    (personal local testing; +https://github.com/andreasvig/MTG-agentic-deck-builder)

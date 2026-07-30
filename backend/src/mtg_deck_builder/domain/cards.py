@@ -22,6 +22,8 @@ ColorMatchMode = Literal["subset", "exact"]
 SearchStrategy = Literal["fuzzy", "agentic"]
 CardSearchOrder = Literal["name"]
 SearchDebugStageStatus = Literal["ok", "skipped", "error"]
+EdhrecEnhancementStatus = Literal["not_requested", "applied", "unavailable"]
+EdhrecEnhancementSource = Literal["cache", "network"]
 
 
 class CardModel(BaseModel):
@@ -93,12 +95,67 @@ class CardSearchResult(CardModel):
     cardmarket_url: AnyHttpUrl | None = None
 
 
+class CardTag(CardModel):
+    """One human-readable Scryfall Tagger label attached to an Oracle card."""
+
+    id: NonEmptyString
+    name: NonEmptyString
+    slug: NonEmptyString
+    description: str | None = None
+
+
+class CardTagMatch(CardTag):
+    """One fuzzy tag-name result with normalized local match evidence."""
+
+    match_score: Annotated[float, Field(ge=0, le=1)]
+
+
+class CardTagFilter(CardModel):
+    """An immutable interface-selected Tagger filter."""
+
+    id: NonEmptyString
+    name: NonEmptyString
+
+
+class CardSubtypeMatch(CardModel):
+    """One fuzzy card-subtype result with normalized local match evidence."""
+
+    name: NonEmptyString
+    match_score: Annotated[float, Field(ge=0, le=1)]
+
+
+class RelatedOracleCard(CardModel):
+    """A related Oracle card that can be opened independently of its printing."""
+
+    oracle_id: UUID
+    name: NonEmptyString
+
+
+class CardEnrichment(CardModel):
+    """Optional local Tagger context loaded only for a highlighted card."""
+
+    oracle_id: UUID
+    tags: list[CardTag] = Field(default_factory=list)
+    similar_cards: list[RelatedOracleCard] = Field(default_factory=list)
+    references: list[RelatedOracleCard] = Field(default_factory=list)
+    referenced_by: list[RelatedOracleCard] = Field(default_factory=list)
+
+
 class CardSearchFilters(CardModel):
     """Structured filters applied to every search strategy."""
 
     colors: list[MagicColor] = Field(default_factory=list, max_length=5)
     include_colorless: bool = False
     color_mode: ColorMatchMode = "subset"
+    include_non_commander_legal: bool = False
+    include_outside_commander_color_identity: bool = False
+    commander_color_identity: list[MagicColor] | None = Field(
+        default=None,
+        max_length=5,
+    )
+    tags: list[CardTagFilter] = Field(default_factory=list, max_length=20)
+    card_types: list[NonEmptyString] = Field(default_factory=list, max_length=20)
+    subtypes: list[NonEmptyString] = Field(default_factory=list, max_length=50)
     mana_value_min: Annotated[float | None, Field(default=None, ge=0, le=100)] = None
     mana_value_max: Annotated[float | None, Field(default=None, ge=0, le=100)] = None
     price_eur_min: Annotated[Decimal | None, Field(default=None, ge=0)] = None
@@ -108,6 +165,24 @@ class CardSearchFilters(CardModel):
     @classmethod
     def colors_must_be_unique(cls, value: list[MagicColor]) -> list[MagicColor]:
         return list(dict.fromkeys(value))
+
+    @field_validator("commander_color_identity")
+    @classmethod
+    def commander_colors_must_be_unique(
+        cls,
+        value: list[MagicColor] | None,
+    ) -> list[MagicColor] | None:
+        return list(dict.fromkeys(value)) if value is not None else None
+
+    @field_validator("tags")
+    @classmethod
+    def tags_must_be_unique(cls, value: list[CardTagFilter]) -> list[CardTagFilter]:
+        return list({tag.id: tag for tag in value}.values())
+
+    @field_validator("card_types", "subtypes")
+    @classmethod
+    def type_values_must_be_unique(cls, value: list[str]) -> list[str]:
+        return list({item.casefold(): item for item in value}.values())
 
     @model_validator(mode="after")
     def ranges_must_be_ordered(self) -> "CardSearchFilters":
@@ -131,12 +206,23 @@ class CardSearchQuery(CardModel):
 
     q: Annotated[
         str,
-        StringConstraints(strip_whitespace=True, min_length=1, max_length=4_000),
+        StringConstraints(strip_whitespace=True, max_length=4_000),
     ]
     page: Annotated[int, Field(ge=1, le=1_000)] = 1
     filters: CardSearchFilters = Field(default_factory=CardSearchFilters)
     order: CardSearchOrder = "name"
     debug: bool = False
+    commander_oracle_id: UUID | None = None
+    enhance_with_edhrec: bool = False
+    edhrec_theme: Annotated[
+        str | None,
+        StringConstraints(
+            strip_whitespace=True,
+            min_length=1,
+            max_length=100,
+            pattern=r"^[a-z0-9]+(?:-[a-z0-9]+)*$",
+        ),
+    ] = None
 
 
 class AgenticCardSearchRequest(CardModel):
@@ -151,6 +237,17 @@ class AgenticCardSearchRequest(CardModel):
     debug: bool = False
     search_session_id: UUID | None = None
     already_shown_oracle_ids: list[UUID] = Field(default_factory=list, max_length=10_000)
+    commander_oracle_id: UUID | None = None
+    enhance_with_edhrec: bool = False
+    edhrec_theme: Annotated[
+        str | None,
+        StringConstraints(
+            strip_whitespace=True,
+            min_length=1,
+            max_length=100,
+            pattern=r"^[a-z0-9]+(?:-[a-z0-9]+)*$",
+        ),
+    ] = None
 
     @field_validator("already_shown_oracle_ids")
     @classmethod
@@ -179,10 +276,37 @@ class SearchDebugSummary(CardModel):
     trace: dict[str, Any]
 
 
+class EdhrecSearchEnhancement(CardModel):
+    """Outcome of optional filter-only EDHREC commander ranking."""
+
+    status: EdhrecEnhancementStatus = "not_requested"
+    source: EdhrecEnhancementSource | None = None
+    message: str | None = None
+
+
+class EdhrecDeckTheme(CardModel):
+    """One EDHREC deck theme available for the selected commander."""
+
+    slug: NonEmptyString
+    name: NonEmptyString
+    deck_count: Annotated[int, Field(ge=0)]
+
+
+class EdhrecCommanderContext(CardModel):
+    """Public load state and theme choices for one selected commander."""
+
+    status: EdhrecEnhancementStatus
+    source: EdhrecEnhancementSource | None = None
+    commander_oracle_id: UUID
+    commander_name: str | None = None
+    themes: list[EdhrecDeckTheme] = Field(default_factory=list)
+    message: str | None = None
+
+
 class CardSearchPage(CardModel):
     """One page of provider-neutral card search results."""
 
-    query: NonEmptyString
+    query: str
     page: Annotated[int, Field(ge=1)]
     total_results: Annotated[int, Field(ge=0)]
     has_more: bool
@@ -201,5 +325,6 @@ class CardSearchPage(CardModel):
     reranked: bool = False
     agentic_required: bool = False
     search_session_id: UUID | None = None
+    edhrec: EdhrecSearchEnhancement = Field(default_factory=EdhrecSearchEnhancement)
     debug: SearchDebugSummary | None = None
     debug_runs: list[SearchDebugSummary] = Field(default_factory=list)

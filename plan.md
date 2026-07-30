@@ -17,7 +17,8 @@ durable technical decisions.
 - Commander-focused rather than a general-purpose MTG deck builder.
 - Card-first visual editing with a compact list alternative.
 - Support legal multi-card command zones rather than assuming one commander.
-- Keep card-data reads local during normal use.
+- Keep canonical card data and typed search local; make optional community
+  enrichment explicit, bounded, cached, and safely degradable.
 - Route future deck mutations through one typed backend service shared by the
   UI and assistant.
 - Show assistant changes as a visible diff and require confirmation.
@@ -27,10 +28,14 @@ durable technical decisions.
 ### Editor
 
 - Browser-local multi-deck library.
+- Confirmed, current-session-recoverable deck deletion.
 - Command zone, Not assigned, and user-created custom groups.
-- Visual and list layouts with Custom and derived Card types grouping.
+- Visual and list layouts defaulting to derived Card types, with Custom as the
+  editable grouping mode.
 - Add, remove, quantity, movement, sorting, prices, and session undo.
 - Singleton and commander color-identity warnings.
+- One commander by default, with recognized Partner, Partner with, Friends
+  forever, Background, and Doctor's companion pairs allowed as a second.
 - Desktop and mobile search, inspection, and editing workflows.
 
 ### Card Search
@@ -39,7 +44,8 @@ durable technical decisions.
 - One representative printing per Oracle card in search results.
 - Complete-catalog RapidFuzz title ranking without a result threshold or
   candidate-pool cap.
-- Six-card pages with local color, mana-value, and EUR filters.
+- Six-card pages with local Commander legality, commander identity, card-type,
+  subtype, Tagger, color, mana-value, and EUR filters.
 - A 75% preview-confidence boundary used only to decide whether the first six
   fuzzy results are strong enough; it never truncates the fuzzy ranking.
 - Progressive agentic search for weak-title and natural-language queries.
@@ -48,10 +54,18 @@ durable technical decisions.
   rounds that exclude cards already shown or examined.
 - Always-on local semantic sorting after structured filters, with no similarity
   cutoff.
+- Explicit local acquisition of Scryfall Tagger Oracle-card tags and
+  relationships into a resumable SQLite sidecar. Card details and immutable
+  user-selected tag filters consume it; bounded deduplicated gameplay tags also
+  enrich semantic document v2, while exact relationships stay separate.
+- Default-on EDHREC enhancement for single-commander blank-query browsing,
+  using one on-demand commander page, a 30-day raw/normalized cache, and a
+  visible local-sort fallback.
 - Seven-step debug traces plus complete secret-redacted JSONL diagnostics.
 
-Normal search does not query Scryfall. Scryfall is used for explicit catalog
-refreshes and remote card images.
+Typed search does not query Scryfall or EDHREC. Scryfall is used for explicit
+catalog refreshes and remote card images. Optional EDHREC ranking fetches only
+after a commander-specific filter-only cache miss.
 
 ## Target Architecture
 
@@ -89,8 +103,8 @@ must have identical validation, persistence, history, and undo behavior.
 
 - Validate 100-card size, singleton exceptions, format legality, and color
   identity.
-- Validate commander eligibility and partner, background, companion, and other
-  supported command-zone combinations.
+- Validate single-commander eligibility and remaining special or future
+  command-zone combinations.
 - Separate errors, warnings, and explicit Rule Zero overrides.
 - Use the same validation from the UI and future assistant tools.
 
@@ -131,7 +145,7 @@ deck assistant to a particular orchestration framework.
 - Direct third-party account synchronization.
 - Full game simulation and automated playtesting.
 - Power or bracket scoring until a clear product model is chosen.
-- Automated scraping of recommendation sites.
+- Bulk or background scraping of recommendation sites.
 
 ## Open Decisions
 
@@ -141,3 +155,7 @@ deck assistant to a particular orchestration framework.
 - How to handle a confirmed assistant patch when the deck changed after the
   proposal was created.
 - Which evaluation cases should govern future semantic-model changes.
+- Whether Tagger descriptions or relationship classifiers should later support
+  a separate concept vector or exact candidate expansion. Current membership
+  rows expose no usable strength/status signal, and relationships stay outside
+  semantic document v2.

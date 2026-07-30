@@ -6,6 +6,7 @@
   "scripts": {
     "setup": "uv sync --project backend --all-groups && npm install --prefix frontend",
     "catalog:sync": "uv run --project backend python -m mtg_deck_builder.catalog_sync",
+    "tagger:sync": "uv run --project backend python -m mtg_deck_builder.tagger_sync",
     "dev": "node --env-file-if-exists=.env scripts/dev.mjs",
     "test": "uv --directory backend run pytest && npm test --prefix frontend && node scripts/smoke.mjs",
     "test:e2e": "playwright test",

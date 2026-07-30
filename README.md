@@ -19,6 +19,8 @@ The first manual editing slice is usable and tested.
 | Color-identity and singleton warnings | Partial validation |
 | Backend deck persistence | Not implemented |
 | Local SQLite card catalog | Shipped |
+| Local Scryfall Tagger sidecar | Shipped for details, filters, relationships, and embedding concepts |
+| On-demand EDHREC commander/theme ranking | Shipped for browsing and agentic search |
 | Import/export and analytics | Not implemented |
 | Progressive one-tool agentic card search | Shipped |
 | Agent chat and deck tools | Not implemented |
@@ -31,7 +33,8 @@ and planned behavior.
 
 The application currently supports:
 
-- Create, switch, and inline-rename local Commander decks.
+- Create, switch, inline-rename, confirm-delete, and session-restore local
+  Commander decks.
 - Use commander art as the deck thumbnail.
 - Search exact, partial, segmented, and misspelled card titles through one
   fuzzy workflow.
@@ -39,15 +42,28 @@ The application currently supports:
   tool call and a structured final ranking.
 - Inspect coverage-aware title-confidence percentages beneath results in debug
   mode.
-- Filter by color identity, colorless, mana value, and Scryfall EUR estimate.
+- Filter by color identity, colorless, mana value, Scryfall EUR estimate,
+  required card types, fuzzy-found subtypes, and fuzzy-found Tagger labels.
+- Keep Commander-legal and commander-color-identity restrictions active by
+  default, with explicit opt-in switches for exceptions.
+- Enhance browsing and agentic search with default-on EDHREC commander
+  evidence, optional deck themes, inclusion, and synergy.
 - Add cards into Command zone, Not assigned, or user-created custom groups.
 - Drag cards between custom groups or onto Add custom group.
-- Switch between Custom and derived Card types grouping.
+- Start in derived Card types grouping and switch to Custom when editable
+  functional groups or drag/drop are needed.
 - Switch between visual stacks and a dense list.
 - Sort by name, mana value, or price.
 - Edit quantities, remove cards, and undo the last 30 current-session changes.
 - See singleton and commander color-identity warnings.
+- Keep the command zone to one copy of one commander unless a second card forms
+  a legal Partner, Partner with, Friends forever, Choose a Background, or
+  Doctor's companion pair.
 - Inspect rules, printing, finish availability, legality, and price in a modal.
+- See local Scryfall Tagger labels and related cards in both search previews
+  and deck card details.
+- Open related cards in the normal card dialog without losing the current
+  search, or click a tag to start a tag-filtered search.
 - Use a purpose-built desktop shell and mobile deck-action toolbar.
 
 Deliberate UX choices:
@@ -89,6 +105,19 @@ Title search works without an API key. Natural-language agentic search requires
 The first catalog sync also downloads the local embedding model and builds the
 semantic sidecar for every card. Later syncs skip both artifacts when current.
 
+Optionally acquire Scryfall Tagger's Oracle-card tags and relationships:
+
+```bash
+npm run tagger:sync
+```
+
+This explicit, resumable command writes
+`local-data/card-tagger.sqlite3`. Card details read it lazily, and explicitly
+selected tag filters intersect its Oracle-card memberships. The command also
+rebuilds the semantic sidecar when needed so the v2 gameplay documents include
+the current bounded, deduplicated Tagger concepts. Exact Tagger relationships
+remain outside the embedding text.
+
 ### Run
 
 ```bash
@@ -114,12 +143,21 @@ React browser application
 FastAPI
   |- strict provider-neutral contracts
   |- local SQLite card catalog
+  |- lazy card-detail Tagger enrichment and explicit tag filtering
+  |- bounded Tagger concepts in semantic document v2
+  |- 30-day on-demand EDHREC commander/theme cache and ranking evidence
   |- uncapped RapidFuzz title scoring and local filters
   |- local semantic vector sort with no relevance cutoff
   |- one-tool OpenRouter search continuation
   |- append-only search diagnostics
   |
   +--> Scryfall default_cards (refresh command only)
+
+Explicit Tagger sync
+  `--> local-data/card-tagger.sqlite3 (details, filters, embedding concepts)
+
+On-demand EDHREC commander/theme pages
+  `--> local-data/card-edhrec.sqlite3 (raw JSON, themes, normalized rows)
 ```
 
 Current ownership is important:
@@ -127,7 +165,8 @@ Current ownership is important:
 - The frontend owns decks in `localStorage`.
 - FastAPI owns card discovery only.
 - Scryfall is the authoritative source for catalog refreshes and card images.
-- The derived SQLite card catalog owns normal search reads.
+- The derived SQLite card catalog owns canonical search reads; optional EDHREC
+  commander evidence remains in its own disposable sidecar.
 - SQLite deck storage remains target architecture, not current implementation.
 
 See [`docs/architecture.md`](docs/architecture.md) for module ownership,
@@ -138,10 +177,19 @@ contracts, data identities, failure behavior, and the migration target.
 Every query uses one local fuzzy card-title matcher. It compares the normalized
 input against the SQLite catalog with RapidFuzz `WRatio`, ranks every canonical
 card without a score threshold or candidate cap, applies local filters, and
-returns the requested six-card page. **Load more** requests the next numbered
-page. It remains available at the end of fuzzy or agent-ranked results; the
-next explicit click then runs one continuation agent round with all displayed
-cards excluded. Normal search makes no Scryfall request.
+returns the requested six-card page. Filters enforce Commander legality and
+the current deck commander's color identity by default; the interface can
+explicitly include exceptions. Selected card types, subtypes, and Tagger labels
+are ANDed as immutable filters. **Load more** requests the next numbered page. It remains
+available at the end of fuzzy or agent-ranked results; the next explicit click
+then runs one continuation agent round with all displayed cards excluded.
+Typed search makes no Scryfall request. With one commander selected,
+blank-query browsing and agentic search enable EDHREC evidence by default.
+The user may select one advertised deck theme. Fresh snapshots are cached for
+30 days; a failed fetch visibly falls back to local or semantic ordering.
+There is no EDHREC bulk-sync step: the ignored sidecar retains only commander
+and theme pages requested by this local deck workflow. The control is disabled for a
+two-commander command zone.
 
 For example, `forest` returns Forest first at 100%, followed by partial-title
 matches such as Forest Bear and Misty Rainforest at about 90%. A typo such as
@@ -167,11 +215,26 @@ later temporary IDs (`1`, `2`, `3`, and so on), exact Oracle-card duplicates
 reuse the preview ID, and the model may omit irrelevant results. See
 [`ADR 0009`](docs/decisions/0009-progressive-one-tool-agentic-search.md).
 
-Inside that tool, every structured field is a hard filter except
-`semantic_sort`. The local embedding index cosine-sorts every surviving card
-without a similarity threshold before the candidate limit is applied. The
+Inside that tool, structured card conditions are hard filters.
+`semantic_sort` is non-filtering evidence; `sort_by` selects semantic
+closeness, EDHREC inclusion, or EDHREC synergy as the primary ordering. No
+ranking value has a threshold. The
 agent prompt includes examples for recovering intent from imperfect queries.
-See [`ADR 0010`](docs/decisions/0010-always-on-semantic-sort.md).
+Type filters compare literal printed type-line fragments: combinations such as
+Artifact Creature use separate `must_contain_all` values, while alternatives
+such as Instant or Sorcery use `must_contain_any`. Broad requests such as
+late-game card draw do not receive an invented type restriction. Before
+execution, the runtime removes type conditions not requested as result types,
+including `Creature` when creatures merely enable or receive an effect. It also
+removes agent colors unless the typed query itself asks for that color.
+Commander legality, deck identity, and all selected interface filters are
+applied separately and never copied into the validated tool call. A narrow
+provider-boundary compatibility layer repairs safe shorthands and records every
+discarded redundant constraint in the debug trace.
+See [`ADR 0010`](docs/decisions/0010-always-on-semantic-sort.md),
+[`ADR 0012`](docs/decisions/0012-immutable-commander-and-tagger-filters.md),
+and
+[`ADR 0018`](docs/decisions/0018-runtime-owned-and-query-explicit-filters.md).
 
 ## Search Debugging
 
@@ -221,6 +284,7 @@ runtime and debug overrides.
 ```bash
 npm run setup
 npm run catalog:sync
+npm run tagger:sync
 npm run dev
 npm test
 npm run build
@@ -297,7 +361,8 @@ recorded in
 ## Current Limitations
 
 - No backend deck API, SQLite persistence, or cloud synchronization.
-- No complete Commander partner/background/companion validation.
+- No complete single-commander eligibility, special-case Commander rules, or
+  Rule Zero override model.
 - No persisted price history or true Cardmarket trend integration.
 - No full printing/finish chooser.
 - No plaintext import/export.

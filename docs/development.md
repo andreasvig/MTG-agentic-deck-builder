@@ -44,6 +44,7 @@ The runner requires both default ports to be free.
 | --- | --- |
 | `npm run setup` | Install backend and frontend dependencies |
 | `npm run catalog:sync` | Refresh the local Scryfall card catalog |
+| `npm run tagger:sync` | Refresh the optional local Tagger details/filter sidecar |
 | `npm run dev` | Start Vite and reload-enabled Uvicorn |
 | `npm test` | Backend tests, frontend tests, and process smoke test |
 | `npm run build` | Type-check and build the frontend |
@@ -90,10 +91,60 @@ colliding with common development tools.
 Do not remove the identifying user agent. Normal search does not call
 Scryfall; these settings belong to the explicit bulk refresh command.
 
-Semantic model, sidecar path, cache path, batch size, and indexed fields live
-under `search.semantic_sort` in `config.yaml`. They are not feature flags:
-`npm run catalog:sync` ensures the sidecar matches the exact catalog and model
+### Tagger
+
+Tagger acquisition settings live under `tagger` in `config.yaml`:
+
+| Value | Default |
+| --- | --- |
+| `database_path` | `local-data/card-tagger.sqlite3` |
+| `base_url` | `https://tagger.scryfall.com` |
+| `request_interval_seconds` | `0.12` |
+| `concurrent_requests` | `4` |
+| `max_retries` | `5` |
+| `refresh_after_hours` | `24` |
+
+`npm run tagger:sync` reads Scryfall's Oracle-tag bulk payload and Tagger's
+read-only website GraphQL relationship pages. The command preserves
+checkpoints in a hidden partial SQLite file and resumes them after interruption.
+Use `npm run tagger:sync -- --force` to discard a partial build and start a
+clean snapshot. Normal application startup and search never contact either
+source. Card details and selected tag filters read only the installed SQLite
+sidecar. After installing or refreshing that sidecar, the command automatically
+checks and rebuilds the semantic index because v2 gameplay documents include
+bounded Tagger concepts. The rebuild is atomic.
+
+Semantic model, sidecar path, cache path, batch size, document fields, and
+Tagger concept controls live under `search.semantic_sort` in `config.yaml`.
+They are not feature flags: `npm run catalog:sync` ensures the sidecar matches
+the exact catalog, optional Tagger snapshot, document template, and model
 configuration.
+
+### EDHREC
+
+On-demand commander ranking settings live under `edhrec` in `config.yaml`:
+
+| Value | Default |
+| --- | --- |
+| `enabled` | `true` |
+| `base_url` | `https://json.edhrec.com` |
+| `database_path` | `local-data/card-edhrec.sqlite3` |
+| `timeout_seconds` | `20` |
+| `refresh_after_days` | `30` |
+
+The runtime fetches a selected single commander's normal page after enhanced
+browsing or agentic search misses the fresh cache. Selecting one of its
+advertised deck themes may fetch that theme page too. There is no full-sync
+command. Delete the ignored sidecar to force a clean cache. If a fetch fails,
+blank browsing keeps local order and agentic search keeps semantic order while
+the frontend displays the enhancement failure. A snapshot older than 30 days
+must refresh successfully before it is used; stale data is not silently served
+after a failed refresh.
+
+The sidecar retains untouched commander/theme JSON, advertised theme metadata,
+and normalized Oracle-ID associations. It is derived, disposable data and must
+stay ignored by Git. Brackets, partner-pair pages, multi-theme combinations,
+and background batches are not fetched.
 
 ### Search
 
@@ -126,6 +177,7 @@ Temporary environment overrides use nested names:
 | Responsive interaction | E2E plus desktop/mobile screenshot inspection |
 | Root runner | smoke test |
 | Environment setting | configuration test and `.env.example` |
+| EDHREC cache/provider behavior | pytest, frontend component test, and local commander sanity query |
 | Public behavior | changelog and relevant docs |
 
 `npm run test:e2e` starts a server on the default ports with
@@ -216,6 +268,15 @@ the atomic file swap.
 
 If fuzzy previews work but the agentic phase returns 503, the semantic sidecar
 may be missing or stale. The same command rebuilds it.
+
+### EDHREC Enhancement Failed
+
+This is intentionally not a search 503. The drawer should show an EDHREC
+failure and continue with local blank-query order or semantic agentic order. Check
+backend warnings for transport or payload drift, verify
+`https://json.edhrec.com` is reachable, and inspect or remove
+`local-data/card-edhrec.sqlite3` if the cache is corrupt. The next enhanced
+blank-query browse or agentic commander request recreates a missing sidecar.
 
 ### Frontend Reports Malformed Search Data
 

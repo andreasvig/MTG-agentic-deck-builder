@@ -3,10 +3,12 @@ import { describe, expect, it } from "vitest";
 import type { CardSearchResult } from "./card";
 import type { DeckCardEntry, DeckSection } from "./deck";
 import {
+  canShareCommandZone,
   COMMAND_ZONE_GROUP_ID,
   createDeckLibrary,
   createEmptyDeck,
   getColorIdentityWarnings,
+  getCommandZoneProblem,
   getCommanderColorIdentity,
   groupIdForEntry,
   isWithinCommanderColorIdentity,
@@ -14,6 +16,7 @@ import {
   parseStoredDeckLibrary,
   placementForGroup,
   UNASSIGNED_GROUP_ID,
+  validateCommandZoneAddition,
 } from "./deck";
 import { counterspell, ghalta, solRing } from "../test/fixtures";
 
@@ -142,6 +145,88 @@ describe("deck domain", () => {
     expect(getCommanderColorIdentity(entries)).toBeNull();
     expect(getColorIdentityWarnings(entries).size).toBe(0);
   });
+
+  it("allows a second command-zone card only for recognized legal pairings", () => {
+    const genericPartnerA = commanderCard(
+      "Akiri, Line-Slinger",
+      "Partner (You can have two commanders if both have partner.)",
+    );
+    const genericPartnerB = commanderCard(
+      "Silas Renn, Seeker Adept",
+      "Deathtouch\nPartner",
+    );
+    const backgroundChooser = commanderCard(
+      "Wilson, Refined Grizzly",
+      "Choose a Background (You can have a Background as a second commander.)",
+    );
+    const background = commanderCard(
+      "Raised by Giants",
+      "Commander creatures you own have base power and toughness 10/10.",
+      "Legendary Enchantment — Background",
+    );
+    const doctor = commanderCard(
+      "The Tenth Doctor",
+      "Allons-y!",
+      "Legendary Creature — Time Lord Doctor",
+    );
+    const companion = commanderCard(
+      "Rose Tyler",
+      "Doctor's companion (You can have two commanders if the other is the Doctor.)",
+    );
+    const friendsA = commanderCard("Eleven, the Mage", "Friends forever");
+    const friendsB = commanderCard("Mike, the Dungeon Master", "Friends forever");
+
+    expect(canShareCommandZone(genericPartnerA, genericPartnerB)).toBe(true);
+    expect(canShareCommandZone(backgroundChooser, background)).toBe(true);
+    expect(canShareCommandZone(doctor, companion)).toBe(true);
+    expect(canShareCommandZone(friendsA, friendsB)).toBe(true);
+    expect(canShareCommandZone(ghalta, counterspell)).toBe(false);
+
+    expect(
+      validateCommandZoneAddition(
+        [makeEntry(ghalta, "command_zone")],
+        counterspell,
+      ),
+    ).toMatchObject({ allowed: false });
+    expect(
+      validateCommandZoneAddition(
+        [makeEntry(genericPartnerA, "command_zone")],
+        genericPartnerB,
+      ),
+    ).toEqual({ allowed: true, reason: null });
+  });
+
+  it("requires Partner with cards to name each other and flags legacy invalid zones", () => {
+    const pir = commanderCard(
+      "Pir, Imaginative Rascal",
+      "Partner with Toothy, Imaginary Friend (When this creature enters, target player may put Toothy into their hand.)",
+    );
+    const toothy = commanderCard(
+      "Toothy, Imaginary Friend",
+      "Partner with Pir, Imaginative Rascal",
+    );
+    const impostor = commanderCard(
+      "Wrong Friend",
+      "Partner with Pir, Imaginative Rascal",
+    );
+
+    expect(canShareCommandZone(pir, toothy)).toBe(true);
+    expect(canShareCommandZone(pir, impostor)).toBe(false);
+    expect(
+      getCommandZoneProblem([
+        makeEntry(ghalta, "command_zone"),
+        makeEntry(counterspell, "command_zone"),
+      ]),
+    ).toBe(
+      "Ghalta, Primal Hunger and Counterspell are not a legal commander pair.",
+    );
+
+    const duplicateQuantity = makeEntry(ghalta, "command_zone");
+    duplicateQuantity.quantity = 2;
+    expect(getCommandZoneProblem([duplicateQuantity])).toBe(
+      "Each commander must appear exactly once in the command zone.",
+    );
+  });
 });
 
 function makeEntry(
@@ -161,5 +246,21 @@ function makeEntry(
       section === "command_zone"
         ? [COMMAND_ZONE_GROUP_ID]
         : [UNASSIGNED_GROUP_ID],
+  };
+}
+
+function commanderCard(
+  name: string,
+  oracleText: string,
+  typeLine = "Legendary Creature — Human",
+): CardSearchResult {
+  const id = name.toLocaleLowerCase().replaceAll(/[^a-z0-9]+/g, "-");
+  return {
+    ...ghalta,
+    oracle_id: `oracle-${id}`,
+    scryfall_id: `printing-${id}`,
+    name,
+    type_line: typeLine,
+    oracle_text: oracleText,
   };
 }

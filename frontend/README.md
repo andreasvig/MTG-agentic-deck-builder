@@ -77,8 +77,10 @@ operations for:
 - Rename deck.
 - Undo.
 
-Custom-group rename and delete operations are not implemented yet. Add them
-through `useDeck.ts` rather than introducing component-local mutations.
+Deck deletion is confirmed and current-session recoverable through
+`useDeck.ts`. Custom-group rename and delete operations are not implemented
+yet; add them through the same service rather than introducing component-local
+mutations.
 
 Keep mutation announcements meaningful for assistive technology.
 
@@ -86,6 +88,7 @@ Keep mutation announcements meaningful for assistive technology.
 
 - Card search is the single add workflow.
 - Permanent groups are Command zone and Not assigned.
+- Card types is the default grouping mode; Custom remains the editable mode.
 - Cards move only when grouping by Custom.
 - Card types are derived from card data.
 - No standalone maybeboard.
@@ -93,6 +96,8 @@ Keep mutation announcements meaningful for assistive technology.
 - Right workspace remains available for future agent chat.
 - Mobile uses the deck-action toolbar rather than shrinking desktop navigation.
 - Illegal commander color identity is warned before and after add.
+- Command-zone cards have quantity one. A second is allowed only for a
+  recognized legal co-commander pairing, and a third is rejected.
 
 ## Search Contract
 
@@ -106,16 +111,40 @@ After those batches are exhausted, the next explicit click starts one
 continuation round with every visible card supplied as **Already showing**.
 
 `Title confidence N%` from `title_confidence_scores` appears only while debug
-mode is enabled. `name_match_scores` remains the broad WRatio evidence. Both
-scores stay alias-aware after agentic reranking, including short pre-comma
-aliases such as `Ghalta`.
+mode is enabled on a completed straight fuzzy search. Progressive previews
+awaiting the agent and final agent-ranked pages do not render the badge. The
+scores remain available in response and trace data and stay alias-aware after
+agentic reranking, including short pre-comma aliases such as `Ghalta`.
 
 The agent user prompt treats already-visible fuzzy cards as selectable
 candidates. Their reserved IDs do not overlap with later local-tool cards,
 except that the same Oracle card deliberately reuses its preview ID. Each
 preview includes mana, type, power/toughness, Oracle text, and EUR price.
 Structured tool fields filter locally; `semantic_sort` only orders the
-surviving candidates and never applies a score cutoff.
+surviving candidates and never applies a score cutoff. With EDHREC evidence,
+`sort_by` may instead make inclusion or synergy primary while keeping semantic
+closeness as evidence and a tie-breaker.
+
+Card-type toggles and fuzzy subtype lookup add immutable required filters.
+Multiple selected card types and subtypes use AND semantics, so Artifact plus
+Creature finds artifact creatures and Elf plus Druid finds Elf Druids. The same
+values are sent unchanged through fuzzy, agentic, and continuation requests.
+
+With exactly one commander selected, **Enhance with EDHREC** is checked by
+default and makes an empty-query/filter-only request meaningful. The backend
+sorts that page by cached commander inclusion. A deck-theme selector loads the
+commander's advertised EDHREC themes and defaults to **All commander decks**.
+Typed agentic requests pass the commander and selected theme as immutable
+context; the tool returns inclusion and synergy and may use either as its
+primary sort. An unavailable EDHREC response is still a successful search
+page: the drawer renders a clear failure message and keeps local/semantic
+results usable. The controls are disabled with no commander or two commanders
+because the current contract accepts one `commanderOracleId`.
+
+`CardSearchPage.edhrec` is always present. The runtime validator accepts
+`not_requested`, `applied`, or `unavailable`, with `cache`/`network` source
+evidence only when applicable. Do not turn `unavailable` into the drawer's
+global search-error state.
 
 The debug viewer presents agentic execution as exactly seven chronological,
 color-coded stages: system prompt, user input prompt, thinking, tool call, tool

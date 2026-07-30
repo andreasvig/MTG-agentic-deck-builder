@@ -8,6 +8,7 @@ import sys
 from mtg_deck_builder.card_catalog import ScryfallBulkCatalogSync, SQLiteCardCatalog
 from mtg_deck_builder.config import get_settings
 from mtg_deck_builder.semantic_index import SemanticCardIndex
+from mtg_deck_builder.tagger_catalog import SQLiteTaggerCatalog
 
 
 def main() -> None:
@@ -31,6 +32,7 @@ def main() -> None:
             path=semantic_settings.index_path,
             catalog=SQLiteCardCatalog(settings.card_catalog_path),
             settings=semantic_settings,
+            tagger_catalog=SQLiteTaggerCatalog(settings.tagger.database_path),
             progress=lambda completed, total: print(
                 f"Embedded {completed:,}/{total:,} cards",
                 file=sys.stderr,

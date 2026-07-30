@@ -11,7 +11,9 @@ from mtg_deck_builder.agentic_card_search import (
     AgenticCardSearchUnavailable,
     ExecutedSearchTool,
     LocalCardSearchTool,
+    _apply_agent_filter_guardrails,
     _normalize_tool_arguments,
+    _render_filter_lines,
 )
 from mtg_deck_builder.agentic_search_debug import JsonlAgentSearchTraceLogger
 from mtg_deck_builder.card_catalog import CatalogEntry, card_title_aliases
@@ -26,6 +28,12 @@ from mtg_deck_builder.domain import (
     LocalCardSearchRequest,
     ManaSearch,
 )
+from mtg_deck_builder.edhrec_catalog import (
+    EdhrecAssociation,
+    EdhrecCommanderContext,
+    EdhrecCommanderRanking,
+)
+from mtg_deck_builder.providers.edhrec import EdhrecDeckTheme
 from mtg_deck_builder.providers.openrouter import OpenRouterError
 from mtg_deck_builder.semantic_index import SemanticScoreResult
 
@@ -148,6 +156,12 @@ class StubSemanticIndex:
         )
 
 
+class StubTaggerCatalog:
+    def oracle_ids_for_tags(self, tag_ids: list[str]) -> frozenset[UUID]:
+        assert tag_ids == ["tag-dinosaur"]
+        return frozenset({GHALTA.oracle_id})
+
+
 def test_local_tool_treats_duplicate_mana_symbols_as_a_multiset() -> None:
     tool = LocalCardSearchTool(  # type: ignore[arg-type]
         StubCatalog([STONECOIL, HANGARBACK]),
@@ -185,6 +199,54 @@ def test_local_tool_filters_numeric_power_and_toughness() -> None:
     )
 
     assert [candidate.card.name for candidate in result.candidates] == ["Ghalta, Primal Hunger"]
+
+
+def test_local_tool_keeps_interface_tag_filters_immutable() -> None:
+    tool = LocalCardSearchTool(  # type: ignore[arg-type]
+        StubCatalog([GHALTA, GIGANTOSAURUS]),
+        default_max_results=10,
+        hard_max_results=60,
+        tagger_catalog=StubTaggerCatalog(),  # type: ignore[arg-type]
+    )
+
+    result = asyncio.run(
+        tool.search(
+            LocalCardSearchRequest(
+                types={"must_contain_all": ["Creature"]},  # type: ignore[arg-type]
+            ),
+            immutable_filters=CardSearchFilters(
+                tags=[{"id": "tag-dinosaur", "name": "dinosaur"}],
+            ),
+        ),
+    )
+
+    assert [candidate.card.name for candidate in result.candidates] == [
+        "Ghalta, Primal Hunger",
+    ]
+    assert result.payload["compiled_query"]["immutable_filters"]["tags"] == [
+        {"id": "tag-dinosaur", "name": "dinosaur"},
+    ]
+
+
+def test_agent_prompt_explains_immutable_commander_and_tag_filters() -> None:
+    lines = _render_filter_lines(
+        CardSearchFilters(
+            include_non_commander_legal=False,
+            include_outside_commander_color_identity=False,
+            commander_color_identity=["G"],
+            tags=[{"id": "tag-dinosaur", "name": "dinosaur"}],
+            card_types=["Creature"],
+            subtypes=["Dinosaur"],
+        )
+    )
+
+    assert "- Commander legality: legal cards only" in lines
+    assert "- Deck commander identity: G; cards must stay within it" in lines
+    assert (
+        "- Required card tags (immutable; the tool cannot remove or change these): dinosaur"
+    ) in lines
+    assert ("- Required card types (immutable; every value must match): Creature") in lines
+    assert ("- Required card subtypes (immutable; every value must match): Dinosaur") in lines
 
 
 def test_local_tool_excludes_previously_considered_oracle_cards() -> None:
@@ -253,6 +315,63 @@ def test_local_tool_filters_first_then_semantically_sorts_without_a_cutoff() -> 
     }
 
 
+def test_local_tool_can_sort_by_edhrec_synergy_and_returns_all_ranking_evidence() -> None:
+    semantic_index = StubSemanticIndex(
+        {
+            GHALTA.oracle_id: 0.95,
+            GIGANTOSAURUS.oracle_id: 0.70,
+            KALONIAN_TWINGROVE.oracle_id: 0.80,
+        }
+    )
+    ranking = EdhrecCommanderRanking(
+        associations={
+            GHALTA.oracle_id: EdhrecAssociation(
+                oracle_id=GHALTA.oracle_id,
+                num_decks=800,
+                potential_decks=1_000,
+                synergy=0.10,
+            ),
+            GIGANTOSAURUS.oracle_id: EdhrecAssociation(
+                oracle_id=GIGANTOSAURUS.oracle_id,
+                num_decks=300,
+                potential_decks=1_000,
+                synergy=0.60,
+            ),
+        },
+        source="cache",
+    )
+    tool = LocalCardSearchTool(  # type: ignore[arg-type]
+        StubCatalog([GHALTA, GIGANTOSAURUS, KALONIAN_TWINGROVE]),
+        default_max_results=10,
+        hard_max_results=60,
+        semantic_index=semantic_index,  # type: ignore[arg-type]
+    )
+
+    result = asyncio.run(
+        tool.search(
+            LocalCardSearchRequest(
+                semantic_sort="large green creature threats",
+                sort_by="edhrec_synergy",
+            ),
+            immutable_filters=CardSearchFilters(),
+            edhrec_ranking=ranking,
+        )
+    )
+
+    assert [candidate.card.name for candidate in result.candidates] == [
+        "Gigantosaurus",
+        "Ghalta, Primal Hunger",
+        "Kalonian Twingrove",
+    ]
+    assert result.candidates[0].edhrec_inclusion == 0.3
+    assert result.candidates[0].edhrec_synergy == 0.6
+    assert result.candidates[0].edhrec_num_decks == 300
+    assert result.candidates[0].semantic_score == 0.7
+    assert result.candidates[2].edhrec_inclusion is None
+    assert result.payload["compiled_query"]["primary_sort"] == "edhrec_synergy"
+    assert result.payload["compiled_query"]["edhrec"]["minimum_synergy"] is None
+
+
 def test_local_name_query_is_a_filter_instead_of_a_second_sort() -> None:
     tool = LocalCardSearchTool(  # type: ignore[arg-type]
         StubCatalog([GHALTA, GIGANTOSAURUS]),
@@ -276,7 +395,6 @@ def test_provider_shorthand_is_normalized_before_strict_validation() -> None:
         {
             "name": "Ghalta",
             "types": "Creature",
-            "oracle_text": "untap",
             "colors": "green",
             "power": "5",
         },
@@ -285,17 +403,238 @@ def test_provider_shorthand_is_normalized_before_strict_validation() -> None:
     assert normalized == {
         "name": {"query": "Ghalta"},
         "types": {"must_contain_all": ["Creature"]},
-        "oracle_text": {"must_contain_any": ["untap"]},
         "colors": {"identity": ["G"]},
         "power": {"minimum": 5.0},
     }
     assert changes == [
         "name string -> name.query",
         "types string -> types.must_contain_all",
-        "oracle_text string -> oracle_text.must_contain_any",
         "colors string -> colors.identity",
         "power numeric string -> power.minimum",
     ]
+
+
+def test_inferred_type_and_color_filters_are_removed_before_execution() -> None:
+    guarded, changes = _apply_agent_filter_guardrails(
+        LocalCardSearchRequest.model_validate(
+            {
+                "semantic_sort": "powerful late-game card draw",
+                "types": {"must_contain_all": ["Creature"]},
+                "colors": {"identity": ["G"], "mode": "subset"},
+            }
+        ),
+        user_query="great card draw for late game",
+        immutable_filters=CardSearchFilters(commander_color_identity=["G"]),
+    )
+
+    assert guarded.types is None
+    assert guarded.colors is None
+    assert changes == [
+        "removed colors because the user's request did not ask to restrict result colors",
+        "removed redundant or unrequested type filters: Creature",
+    ]
+
+
+def test_explicit_result_type_and_color_filters_are_preserved() -> None:
+    request = LocalCardSearchRequest.model_validate(
+        {
+            "types": {"must_contain_all": ["Creature"]},
+            "colors": {"identity": ["G"], "mode": "subset"},
+        }
+    )
+
+    guarded, changes = _apply_agent_filter_guardrails(
+        request,
+        user_query="big green creatures",
+        immutable_filters=CardSearchFilters(),
+    )
+
+    assert guarded == request
+    assert changes == []
+
+
+def test_type_mentioned_as_an_effect_subject_is_not_a_result_filter() -> None:
+    guarded, changes = _apply_agent_filter_guardrails(
+        LocalCardSearchRequest.model_validate(
+            {"types": {"must_contain_all": ["Creature"]}}
+        ),
+        user_query="card draw whenever creatures enter",
+        immutable_filters=CardSearchFilters(),
+    )
+
+    assert guarded.types is None
+    assert changes == ["removed redundant or unrequested type filters: Creature"]
+
+
+def test_interface_selected_type_is_not_duplicated_by_agent() -> None:
+    guarded, changes = _apply_agent_filter_guardrails(
+        LocalCardSearchRequest.model_validate(
+            {
+                "types": {
+                    "must_contain_all": ["Creature", "Artifact"],
+                }
+            }
+        ),
+        user_query="artifact creatures",
+        immutable_filters=CardSearchFilters(card_types=["Creature"]),
+    )
+
+    assert guarded.types is not None
+    assert guarded.types.must_contain_all == ["Artifact"]
+    assert changes == ["removed redundant or unrequested type filters: Creature"]
+
+
+def test_comma_joined_alternative_types_are_not_treated_as_one_literal() -> None:
+    normalized, changes = _normalize_tool_arguments(
+        "search_local_cards",
+        {
+            "types": "Instant, Sorcery, Enchantment, Artifact, Creature",
+            "semantic_sort": "powerful late-game card draw",
+        },
+    )
+
+    assert normalized["types"] == {
+        "must_contain_any": [
+            "Instant",
+            "Sorcery",
+            "Enchantment",
+            "Artifact",
+            "Creature",
+        ]
+    }
+    assert changes == ["comma-separated types string -> types.must_contain_any"]
+    LocalCardSearchRequest.model_validate(normalized)
+
+
+def test_comma_joined_types_inside_required_list_are_repaired() -> None:
+    normalized, changes = _normalize_tool_arguments(
+        "search_local_cards",
+        {"types": {"must_contain_all": ["Instant, Sorcery, Enchantment, Artifact, Creature"]}},
+    )
+
+    assert normalized["types"] == {
+        "must_contain_all": [],
+        "must_contain_any": [
+            "Instant",
+            "Sorcery",
+            "Enchantment",
+            "Artifact",
+            "Creature",
+        ],
+    }
+    assert changes == ["repaired non-literal or comma-joined type conditions"]
+    LocalCardSearchRequest.model_validate(normalized)
+
+
+def test_real_multi_type_requirement_remains_an_intersection() -> None:
+    normalized, changes = _normalize_tool_arguments(
+        "search_local_cards",
+        {"types": {"must_contain_all": ["Artifact, Creature"]}},
+    )
+
+    assert normalized["types"] == {
+        "must_contain_all": ["Artifact", "Creature"],
+    }
+    assert changes == ["repaired non-literal or comma-joined type conditions"]
+
+
+def test_abstract_permanent_type_is_expanded_to_printed_type_alternatives() -> None:
+    normalized, changes = _normalize_tool_arguments(
+        "search_local_cards",
+        {"types": "Permanent"},
+    )
+
+    assert normalized["types"] == {
+        "must_contain_any": [
+            "Artifact",
+            "Battle",
+            "Creature",
+            "Enchantment",
+            "Land",
+            "Planeswalker",
+        ]
+    }
+    assert changes == ["abstract type Permanent -> types.must_contain_any"]
+    LocalCardSearchRequest.model_validate(normalized)
+
+
+def test_json_encoded_nested_provider_object_is_decoded() -> None:
+    normalized, changes = _normalize_tool_arguments(
+        "search_local_cards",
+        {
+            "semantic_sort": "powerful late-game card draw",
+            "colors": '{"identity":["B","G","U","W"],"mode":"subset"}',
+        },
+    )
+
+    assert normalized == {
+        "semantic_sort": "powerful late-game card draw",
+        "colors": {
+            "identity": ["B", "G", "U", "W"],
+            "mode": "subset",
+        },
+    }
+    assert changes == ["decoded JSON object string for colors"]
+    LocalCardSearchRequest.model_validate(normalized)
+
+
+def test_runtime_owned_legality_is_removed_and_compact_color_is_normalized() -> None:
+    normalized, changes = _normalize_tool_arguments(
+        "search_local_cards",
+        {
+            "colors": "WUBG",
+            "legality": "Legal",
+            "format": "Commander",
+            "semantic_sort": "cards that care about Forests",
+        },
+    )
+
+    assert normalized == {
+        "colors": {"identity": ["W", "U", "B", "G"]},
+        "semantic_sort": "cards that care about Forests",
+    }
+    assert changes == [
+        "removed runtime-owned format filter",
+        "removed runtime-owned legality filter",
+        "colors string -> colors.identity",
+    ]
+    request = LocalCardSearchRequest.model_validate(normalized)
+    assert request.colors is not None
+
+
+def test_empty_provider_placeholders_are_omitted_before_validation() -> None:
+    normalized, changes = _normalize_tool_arguments(
+        "search_local_cards",
+        {
+            "colors": "...",
+            "types": "…",
+            "semantic_sort": "cards that care about Forests",
+        },
+    )
+
+    assert normalized == {"semantic_sort": "cards that care about Forests"}
+    assert changes == ["omitted placeholder colors", "omitted placeholder types"]
+    assert LocalCardSearchRequest.model_validate(normalized).semantic_sort is not None
+
+
+def test_nested_compact_and_colorless_identity_is_normalized() -> None:
+    normalized, _ = _normalize_tool_arguments(
+        "search_local_cards",
+        {
+            "colors": {
+                "identity": ["W/U", "colorless"],
+                "mode": "subset",
+            },
+        },
+    )
+
+    assert normalized == {
+        "colors": {
+            "identity": ["W", "U"],
+            "mode": "subset",
+            "include_colorless": True,
+        },
+    }
 
 
 class StubFuzzyProvider:
@@ -373,6 +712,28 @@ class StubTool:
     ) -> tuple[CardSearchResult, ...]:
         cards = {card.oracle_id: card for card in self._candidates}
         return tuple(cards[oracle_id] for oracle_id in oracle_ids)
+
+
+class StubEdhrecCommanderService:
+    def __init__(
+        self,
+        context: EdhrecCommanderContext,
+        ranking: EdhrecCommanderRanking,
+    ) -> None:
+        self.context = context
+        self.ranking = ranking
+        self.ranking_calls: list[tuple[UUID, str | None]] = []
+
+    async def context_for(self, _commander_oracle_id: UUID) -> EdhrecCommanderContext:
+        return self.context
+
+    async def ranking_for(
+        self,
+        commander_oracle_id: UUID,
+        theme_slug: str | None = None,
+    ) -> EdhrecCommanderRanking:
+        self.ranking_calls.append((commander_oracle_id, theme_slug))
+        return self.ranking
 
 
 class RoundStubTool(StubTool):
@@ -730,6 +1091,119 @@ def test_agent_runs_one_tool_then_reuses_the_ranked_session(
     assert second.has_more is False
     assert local_tool.calls == 1
     assert len(model.payloads) == 2
+
+
+def test_agent_prompt_and_tool_response_include_commander_theme_and_edhrec_scores(
+    tmp_path: Path,
+) -> None:
+    ranking = EdhrecCommanderRanking(
+        associations={
+            GHALTA.oracle_id: EdhrecAssociation(
+                oracle_id=GHALTA.oracle_id,
+                num_decks=45,
+                potential_decks=60,
+                synergy=0.5,
+            ),
+            GIGANTOSAURUS.oracle_id: EdhrecAssociation(
+                oracle_id=GIGANTOSAURUS.oracle_id,
+                num_decks=30,
+                potential_decks=60,
+                synergy=0.35,
+            ),
+        },
+        source="cache",
+    )
+    edhrec_service = StubEdhrecCommanderService(
+        EdhrecCommanderContext(
+            commander_oracle_id=GHALTA.oracle_id,
+            commander_name=GHALTA.name,
+            themes=(
+                EdhrecDeckTheme(slug="stompy", name="Stompy", deck_count=200),
+                EdhrecDeckTheme(slug="tokens", name="Tokens", deck_count=60),
+                *(
+                    EdhrecDeckTheme(
+                        slug=f"theme-{index}",
+                        name=f"Theme {index}",
+                        deck_count=60 - index,
+                    )
+                    for index in range(3, 12)
+                ),
+            ),
+            source="cache",
+        ),
+        ranking,
+    )
+    model = StubModelClient([GHALTA, GIGANTOSAURUS])
+    local_tool = LocalCardSearchTool(  # type: ignore[arg-type]
+        StubCatalog([GHALTA, GIGANTOSAURUS]),
+        default_max_results=24,
+        hard_max_results=60,
+        semantic_index=StubSemanticIndex(
+            {
+                GHALTA.oracle_id: 0.9,
+                GIGANTOSAURUS.oracle_id: 0.8,
+            }
+        ),  # type: ignore[arg-type]
+    )
+    trace_path = tmp_path / "search.jsonl"
+    service = AgenticCardSearchService(
+        fuzzy_provider=StubFuzzyProvider(),  # type: ignore[arg-type]
+        local_tool=local_tool,
+        model_client=model,  # type: ignore[arg-type]
+        settings=AgenticSearchSettings(enabled=True),
+        page_size=6,
+        trace_logger=JsonlAgentSearchTraceLogger(trace_path),
+        trace_log_path=str(trace_path),
+        debug_default_enabled=False,
+        edhrec_service=edhrec_service,  # type: ignore[arg-type]
+    )
+
+    result = asyncio.run(
+        service.search(
+            AgenticCardSearchRequest(
+                q="large threats",
+                commander_oracle_id=GHALTA.oracle_id,
+                enhance_with_edhrec=True,
+                edhrec_theme="tokens",
+                debug=True,
+            )
+        )
+    )
+
+    initial_messages = model.payloads[0]["messages"]
+    assert isinstance(initial_messages, list)
+    user_message = initial_messages[1]["content"]
+    assert isinstance(user_message, str)
+    assert "Selected commander:" in user_message
+    assert "Ghalta, Primal Hunger" in user_message
+    assert "Selected EDHREC deck theme: Tokens (tokens)" in user_message
+    assert "Top EDHREC deck themes: Stompy, Tokens" in user_message
+    assert "Theme 10" in user_message
+    assert "Theme 11" not in user_message
+    assert "decks; slug" not in user_message
+    assert "sort_by to edhrec_inclusion" in user_message
+    final_messages = model.payloads[1]["messages"]
+    assert isinstance(final_messages, list)
+    tool_message = final_messages[-1]["content"]
+    assert isinstance(tool_message, str)
+    assert "EDHREC commander fit: inclusion 0.7500 (45/60 decks); synergy 0.5000" in (
+        tool_message
+    )
+    assert result.edhrec.status == "applied"
+    assert result.edhrec.source == "cache"
+    assert edhrec_service.ranking_calls == [(GHALTA.oracle_id, "tokens")]
+    assert result.debug is not None
+    tool_call = result.debug.trace["stages"][3]["details"]
+    assert "types" not in tool_call["arguments"]
+    assert "colors" not in tool_call["arguments"]
+    assert (
+        "removed colors because the user's request did not ask to restrict result colors"
+        in tool_call["provider_boundary_normalizations"]
+    )
+    assert (
+        "removed redundant or unrequested type filters: Creature"
+        in tool_call["provider_boundary_normalizations"]
+    )
 
 
 def test_exhausted_session_runs_one_continuation_with_already_shown_cards(

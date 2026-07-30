@@ -4,6 +4,9 @@
 - Date: 2026-07-28
 - Amends: ADR 0009
 
+ADR 0014 later replaces this record's v1 document shape while preserving its
+always-on, no-score-cutoff semantic-sort decision.
+
 ## Context
 
 ADR 0009 reserved `oracle_text.semantic_query` for a later embedding

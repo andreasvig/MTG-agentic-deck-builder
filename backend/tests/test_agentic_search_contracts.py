@@ -21,7 +21,6 @@ from mtg_deck_builder.domain import (
     CardSearchFilters,
     LocalCardSearchRequest,
     ManaSearch,
-    OracleTextSearch,
 )
 
 FIRST_ID = UUID("d5d41bfc-6f17-42b5-b82e-3d99dbd608bd")
@@ -31,7 +30,6 @@ SECOND_ID = UUID("f3c7af78-93ea-4d1b-8873-0eac5b4f6c5f")
 def test_local_tool_fields_are_optional_and_duplicate_symbols_are_preserved() -> None:
     empty_request = LocalCardSearchRequest()
     symbols_only = LocalCardSearchRequest(
-        oracle_text=OracleTextSearch(must_contain_all=["{T}"]),
         mana=ManaSearch(
             value_maximum=4,
             must_contain_all=["{X}", "{X}"],
@@ -45,6 +43,19 @@ def test_local_tool_fields_are_optional_and_duplicate_symbols_are_preserved() ->
     assert symbols_only.mana.must_contain_all == ["{X}", "{X}"]
 
 
+def test_local_tool_rejects_removed_oracle_text_filter() -> None:
+    with pytest.raises(ValidationError):
+        LocalCardSearchRequest.model_validate(
+            {"oracle_text": {"must_contain_any": ["draw a card"]}}
+        )
+
+
+@pytest.mark.parametrize("field", ["format", "legality"])
+def test_local_tool_rejects_runtime_owned_legality_fields(field: str) -> None:
+    with pytest.raises(ValidationError):
+        LocalCardSearchRequest.model_validate({field: "commander"})
+
+
 def test_tool_call_contract_allows_only_the_typed_local_search_tool() -> None:
     adapter = TypeAdapter(AgentSearchToolCall)
 
@@ -56,6 +67,9 @@ def test_tool_call_contract_allows_only_the_typed_local_search_tool() -> None:
     )
 
     assert local.name == "search_local_cards"
+    properties = LocalCardSearchRequest.model_json_schema()["properties"]
+    assert "format" not in properties
+    assert "legality" not in properties
     with pytest.raises(ValidationError):
         adapter.validate_python(
             {

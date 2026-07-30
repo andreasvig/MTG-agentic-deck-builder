@@ -7,10 +7,11 @@ confident cards visible and starts one bounded agentic search.
 
 The agent makes exactly one structured local-catalog tool call, sees the result
 in the same conversation, and makes one final structured call that ranks the
-relevant candidate IDs. The agent has no live Scryfall-query tool. Name, exact
-Oracle text, mana, type, color, power/toughness, price, format, set, and rarity
-conditions filter locally. `semantic_sort` then cosine-sorts every survivor
-without a similarity threshold.
+relevant candidate IDs. The agent has no live Scryfall-query tool. Name, mana,
+explicit result type/color, power/toughness, price, set, and rarity conditions
+filter locally. Rules-text meaning belongs to semantic retrieval. Commander
+legality and every interface selection are applied outside the agent tool.
+`semantic_sort` then cosine-sorts every survivor without a similarity threshold.
 See
 [`ADR 0009`](decisions/0009-progressive-one-tool-agentic-search.md) and
 [`ADR 0010`](decisions/0010-always-on-semantic-sort.md).
@@ -32,8 +33,9 @@ The importer:
 6. Retains Oracle text, EUR price, and power/toughness in the local card record.
 7. Validates a temporary SQLite database.
 8. Atomically replaces the installed database only after a successful import.
-9. Renders name, mana cost, type, rules text, power/toughness, and card faces
-   into stable embedding documents.
+9. Renders title-resistant semantic document v2 from mana value/cost, type,
+   rules, power/toughness, and card faces. Self-references and `{T}`, `{Q}`, and
+   `{X}` are normalized for natural-language retrieval.
 10. Embeds them locally with `BAAI/bge-small-en-v1.5` and atomically installs
     normalized 384-dimensional vectors in the semantic sidecar.
 
@@ -51,6 +53,121 @@ The first run downloads approximately 67 MB of ONNX model files into
 `local-data/embedding-models`. Later runs reuse the model and skip a current
 semantic index.
 
+### Stored Tagger Enrichment
+
+`npm run tagger:sync` separately acquires Scryfall Tagger's Oracle-card tags
+and relationships into `local-data/card-tagger.sqlite3`. It stores:
+
+- Tag definitions, descriptions, and complete Oracle-ID membership lists.
+- Normalized Oracle-card tagging rows keyed by tag ID and `oracle_id`.
+- Directed Oracle-card relationships with classifier and inverse classifier.
+- Relationship status and annotation, plus raw source records.
+- Import metadata and completed-page checkpoints.
+
+The bulk membership source does not expose Tagger's per-membership moderation
+status or vote strength, so those normalized columns remain nullable. It also
+includes broader/inherited memberships without identifying which assignments
+were direct. Both distinctions remain deferred until this data is evaluated
+for an actual search use.
+
+The importer resumes an interrupted partial build and atomically installs a
+complete sidecar. A successful database less than 24 hours old is considered
+current; use `npm run tagger:sync -- --force` for a clean snapshot.
+
+Selecting a search result or opening a deck card lazily reads this sidecar through
+`GET /api/v1/cards/{oracle_id}/enrichment`. The preview groups the response
+into clickable tag chips, similar cards, and cards the selection references.
+Inverse `referenced_by` data remains in the backend contract and sidecar but is
+not rendered. Related cards resolve through
+`GET /api/v1/cards/{oracle_id}` and open in the regular card dialog; the
+underlying search remains mounted.
+
+An explicit tag selection is a hard filter: the backend intersects the local
+Oracle-ID memberships for every selected tag before fuzzy ranking or the local
+agent tool continues. The UI fuzzy-matches tag names but sends stable tag IDs,
+and the backend resolves canonical names. Selected tags are shown to the agent
+as immutable interface constraints and are deliberately absent from its tool
+schema.
+
+Semantic document v2 separately consumes a bounded gameplay-concept view of
+these memberships. It removes configured metadata/flavor phrases, drops tags
+that are too rare or too broad, collapses identical membership sets, normalizes
+configured jargon, removes generic concepts contained by more specific ones,
+and keeps at most 12 concepts per card. Membership strength/status is not used
+because the bulk source does not supply it. Descriptions are disabled by
+default.
+
+Exact card relationships (`SIMILAR_TO`, `BETTER_THAN`, references, and the
+others) do **not** enter embedding text, candidate expansion, or reranking.
+They remain an inspectable graph for card details and a possible later exact
+retrieval feature. `npm run tagger:sync` automatically checks and rebuilds the
+semantic sidecar after installing a new Tagger snapshot. See
+[`ADR 0014`](decisions/0014-title-resistant-tagger-enriched-semantic-documents.md).
+
+### On-Demand EDHREC Ranking
+
+With exactly one commander in the command zone, **Enhance with EDHREC** is on
+by default. With no commander or a legal two-commander command zone, the
+control is disabled because there is no combined-page policy. The drawer loads
+the commander's advertised EDHREC deck themes and offers **All commander
+decks** plus one optional theme such as Tokens or Stompy. Commander and theme
+are immutable interface context, not hard filters or agent-editable fields.
+
+The first enhanced cache miss for a commander fetches
+`/pages/commanders/{slug}.json` from EDHREC's public JSON host. Selecting a
+theme loads `/pages/commanders/{slug}/{theme}.json` on its first cache miss.
+The backend stores every complete source payload and normalized association rows in
+`local-data/card-edhrec.sqlite3`. EDHREC cardview printing IDs are resolved
+through the local Scryfall catalog and persisted by Oracle ID. A snapshot is
+reused for 30 days.
+
+For blank-query/filter-only browsing, normal local filters run first and known
+EDHREC cards sort by:
+
+1. Raw inclusion (`num_decks / potential_decks`), descending.
+2. Included deck count, descending.
+3. Existing local order.
+
+Cards absent from the commander page follow known cards without being labelled
+as zero-inclusion. A failed fetch, provider-format change, mapping failure, or
+cache error does not fail card search: the response carries
+`edhrec.status = "unavailable"`, the normal local order is returned, and the
+drawer displays **EDHREC enhancement failed**.
+
+For agentic search, the user prompt includes the selected commander, all
+advertised theme names and deck counts, and the selected theme. Every local
+tool candidate carries semantic closeness plus any available commander/theme
+inclusion, included-deck count, potential-deck count, and raw synergy. The
+agent selects one primary sort:
+
+- `semantic`: intent closeness first.
+- `edhrec_inclusion`: cards most commonly included with this commander/theme.
+- `edhrec_synergy`: cards that most overperform their general baseline for this
+  commander/theme.
+
+These are ranking signals only. There is no minimum score, unknown EDHREC cards
+are not treated as zero, and the final model may reorder or omit candidates.
+An EDHREC failure does not fail the agent round: semantic ranking continues and
+the page reports the unavailable enhancement. See
+[`ADR 0016`](decisions/0016-commander-theme-evidence-in-agentic-search.md).
+
+The sidecar has two ownership layers:
+
+- `commander_snapshots` stores commander identity, name, slug, fetch timestamp,
+  and the complete untouched JSON document.
+- `commander_associations` stores commander Oracle ID, related Oracle ID,
+  `num_decks`, `potential_decks`, and raw `synergy`.
+- `commander_themes` stores EDHREC's theme slug, display name, and deck count.
+- `commander_theme_snapshots` stores one complete raw themed page per
+  commander/theme.
+- `commander_theme_associations` stores normalized theme-specific card metrics.
+
+Inclusion is derived at read time rather than stored. The sidecar migrates the
+original schema in place by adding theme tables. A stale snapshot is not
+used when its refresh fails; the request deliberately falls back to normal
+local or semantic ordering and reports the failure. Brackets, partner pages,
+multiple selected themes, and background refresh remain outside this version.
+
 ## Query Flow
 
 ```text
@@ -59,7 +176,8 @@ user query
   -> normalize case and punctuation
   -> score every card title with RapidFuzz WRatio
   -> sort the complete catalog (no cutoff)
-  -> apply local color, mana-value, and EUR filters
+  -> apply Commander legality, deck identity, selected tags, color,
+     mana-value, and EUR filters
   -> compute stricter preview confidence for the first six
   -> if all six clear 75%: return the normal fuzzy page
   -> otherwise: return only confident previews immediately
@@ -68,7 +186,8 @@ user query
           -> apply every structured hard filter
           -> exclude displayed and previously examined Oracle cards
           -> embed semantic_sort locally
-          -> cosine-sort every survivor (no score cutoff)
+          -> attach selected commander/theme EDHREC evidence when available
+          -> primary-sort by semantic, inclusion, or synergy (no score cutoff)
           -> return the configured top candidate count
        -> keep preview IDs selectable even if the tool does not return them
        -> assign later non-overlapping IDs to new tool cards
@@ -83,8 +202,18 @@ user query
           -> append only newly ranked cards and retain the next six-card batch
 ```
 
-Every query follows this flow, including exact names, partial words, title
-segments, and typos.
+Typed queries follow this flow, including exact names, partial words, title
+segments, and typos. Blank-query browsing has this optional branch after local
+filters:
+
+```text
+selected filters + one commander + EDHREC enabled
+  -> load a fresh commander snapshot (maximum age 30 days)
+  -> otherwise fetch one commander JSON page
+  -> map printing IDs to local Oracle IDs and cache raw + normalized data
+  -> sort the complete filtered set by inclusion before six-card pagination
+  -> on any EDHREC failure: return local order plus a visible unavailable status
+```
 
 ## Matching
 
@@ -128,10 +257,11 @@ Every returned card also has a stricter title-confidence score:
 
 This preserves `forest` → Misty Rainforest and `galta` → Ghalta while making
 `big green creatures` → Green Dragon fall below the 75% preview boundary.
-Debug mode displays this score as `Title confidence N%`. Agentic results
-recompute both title scores across the same complete-title, face-title, and
-pre-comma aliases, so reranking cannot make a confident `galtha` → `Ghalta`
-preview fall from 83% to a whole-title score near 38%.
+Debug mode displays this score as `Title confidence N%` only on a completed
+straight fuzzy search. Progressive previews awaiting agentic search and final
+agent-ranked pages do not show the badge. Agentic results still recompute both
+title scores across the same complete-title, face-title, and pre-comma aliases,
+so API and trace evidence remain stable.
 
 ## Configuration
 
@@ -149,13 +279,29 @@ search:
     cache_dir: local-data/embedding-models
     batch_size: 256
     threads: 4
-    indexed_fields:
-      - name
-      - mana_cost
-      - type_line
-      - oracle_text
-      - power_toughness
-      - card_faces
+    document:
+      version: 2
+      fields:
+        - mana_cost
+        - mana_value
+        - type_line
+        # Semantic source data, not an agent-editable exact filter.
+        - oracle_text
+        - power_toughness
+        - card_faces
+      include_name: false
+      normalize_self_references: true
+      explain_symbols: true
+      tags:
+        enabled: true
+        maximum_per_card: 12
+        minimum_card_count: 3
+        maximum_card_fraction: 0.20
+        collapse_equivalent_memberships: true
+        include_descriptions: false
+        prefer_specific_tags: true
+      relationships:
+        include_in_document: false
 
   agentic:
     enabled: true
@@ -171,6 +317,14 @@ search:
       exclude_previously_considered: true
       include_full_card_details_in_prompt: true
       max_rounds: null
+
+edhrec:
+  enabled: true
+  base_url: https://json.edhrec.com
+  database_path: local-data/card-edhrec.sqlite3
+  timeout_seconds: 20
+  refresh_after_days: 30
+  user_agent: MTG-Agentic-Deck-Builder/0.1.0 (...)
 ```
 
 `page_size` accepts `1..30` and controls the number of cards returned per API
@@ -180,6 +334,28 @@ use:
 ```dotenv
 MTG_SEARCH__TITLE_MATCH__PAGE_SIZE=6
 ```
+
+Card names are deliberately absent from semantic document v2 because fuzzy
+title search and the structured local name filter already resolve them. This
+prevents arbitrary title words such as “Green” or “Big” from biasing gameplay
+meaning. A card's own name inside its Oracle text is rendered as `this card`.
+
+For example, Mana Confluence renders approximately as:
+
+```text
+Mana value: 0
+Type: Land
+Mana cost: none
+Abilities:
+- {T} (tap), Pay 1 life: Add one mana of any color.
+Gameplay concepts: painland; rainbow land; life payment; drawback
+```
+
+If the optional Tagger sidecar is absent, the index builds valid rules-only v2
+documents and records an `absent` Tagger snapshot. Installing Tagger data later
+makes that semantic sidecar stale and triggers an atomic rebuild. The semantic
+metadata records the complete document configuration, exact card catalog
+identity, Tagger snapshot identity, model, and template version.
 
 `preview_min_confidence` does not truncate or cap the complete fuzzy ranking.
 It controls which first-page cards may be shown before the agent finishes. A
@@ -191,31 +367,80 @@ The agentic system prompt, semantic indexed fields, one-tool limit, candidate
 bounds, and full debug-capture switches also live in `config.yaml`. Semantic
 sorting has no enabled flag: a current index is part of the catalog contract.
 
+`edhrec.enabled` controls optional filter-only and agentic commander evidence.
+The base URL, sidecar path, request timeout, 30-day freshness window, and
+identifying user agent are independently validated. Environment overrides use
+the normal nested settings form, for example
+`MTG_EDHREC__DATABASE_PATH=local-data/card-edhrec.sqlite3`.
+
 The initial user prompt gives every already-visible fuzzy card a selectable ID
 and includes its mana, type, power/toughness, EUR estimate, and Oracle text.
 Those preview IDs are reserved at the front of the candidate union. The local
 tool cannot overwrite them: a new card receives the next available ID, while
 the same `oracle_id` reuses the existing preview ID.
 
+When one commander is selected, the prompt also includes its name, mana, type,
+color identity, Oracle text, the top ten EDHREC theme names, and the selected
+theme. The full advertised theme list remains available to the interface. The
+runtime supplies the commander and theme separately from the tool arguments,
+so the model cannot silently replace either. When EDHREC is unavailable or
+disabled, the prompt explicitly removes the EDHREC-sort capability while
+retaining the commander context.
+
 The tool schema requires nested exact conditions. A narrow provider-boundary
 compatibility layer repairs obvious string shorthand before strict validation:
-for example, `types: "Elf"` becomes a required Elf type and
-`oracle_text: "untap"` becomes an exact Oracle-text alternative.
+for example, `types: "Elf"` becomes a required Elf type. Type filters compare
+literal printed type-line fragments. AND combinations such as Artifact
+Creature use separate `must_contain_all` values; OR alternatives such as
+Instant or Sorcery use separate `must_contain_any` values. Broad gameplay
+requests do not receive invented type filters. As a final guard, malformed
+comma-joined alternatives are split and abstract rules terms such as
+`Permanent` are expanded to their printed card-type alternatives.
 
-All structured fields are hard filters except top-level `semantic_sort`.
-`semantic_sort` is a natural-language intent string. It never filters and has
-no minimum score. The service supplies the original user request when the
-model omits it, so every agent round has semantic ordering. The prompt teaches
+The local tool has no Oracle-text filter. Card rules remain part of the
+semantic documents and are returned as candidate context, but the model cannot
+turn an inferred sentence into a brittle hard filter. Requests such as
+“creatures that draw cards when other creatures enter” therefore stay in
+`semantic_sort`.
+
+The runtime also guards type and color filters after model validation:
+
+- `types` values survive only when the original typed query asks for that
+  printed type or subtype as a property of the returned cards.
+- A type used as part of the desired effect does not count. For example,
+  “card draw whenever creatures enter” cannot become a Creature-only search.
+- Types and subtypes already selected in the interface are removed from the
+  agent arguments because the immutable filter already applies them.
+- `colors` survives only when the original typed query names a color. A
+  commander identity or interface color shown in prompt context is never
+  copied into the effective tool call.
+- `format` and `legality` are not tool fields. Commander legality and its
+  exception switch belong entirely to the immutable interface filters.
+
+The debug tool-call step shows the final validated arguments and lists every
+removed provider or runtime constraint. The untouched provider message remains
+available only in the raw JSONL audit trace.
+
+All structured search conditions are hard filters. `semantic_sort` and
+`sort_by` are ranking controls: `semantic_sort` is a natural-language intent
+string, while `sort_by` selects `semantic`, `edhrec_inclusion`, or
+`edhrec_synergy` as the primary ordering. None filters or has a minimum score.
+The service supplies the original user request when the model omits
+`semantic_sort`, so every agent round retains semantic evidence and uses it as
+a tie-breaker for EDHREC sorts. The prompt teaches
 the agent to clean up bad grammar, separate explicit constraints from broad
-intent, avoid overly strict Oracle-text guesses, and use examples such as
-`untapping elves`, `big green creatures`, `grave yard things`, double-X
-artifacts, and `galta`.
+intent, and use examples such as `untapping elves`, `big green creatures`,
+`grave yard things`, double-X artifacts, and `galta`.
 
-The clean tool-role message includes `Semantic closeness: N (0-1)` for every
-semantically sorted candidate. Larger values mean closer embedding similarity
-to `semantic_sort`; the value is ranking evidence, not a relevance threshold.
-A fuzzy preview that was not returned by the local tool is explicitly labelled
-`not scored` rather than receiving an invented value.
+The clean tool-role message includes `Semantic closeness: N (0-1)` and
+`EDHREC commander fit` for every candidate. The latter reports normalized
+inclusion, `num_decks / potential_decks`, and raw synergy when the selected
+commander/theme page lists the card. Larger semantic values mean closer
+embedding similarity; larger synergy values mean greater commander-specific
+overperformance. All values are evidence, not relevance thresholds. A fuzzy
+preview not returned by the local tool is labelled `not scored`, and a card
+absent from EDHREC is labelled `not listed` rather than receiving invented
+scores.
 
 **Load more** is always available after a search response. `has_more: true`
 means the next ranked batch is already cached. `has_more: false` means the
@@ -248,14 +473,36 @@ MTG_CARD_CATALOG_PATH=local-data/cards.sqlite3
 After fuzzy ranking, the backend applies these values directly to local card
 data:
 
+- Commander legality: legal-only unless the exception switch is selected.
+- Current commander color identity: require a subset unless the exception
+  switch is selected. An established colorless identity permits only colorless
+  cards.
+- Required card types: every selected literal type must appear across the
+  card's printed faces.
+- Required subtypes: every fuzzy-selected literal subtype must appear across
+  the card's printed faces.
+- Required Tagger labels: a card must carry every selected tag.
 - Subset or exact color identity.
 - Optional colorless identity.
 - Minimum and maximum mana value.
 - Minimum and maximum EUR estimate.
 
-Cards without an EUR estimate do not pass an active price filter. The filtered
-rank order is then divided into normal numbered pages, so filters cannot create
-partially filled pages before the final page.
+The two exception switches are independent checkboxes and start unchecked.
+Without a known commander, the commander-identity exception is disabled and no
+deck-identity filter is applied. Subtype and tag filters are fuzzy-found by
+name and removable as chips. Card types, subtypes, and tags use AND semantics
+within their categories.
+
+All of these values are passed unchanged into agentic and continuation
+requests. The agent sees them in its user prompt, but cannot add, remove, or
+modify them through `search_local_cards`. Cards without an EUR estimate do not
+pass an active price filter. The filtered rank order is then divided into
+normal numbered pages, so filters cannot create partially filled pages before
+the final page.
+
+When EDHREC enhancement is active, these same hard filters still run first.
+EDHREC changes only the ordering of the complete surviving set before the same
+six-card pagination.
 
 ## Debug Mode
 
@@ -263,9 +510,9 @@ Enable **Search debug log** in Search settings.
 
 Debug mode:
 
-- Shows `Title confidence N%` beneath every returned result.
-- Keeps that alias-aware confidence stable when fuzzy previews are replaced by
-  agent-ranked results.
+- Shows `Title confidence N%` beneath completed straight fuzzy results only.
+- Keeps alias-aware confidence in API and trace data when fuzzy previews are
+  replaced by agent-ranked results, without rendering it on agentic cards.
 - Reports the local catalog count, filtered count, removed count, page range,
   matched aliases, original ranks, WRatio scores, and title confidence.
 - Renders exactly seven agentic steps: system prompt, user input prompt,
@@ -299,20 +546,54 @@ stable error envelope.
 ```http
 GET /api/v1/cards/search
 POST /api/v1/cards/search/agentic
+GET /api/v1/cards/tags/search
+GET /api/v1/cards/{oracle_id}
+GET /api/v1/cards/{oracle_id}/enrichment
 ```
 
 | Parameter | Type | Purpose |
 | --- | --- | --- |
-| `q` | string | Complete or partial card title |
+| `q` | string | Optional title; empty is valid for filter-only search |
 | `page` | positive integer | Numbered result page |
 | `color` | repeatable W/U/B/R/G | Allowed or exact identities |
 | `include_colorless` | boolean | Include exact colorless identity |
 | `color_mode` | `subset` or `exact` | Identity comparison mode |
+| `include_non_commander_legal` | boolean | Permit non-legal Commander cards |
+| `include_outside_commander_identity` | boolean | Permit cards outside the deck identity |
+| `commander_color` | repeatable W/U/B/R/G | Current commander identity colors |
+| `commander_identity_known` | boolean | Preserve an established colorless identity |
+| `tag` | repeatable tag ID | Require every selected Tagger label |
+| `card_type` | repeatable printed card type | Require every selected card type |
+| `subtype` | repeatable printed subtype | Require every selected subtype |
 | `mana_min`, `mana_max` | number | Mana-value range |
 | `price_min`, `price_max` | decimal | EUR-estimate range |
+| `commander_oracle_id` | UUID | Single commander used for optional EDHREC ranking |
+| `enhance_with_edhrec` | boolean | Enable EDHREC commander evidence |
+| `edhrec_theme` | theme slug | Optional theme advertised for that commander |
 | `debug` | boolean | Return and persist the title-match trace |
 
-The GET returns the fuzzy page or immediate confident preview plus
+For example:
+
+```http
+GET /api/v1/cards/search?q=&page=1&commander_oracle_id=<uuid>&enhance_with_edhrec=true&edhrec_theme=tokens
+```
+
+Commander ID and the enhancement flag are required for an enhanced page;
+theme is optional. If the GET's `q` contains text, fuzzy title search ignores
+the enhancement because the agentic POST owns typed commander-aware ranking.
+
+Theme options load independently:
+
+```http
+GET /api/v1/cards/{commander_oracle_id}/edhrec
+```
+
+That response contains `status`, commander name, source, message, and sorted
+`themes` with `slug`, `name`, and `deck_count`.
+
+The agentic POST accepts the same `commander_oracle_id`,
+`enhance_with_edhrec`, and `edhrec_theme` fields in its JSON body. The GET
+returns the fuzzy page or immediate confident preview plus
 `agentic_required`. The POST starts the one-tool agent run, or accepts
 `search_session_id` with a later page to reuse a cached batch or start one
 continuation. `already_shown_oracle_ids` contains the cards currently visible
@@ -324,8 +605,26 @@ is already cached; it does not control whether **Load more** is rendered.
 `name_match_scores`
 maps each returned
 `scryfall_id` to its broad normalized WRatio score.
-`title_confidence_scores` maps the same IDs to the coverage-aware score shown
-in debug mode and used by the progressive preview phase.
+`title_confidence_scores` maps the same IDs to the coverage-aware score used by
+the progressive preview phase. The frontend renders it only for completed
+straight fuzzy pages in debug mode.
+
+Every `CardSearchPage` also contains:
+
+```json
+{
+  "edhrec": {
+    "status": "applied",
+    "source": "cache",
+    "message": null
+  }
+}
+```
+
+`not_requested` covers requests without enabled evidence. `applied` identifies
+whether fresh evidence came from the cache or network, for either blank or
+agentic search. `unavailable` contains a safe message for the visible local or
+semantic fallback.
 
 ## Failure Behavior
 
@@ -335,7 +634,18 @@ in debug mode and used by the progressive preview phase.
   local diagnostics to run `npm run catalog:sync`.
 - A missing OpenRouter key or unavailable model/provider returns a safe HTTP
   503 for the agentic phase; any confident fuzzy previews remain visible.
+- Common provider shorthands are normalized before validation, including
+  compact color identities such as `WUBG`. Stale model-supplied `format` or
+  `legality` fields are discarded because the interface owns those decisions.
+  Empty provider placeholders such as `...` are omitted because every search
+  field is optional. A remaining invalid model response returns a truthful HTTP
+  502 contract error and retains its debug trace.
 - An invalid or expired agentic session returns a safe HTTP 400.
+- A selected tag with a missing Tagger sidecar returns a safe HTTP 503; normal
+  non-tag search remains available.
+- An EDHREC fetch, validation, ID-mapping, or sidecar failure remains HTTP 200:
+  blank browsing uses normal local order, agentic search uses semantic order,
+  and `edhrec.status` is `unavailable`.
 - An agent round with no new relevant cards returns an empty successful batch,
   keeps prior cards visible, and leaves the continuation button available.
 - A failed refresh leaves the previously installed SQLite database untouched.
@@ -346,16 +656,23 @@ in debug mode and used by the progressive preview phase.
   atomic failure behavior.
 - `test_card_search.py`: Scryfall card-object mapping and HTTP contract.
 - `test_title_search.py`: exact-first threshold-free ordering, local filters,
-  simple pagination, preview confidence, and trace evidence.
+  simple pagination, EDHREC ordering/fallback, preview confidence, and trace
+  evidence.
+- `test_edhrec_catalog.py`: commander-page validation and deduplication, theme
+  parsing and themed-page caching, raw payload retention, Oracle normalization,
+  and 30-day freshness.
 - `test_agentic_search_contracts.py`: all-optional local-tool fields, multiset
-  symbols, result bounds, numeric relevant-subset validation, versioned trace
-  completeness, full raw JSON persistence, and secret redaction.
+  symbols, runtime-owned field exclusion, result bounds, numeric
+  relevant-subset validation, versioned trace completeness, full raw JSON
+  persistence, and secret redaction.
 - `test_agentic_card_search.py`: one-tool orchestration, duplicate mana-symbol
-  execution, filter-before-sort behavior, natural prompts, raw/simplified tool
-  trace payloads, candidate omission, alias-aware confidence preservation,
-  cached pagination, exclusions, empty continuation retries, and multi-round
-  agent sessions.
+  execution, filter-before-sort behavior, semantic/inclusion/synergy ranking,
+  query-explicit type/color guards, commander/theme prompts and score evidence,
+  natural prompts, raw/simplified tool trace payloads, candidate omission,
+  alias-aware confidence preservation, cached pagination, exclusions, empty
+  continuation retries, and multi-round agent sessions.
 - `test_semantic_index.py`: atomic index builds, stable gameplay documents,
   cosine scoring without a cutoff, and stale-catalog rejection.
 - Frontend component and browser tests: progressive preview, animated agent
-  handoff, readable seven-step traces, scores, filters, and Load more.
+  handoff, readable seven-step traces, scores, filters, EDHREC request/fallback
+  UI, and Load more.

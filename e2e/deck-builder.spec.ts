@@ -11,12 +11,18 @@ import {
   gamble,
   ghalta,
   llanowarElves,
+  manaVault,
   searchDebugSummary,
   searchPage,
   solRing,
+  solRingEnrichment,
+  thrasios,
+  tymna,
 } from "./fixtures/cards";
 
 const SEARCH_ROUTE = "**/api/v1/cards/search**";
+const SUBTYPE_ROUTE = "**/api/v1/cards/subtypes/search**";
+const ENRICHMENT_ROUTE = "**/api/v1/cards/*/enrichment";
 
 async function clearDeck(page: Page) {
   await page.addInitScript(() => {
@@ -99,14 +105,39 @@ test("desktop deck-building flow remains fast and reversible", async ({
   await page.setViewportSize({ width: 1440, height: 900 });
 
   let outgoingQuery = "";
+  let outgoingTag = "";
   await page.route(SEARCH_ROUTE, async (route) => {
     const requestUrl = new URL(route.request().url());
     outgoingQuery = requestUrl.searchParams.get("q") ?? "";
+    outgoingTag = requestUrl.searchParams.get("tag") ?? "";
     await fulfillJson(
       route,
       searchPage(outgoingQuery, [solRing, llanowarElves]),
     );
   });
+  await page.route(ENRICHMENT_ROUTE, async (route) => {
+    const oracleId = new URL(route.request().url()).pathname
+      .split("/")
+      .at(-2);
+    await fulfillJson(
+      route,
+      oracleId === solRing.oracle_id
+        ? solRingEnrichment
+        : {
+            oracle_id: oracleId,
+            tags: [],
+            similar_cards: [],
+            references: [],
+            referenced_by: [],
+          },
+    );
+  });
+  await page.route(
+    `**/api/v1/cards/${manaVault.oracle_id}`,
+    async (route) => {
+      await fulfillJson(route, manaVault);
+    },
+  );
 
   await page.goto("/");
   await expect(
@@ -117,6 +148,18 @@ test("desktop deck-building flow remains fast and reversible", async ({
   await expect(
     page.getByRole("heading", { name: "Command zone" }),
   ).toBeVisible();
+  await expect(
+    page.getByRole("heading", { name: "Not assigned" }),
+  ).toHaveCount(0);
+  await expect(
+    page.getByRole("button", { name: "Add custom group" }),
+  ).toHaveCount(0);
+  await expect(
+    page.getByRole("combobox", { name: "Group cards" }),
+  ).toHaveValue("type");
+  await page
+    .getByRole("combobox", { name: "Group cards" })
+    .selectOption("custom");
   await expect(
     page.getByRole("heading", { name: "Not assigned" }),
   ).toBeVisible();
@@ -147,6 +190,41 @@ test("desktop deck-building flow remains fast and reversible", async ({
     solRingResult.getByText("Artifact", { exact: true }),
   ).toBeVisible();
   await expect(solRingResult.getByText("MSC #211 · uncommon")).toBeVisible();
+  await expect(
+    page.getByRole("region", { name: "Scryfall Tagger details" }),
+  ).toBeVisible();
+  await expect(page.getByText("mana rock", { exact: true })).toBeVisible();
+  await expect(
+    page.getByRole("checkbox", {
+      name: "Show non-Commander-legal cards",
+    }),
+  ).not.toBeChecked();
+  await expect(
+    page.getByRole("checkbox", {
+      name: "Show cards outside commander color identity",
+    }),
+  ).toBeDisabled();
+
+  await page.getByRole("button", { name: "Mana Vault" }).click();
+  const relatedCardDialog = page.getByRole("dialog", {
+    name: "Card details",
+  });
+  await expect(relatedCardDialog).toBeVisible();
+  await expect(
+    relatedCardDialog.getByRole("heading", { name: "Mana Vault" }),
+  ).toBeVisible();
+  await expect(
+    relatedCardDialog.getByRole("button", {
+      name: "Add to deck",
+    }),
+  ).toBeVisible();
+  await relatedCardDialog
+    .getByRole("button", { name: "Close card inspector" })
+    .click();
+  await expect(
+    page.getByRole("dialog", { name: "Find cards" }),
+  ).toBeVisible();
+  await expect(solRingResult).toHaveCount(1);
 
   await page
     .getByRole("button", { name: "Add Sol Ring to deck" })
@@ -235,8 +313,20 @@ test("desktop deck-building flow remains fast and reversible", async ({
     name: "Move Sol Ring to custom group",
   });
   await expect(customGroupSelect).toHaveValue(/group-/);
-  await cardDialog
-    .getByRole("button", { name: "Close card inspector" })
+  await expect(
+    cardDialog.getByRole("region", { name: "Scryfall Tagger details" }),
+  ).toBeVisible();
+  await cardDialog.getByRole("button", { name: "mana rock" }).click();
+  const tagSearchDialog = page.getByRole("dialog", { name: "Find cards" });
+  await expect(tagSearchDialog).toBeVisible();
+  await expect(
+    tagSearchDialog.getByRole("button", {
+      name: "Remove mana rock tag",
+    }),
+  ).toBeVisible();
+  await expect.poll(() => outgoingTag).toBe("tag-mana-rock");
+  await tagSearchDialog
+    .getByRole("button", { name: "Close card search" })
     .click();
 
   await page.getByRole("combobox", { name: "Group cards" }).selectOption("type");
@@ -299,6 +389,14 @@ test("desktop deck-building flow remains fast and reversible", async ({
 
   await page.reload();
   await expect(page.getByRole("heading", { name: "Ramp Lab" })).toBeVisible();
+  await expect(
+    page.getByRole("combobox", { name: "Group cards" }),
+  ).toHaveValue("type");
+  await expect(page.getByRole("heading", { name: "Artifact" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Creature" })).toBeVisible();
+  await page
+    .getByRole("combobox", { name: "Group cards" })
+    .selectOption("custom");
   await expect(
     page.getByRole("heading", { name: "Ramp", exact: true }),
   ).toBeVisible();
@@ -521,6 +619,14 @@ test("search filters shape requests without crowding the results", async ({
       response,
     );
   });
+  await page.route(SUBTYPE_ROUTE, async (route) => {
+    await fulfillJson(route, [
+      {
+        name: "Construct",
+        match_score: 0.93,
+      },
+    ]);
+  });
 
   await page.goto("/");
   await openSearch(page);
@@ -535,6 +641,14 @@ test("search filters shape requests without crowding the results", async ({
   await page.getByRole("radio", { name: "Exact" }).click();
   await page.getByRole("checkbox", { name: "Blue" }).click();
   await page.getByRole("checkbox", { name: "Colorless" }).click();
+  await page.getByRole("checkbox", { name: "Artifact" }).click();
+  await page.getByRole("checkbox", { name: "Creature" }).click();
+  await page
+    .getByRole("searchbox", { name: "Search card subtypes" })
+    .fill("constrct");
+  await page
+    .getByRole("button", { name: "Add Construct subtype" })
+    .click();
   await page
     .getByRole("spinbutton", { name: "Minimum mana value" })
     .fill("2");
@@ -549,11 +663,19 @@ test("search filters shape requests without crowding the results", async ({
     .fill("12");
   await page.getByRole("textbox", { name: "Search cards" }).fill("blue ramp");
 
+  await expect
+    .poll(() => requestedUrl?.searchParams.get("q") ?? null)
+    .toBe("blue ramp");
   await expect(page.getByText("1 ranked card", { exact: true })).toBeVisible();
   expect(requestedUrl).not.toBeNull();
   expect(requestedUrl?.searchParams.getAll("color")).toEqual(["U"]);
   expect(requestedUrl?.searchParams.get("include_colorless")).toBe("true");
   expect(requestedUrl?.searchParams.get("color_mode")).toBe("exact");
+  expect(requestedUrl?.searchParams.getAll("card_type")).toEqual([
+    "Artifact",
+    "Creature",
+  ]);
+  expect(requestedUrl?.searchParams.getAll("subtype")).toEqual(["Construct"]);
   expect(requestedUrl?.searchParams.get("mana_min")).toBe("2");
   expect(requestedUrl?.searchParams.get("mana_max")).toBe("5");
   expect(requestedUrl?.searchParams.get("price_min")).toBe("0.25");
@@ -592,16 +714,28 @@ test("commander colors warn before and after an illegal addition", async ({
   page,
 }, testInfo) => {
   await page.setViewportSize({ width: 1440, height: 900 });
+  let edhrecRequest: URL | null = null;
   await page.route(SEARCH_ROUTE, async (route) => {
-    const query =
-      new URL(route.request().url()).searchParams.get("q") ?? "";
-    await fulfillJson(
-      route,
-      searchPage(
-        query,
-        query.includes("Ghalta") ? [ghalta] : [gamble],
-      ),
+    const requestUrl = new URL(route.request().url());
+    const query = requestUrl.searchParams.get("q") ?? "";
+    const response = searchPage(
+      query,
+      query.includes("Ghalta")
+        ? [ghalta]
+        : query
+          ? [gamble]
+          : [llanowarElves],
     );
+    if (requestUrl.searchParams.get("enhance_with_edhrec") === "true") {
+      edhrecRequest = requestUrl;
+      response.edhrec = {
+        status: "unavailable",
+        source: null,
+        message:
+          "EDHREC data could not be fetched. Results use normal local sorting.",
+      };
+    }
+    await fulfillJson(route, response);
   });
 
   await page.goto("/");
@@ -614,7 +748,7 @@ test("commander colors warn before and after an illegal addition", async ({
     page.getByRole("button", { name: "Add Ghalta, Primal Hunger to deck" }),
   ).toBeVisible();
   await expect(
-    page.getByText("Outside commander color identity"),
+    page.getByText("Outside commander color identity", { exact: true }),
   ).toHaveCount(0);
   await page
     .getByRole("button", { name: "Add Ghalta, Primal Hunger to deck" })
@@ -642,15 +776,29 @@ test("commander colors warn before and after an illegal addition", async ({
   ).toHaveCount(0);
   await expect(
     page.getByRole("combobox", { name: "Group cards" }),
-  ).toHaveValue("custom");
+  ).toHaveValue("type");
 
   await openSearch(page);
+  await expect(
+    page.getByRole("checkbox", { name: "Enhance with EDHREC" }),
+  ).toBeChecked();
+  await expect(
+    page.getByText("EDHREC enhancement failed", { exact: true }),
+  ).toBeVisible();
+  expect(edhrecRequest).not.toBeNull();
+  expect(edhrecRequest?.searchParams.get("commander_oracle_id")).toBe(
+    ghalta.oracle_id,
+  );
+  await page.screenshot({
+    path: testInfo.outputPath("desktop-edhrec-fallback.png"),
+    fullPage: true,
+  });
   const cardSearch = page.getByRole("textbox", {
     name: "Search cards",
   });
   await cardSearch.fill("Gamble");
   await expect(
-    page.getByText("Outside commander color identity"),
+    page.getByText("Outside commander color identity", { exact: true }),
   ).toBeVisible();
   await page
     .getByRole("button", { name: "Add Gamble to deck" })
@@ -661,7 +809,9 @@ test("commander colors warn before and after an illegal addition", async ({
     page.getByText("Needs review", { exact: true }),
   ).toBeVisible();
   await expect(page.getByLabel("Color identity warning")).toBeVisible();
-  await page.getByRole("button", { name: "Inspect Gamble" }).click();
+  await page
+    .getByRole("button", { name: "Inspect Gamble", exact: true })
+    .click();
   await expect(
     page.getByText(
       "R is outside this deck's G commander color identity.",
@@ -671,6 +821,124 @@ test("commander colors warn before and after an illegal addition", async ({
     path: testInfo.outputPath("desktop-color-warning.png"),
     fullPage: true,
   });
+});
+
+test("command zone accepts a legal pair and rejects a third commander", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await page.route(SEARCH_ROUTE, async (route) => {
+    const query =
+      new URL(route.request().url()).searchParams.get("q") ?? "";
+    const cards = query.includes("Tymna")
+      ? [tymna]
+      : query.includes("Ghalta")
+        ? [ghalta]
+        : [thrasios];
+    await fulfillJson(route, searchPage(query, cards));
+  });
+
+  await page.goto("/");
+  await page.getByRole("button", { name: "Add to command zone" }).click();
+  const search = page.getByRole("textbox", { name: "Search cards" });
+  await search.fill("Thrasios");
+  await page
+    .getByRole("button", { name: "Add Thrasios, Triton Hero to deck" })
+    .click();
+  await search.fill("Tymna");
+  await page
+    .getByRole("button", { name: "Add Tymna the Weaver to deck" })
+    .click();
+
+  await search.fill("Ghalta");
+  await page
+    .getByRole("button", { name: "Add Ghalta, Primal Hunger to deck" })
+    .click();
+  await expect(page.getByRole("alert")).toContainText(
+    "The command zone already has two legal paired commanders.",
+  );
+
+  await search.press("Escape");
+  const commandZone = page.locator('[data-group-id="command_zone"]');
+  await expect(
+    commandZone.getByRole("button", {
+      name: "Inspect Thrasios, Triton Hero",
+      exact: true,
+    }),
+  ).toBeVisible();
+  await expect(
+    commandZone.getByRole("button", {
+      name: "Inspect Tymna the Weaver",
+      exact: true,
+    }),
+  ).toBeVisible();
+  await expect(
+    commandZone.getByRole("button", {
+      name: "Inspect Ghalta, Primal Hunger",
+      exact: true,
+    }),
+  ).toHaveCount(0);
+  await expect(commandZone.getByText("2 cards", { exact: true })).toBeVisible();
+});
+
+test("deck deletion is confirmed and recoverable across viewports", async ({
+  page,
+}, testInfo) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto("/");
+
+  await page.getByRole("button", { name: "Rename deck" }).click();
+  const nameInput = page.getByRole("textbox", { name: "Deck name" });
+  await nameInput.fill("Dinosaur Ramp");
+  await nameInput.press("Enter");
+
+  await page
+    .getByRole("button", { name: "Delete Dinosaur Ramp" })
+    .click();
+  const confirmation = page.getByRole("alertdialog");
+  await expect(confirmation).toBeVisible();
+  await expect(
+    confirmation.getByRole("heading", { name: "Delete Dinosaur Ramp?" }),
+  ).toBeVisible();
+  await expect(
+    confirmation.getByRole("button", { name: "Cancel", exact: true }),
+  ).toBeFocused();
+  const dialogBounds = await confirmation.boundingBox();
+  expect(dialogBounds).not.toBeNull();
+  expect(dialogBounds?.width).toBeLessThanOrEqual(390);
+  await page.screenshot({
+    path: testInfo.outputPath("mobile-delete-deck-confirmation.png"),
+    fullPage: true,
+  });
+
+  await confirmation.getByRole("button", { name: "Delete deck" }).click();
+  await expect(
+    page.getByRole("heading", { name: "Untitled Commander" }),
+  ).toBeVisible();
+  const deletedToast = page.locator(".deck-toast--deleted");
+  await expect(deletedToast).toContainText("Dinosaur Ramp deleted.");
+  const restore = deletedToast.getByRole("button", { name: "Undo" });
+  await restore.click();
+  await expect(
+    page.getByRole("heading", { name: "Dinosaur Ramp" }),
+  ).toBeVisible();
+
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await page
+    .getByRole("button", { name: "Delete Dinosaur Ramp" })
+    .click();
+  const desktopConfirmation = page.getByRole("alertdialog");
+  await expect(desktopConfirmation).toBeVisible();
+  const desktopBounds = await desktopConfirmation.boundingBox();
+  expect(desktopBounds).not.toBeNull();
+  expect(desktopBounds?.width).toBeLessThanOrEqual(430);
+  await page.screenshot({
+    path: testInfo.outputPath("desktop-delete-deck-confirmation.png"),
+    fullPage: true,
+  });
+  await desktopConfirmation
+    .getByRole("button", { name: "Cancel", exact: true })
+    .click();
 });
 
 test("mobile keeps primary deck actions reachable and contained", async ({
@@ -761,6 +1029,12 @@ test("mobile keeps primary deck actions reachable and contained", async ({
     mobileToolbar.getByRole("button", { name: "Add cards", exact: true }),
   ).toBeFocused();
 
+  await expect(
+    page.getByRole("combobox", { name: "Group cards" }),
+  ).toHaveValue("type");
+  await page
+    .getByRole("combobox", { name: "Group cards" })
+    .selectOption("custom");
   await page.getByRole("button", { name: "Add custom group" }).click();
   const mobileGroupInput = page.getByRole("textbox", { name: "Group name" });
   const createGroupButton = page.getByRole("button", {

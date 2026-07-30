@@ -22,6 +22,129 @@ describe("card search dialog", () => {
     window.localStorage.clear();
   });
 
+  it("defaults EDHREC enhancement on for one commander and shows fetch failure", async () => {
+    const page = cardSearchPage([], "");
+    page.edhrec = {
+      status: "unavailable",
+      source: null,
+      message:
+        "EDHREC data could not be fetched. Results use normal local sorting.",
+    };
+    const searchCards = vi.fn<ApiClient["searchCards"]>().mockResolvedValue(page);
+
+    render(
+      <SearchDrawer
+        entries={[
+          {
+            card: {
+              oracle_id: ghalta.oracle_id,
+              scryfall_id: ghalta.scryfall_id,
+              name: ghalta.name,
+              details: ghalta,
+            },
+            quantity: 1,
+            section: "command_zone",
+            categories: ["command_zone"],
+          },
+        ]}
+        client={{ getHealth: vi.fn(), searchCards }}
+        onAdd={vi.fn()}
+        onSetQuantity={vi.fn()}
+        onClose={vi.fn()}
+      />,
+    );
+
+    expect(
+      screen.getByRole("checkbox", { name: "Enhance with EDHREC" }),
+    ).toBeChecked();
+    await waitFor(() =>
+      expect(searchCards).toHaveBeenCalledWith(
+        "",
+        1,
+        expect.any(AbortSignal),
+        expect.any(Object),
+        false,
+        {
+          enhanceWithEdhrec: true,
+          commanderOracleId: ghalta.oracle_id,
+        },
+      ),
+    );
+    expect(
+      await screen.findByText("EDHREC enhancement failed"),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        "EDHREC data could not be fetched. Results use normal local sorting.",
+      ),
+    ).toBeInTheDocument();
+  });
+
+  it("offers commander themes and applies the selected theme to EDHREC search", async () => {
+    const page = cardSearchPage([], "");
+    const searchCards = vi.fn<ApiClient["searchCards"]>().mockResolvedValue(page);
+    const user = userEvent.setup();
+
+    render(
+      <SearchDrawer
+        entries={[
+          {
+            card: {
+              oracle_id: ghalta.oracle_id,
+              scryfall_id: ghalta.scryfall_id,
+              name: ghalta.name,
+              details: ghalta,
+            },
+            quantity: 1,
+            section: "command_zone",
+            categories: ["command_zone"],
+          },
+        ]}
+        client={{
+          getHealth: vi.fn(),
+          searchCards,
+          getCommanderEdhrecContext: vi.fn().mockResolvedValue({
+            status: "applied",
+            source: "cache",
+            commander_oracle_id: ghalta.oracle_id,
+            commander_name: ghalta.name,
+            themes: [
+              { slug: "stompy", name: "Stompy", deck_count: 239 },
+              { slug: "tokens", name: "Tokens", deck_count: 12 },
+            ],
+            message: null,
+          }),
+        }}
+        onAdd={vi.fn()}
+        onSetQuantity={vi.fn()}
+        onClose={vi.fn()}
+      />,
+    );
+
+    const themePicker = await screen.findByRole("combobox", {
+      name: "EDHREC deck theme",
+    });
+    expect(
+      screen.getByRole("option", { name: "Tokens (12 decks)" }),
+    ).toBeInTheDocument();
+    await user.selectOptions(themePicker, "tokens");
+
+    await waitFor(() =>
+      expect(searchCards).toHaveBeenLastCalledWith(
+        "",
+        1,
+        expect.any(AbortSignal),
+        expect.any(Object),
+        false,
+        {
+          enhanceWithEdhrec: true,
+          commanderOracleId: ghalta.oracle_id,
+          edhrecTheme: "tokens",
+        },
+      ),
+    );
+  });
+
   it("contains keyboard focus, locks scrolling, and closes with Escape", async () => {
     const onClose = vi.fn();
     const user = userEvent.setup();
@@ -43,8 +166,11 @@ describe("card search dialog", () => {
 
     screen.getByRole("button", { name: "Search settings" }).focus();
     await user.tab({ shift: true });
-    expect(screen.getByRole("spinbutton", { name: "Maximum price in euros" }))
-      .toHaveFocus();
+    expect(
+      screen.getByRole("checkbox", {
+        name: "Show non-Commander-legal cards",
+      }),
+    ).toHaveFocus();
 
     await user.keyboard("{Escape}");
     expect(onClose).toHaveBeenCalledOnce();
@@ -96,6 +222,12 @@ describe("card search dialog", () => {
           colors: ["U"],
           includeColorless: true,
           colorMode: "exact",
+          includeNonCommanderLegal: false,
+          includeOutsideCommanderColorIdentity: false,
+          commanderColorIdentity: null,
+          tags: [],
+          cardTypes: [],
+          subtypes: [],
           manaValueMin: 2,
           manaValueMax: 5,
           priceEurMin: 0.25,
@@ -257,8 +389,10 @@ describe("card search dialog", () => {
   });
 
   it("shows confident previews while agentic search ranks the final results", async () => {
+    window.localStorage.setItem("manabase.search-debug", "true");
     const preview = cardSearchPage([solRing], "green big creature");
     preview.agentic_required = true;
+    preview.title_confidence_scores = { [solRing.scryfall_id]: 0.72 };
     preview.interpretation =
       "Confident title matches shown while agentic search continues";
     let resolveAgentic: (page: ReturnType<typeof cardSearchPage>) => void =
@@ -297,6 +431,7 @@ describe("card search dialog", () => {
       screen.getByText("Understanding the request and ranking cards"),
     ).toBeInTheDocument();
     expect(screen.getAllByText("Sol Ring")).not.toHaveLength(0);
+    expect(screen.queryByText("Title confidence 72%")).not.toBeInTheDocument();
     expect(searchCardsAgentic).toHaveBeenCalledTimes(1);
 
     const final = cardSearchPage([ghalta], "green big creature");
@@ -305,6 +440,7 @@ describe("card search dialog", () => {
     final.agentic_required = false;
     final.search_session_id = "search-session-1";
     final.interpretation = "Large green creatures, strongest matches first.";
+    final.title_confidence_scores = { [ghalta.scryfall_id]: 0.83 };
     resolveAgentic(final);
 
     expect(
@@ -313,6 +449,7 @@ describe("card search dialog", () => {
     expect(
       screen.getByText("Large green creatures, strongest matches first."),
     ).toBeInTheDocument();
+    expect(screen.queryByText("Title confidence 83%")).not.toBeInTheDocument();
     await waitFor(() =>
       expect(screen.queryByText("Agentic search loading")).not.toBeInTheDocument(),
     );
@@ -384,6 +521,292 @@ describe("card search dialog", () => {
       await screen.findByRole("button", { name: "Add Sol Ring to deck" }),
     ).toBeInTheDocument();
     expect(screen.queryByText("Title confidence 72%")).not.toBeInTheDocument();
+  });
+
+  it("shows local tags and related-card links for the highlighted card", async () => {
+    const getCardEnrichment = vi
+      .fn<NonNullable<ApiClient["getCardEnrichment"]>>()
+      .mockResolvedValue({
+        oracle_id: solRing.oracle_id,
+        tags: [
+          {
+            id: "tag-mana-rock",
+            name: "mana rock",
+            slug: "mana-rock",
+            description: "Artifacts that produce mana.",
+          },
+        ],
+        similar_cards: [
+          { oracle_id: "oracle-mana-vault", name: "Mana Vault" },
+        ],
+        references: [],
+        referenced_by: [
+          { oracle_id: "oracle-reference", name: "Sol Ring Replica" },
+        ],
+      });
+    const getCard = vi
+      .fn<NonNullable<ApiClient["getCard"]>>()
+      .mockResolvedValue({ ...solRing, name: "Mana Vault" });
+    const onOpenCard = vi.fn();
+
+    render(
+      <SearchDrawer
+        initialQuery="sol ring"
+        entries={[]}
+        client={{
+          getHealth: vi.fn(),
+          getCardEnrichment,
+          getCard,
+          searchCards: vi.fn().mockResolvedValue(cardSearchPage()),
+        }}
+        onOpenCard={onOpenCard}
+        onAdd={vi.fn()}
+        onSetQuantity={vi.fn()}
+        onClose={vi.fn()}
+      />,
+    );
+
+    expect(await screen.findByText("mana rock")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Similar cards" }))
+      .toBeInTheDocument();
+    expect(
+      screen.queryByRole("heading", { name: "Referenced by" }),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByText("Sol Ring Replica")).not.toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Mana Vault" }));
+    expect(getCard).toHaveBeenCalledWith("oracle-mana-vault");
+    expect(onOpenCard).toHaveBeenCalledWith(
+      expect.objectContaining({ name: "Mana Vault" }),
+    );
+    expect(getCardEnrichment).toHaveBeenCalledWith(
+      solRing.oracle_id,
+      expect.any(AbortSignal),
+    );
+  });
+
+  it("passes default safety filters and current commander identity to search", async () => {
+    const searchCards = vi.fn<ApiClient["searchCards"]>().mockResolvedValue(
+      cardSearchPage(),
+    );
+    const user = userEvent.setup();
+    render(
+      <SearchDrawer
+        initialQuery="creature"
+        entries={[
+          {
+            card: {
+              oracle_id: ghalta.oracle_id,
+              scryfall_id: ghalta.scryfall_id,
+              name: ghalta.name,
+              details: ghalta,
+            },
+            quantity: 1,
+            section: "command_zone",
+            categories: ["command_zone"],
+          },
+        ]}
+        client={{ getHealth: vi.fn(), searchCards }}
+        onAdd={vi.fn()}
+        onSetQuantity={vi.fn()}
+        onClose={vi.fn()}
+      />,
+    );
+
+    await waitFor(() =>
+      expect(searchCards).toHaveBeenLastCalledWith(
+        "creature",
+        1,
+        expect.any(AbortSignal),
+        expect.objectContaining({
+          includeNonCommanderLegal: false,
+          includeOutsideCommanderColorIdentity: false,
+          commanderColorIdentity: ["G"],
+        }),
+        false,
+      ),
+    );
+    await user.click(
+      screen.getByRole("checkbox", {
+        name: "Show non-Commander-legal cards",
+      }),
+    );
+    await user.click(
+      screen.getByRole("checkbox", {
+        name: "Show cards outside commander color identity",
+      }),
+    );
+    await waitFor(() =>
+      expect(searchCards).toHaveBeenLastCalledWith(
+        "creature",
+        1,
+        expect.any(AbortSignal),
+        expect.objectContaining({
+          includeNonCommanderLegal: true,
+          includeOutsideCommanderColorIdentity: true,
+          commanderColorIdentity: ["G"],
+        }),
+        false,
+      ),
+    );
+  });
+
+  it("fuzzy-finds, applies, and removes immutable tag filters", async () => {
+    const searchCards = vi.fn<ApiClient["searchCards"]>().mockResolvedValue(
+      cardSearchPage(),
+    );
+    const searchCardTags = vi
+      .fn<NonNullable<ApiClient["searchCardTags"]>>()
+      .mockResolvedValue([
+        {
+          id: "tag-elf",
+          name: "elf typal",
+          slug: "elf-typal",
+          description: "Cards that reward Elf decks.",
+          match_score: 0.94,
+        },
+      ]);
+    const user = userEvent.setup();
+    render(
+      <SearchDrawer
+        initialQuery="untapping creatures"
+        entries={[]}
+        client={{ getHealth: vi.fn(), searchCards, searchCardTags }}
+        onAdd={vi.fn()}
+        onSetQuantity={vi.fn()}
+        onClose={vi.fn()}
+      />,
+    );
+
+    await user.type(
+      screen.getByRole("searchbox", { name: "Search card tags" }),
+      "elfs",
+    );
+    await user.click(
+      await screen.findByRole("button", { name: "Add elf typal tag" }),
+    );
+    await waitFor(() =>
+      expect(searchCards).toHaveBeenLastCalledWith(
+        "untapping creatures",
+        1,
+        expect.any(AbortSignal),
+        expect.objectContaining({
+          tags: [{ id: "tag-elf", name: "elf typal" }],
+        }),
+        false,
+      ),
+    );
+    await user.click(
+      screen.getByRole("button", { name: "Remove elf typal tag" }),
+    );
+    await waitFor(() =>
+      expect(searchCards).toHaveBeenLastCalledWith(
+        "untapping creatures",
+        1,
+        expect.any(AbortSignal),
+        expect.objectContaining({ tags: [] }),
+        false,
+      ),
+    );
+  });
+
+  it("applies required card types and fuzzy-selected subtypes", async () => {
+    const searchCards = vi.fn<ApiClient["searchCards"]>().mockResolvedValue(
+      cardSearchPage(),
+    );
+    const searchCardSubtypes = vi
+      .fn<NonNullable<ApiClient["searchCardSubtypes"]>>()
+      .mockResolvedValue([
+        {
+          name: "Dinosaur",
+          match_score: 0.92,
+        },
+      ]);
+    const user = userEvent.setup();
+    render(
+      <SearchDrawer
+        entries={[]}
+        client={{
+          getHealth: vi.fn(),
+          searchCards,
+          searchCardSubtypes,
+        }}
+        onAdd={vi.fn()}
+        onSetQuantity={vi.fn()}
+        onClose={vi.fn()}
+      />,
+    );
+
+    await user.click(screen.getByRole("checkbox", { name: "Creature" }));
+    await user.type(
+      screen.getByRole("searchbox", { name: "Search card subtypes" }),
+      "dino",
+    );
+    await user.click(
+      await screen.findByRole("button", { name: "Add Dinosaur subtype" }),
+    );
+
+    await waitFor(() =>
+      expect(searchCards).toHaveBeenLastCalledWith(
+        "",
+        1,
+        expect.any(AbortSignal),
+        expect.objectContaining({
+          cardTypes: ["Creature"],
+          subtypes: ["Dinosaur"],
+        }),
+        false,
+      ),
+    );
+    expect(
+      screen.getByRole("button", { name: "Remove Dinosaur subtype" }),
+    ).toBeInTheDocument();
+  });
+
+  it("uses selected tag names as the intent when tag-only results are exhausted", async () => {
+    const first = cardSearchPage([solRing], "");
+    first.has_more = false;
+    const continuation = cardSearchPage([ghalta], 'cards tagged "mana rock"');
+    continuation.strategy = "agentic";
+    continuation.search_session_id = "tag-search-session";
+    const searchCardsAgentic = vi
+      .fn<NonNullable<ApiClient["searchCardsAgentic"]>>()
+      .mockResolvedValue(continuation);
+    const user = userEvent.setup();
+
+    render(
+      <SearchDrawer
+        initialTags={[{ id: "tag-mana-rock", name: "mana rock" }]}
+        entries={[]}
+        client={{
+          getHealth: vi.fn(),
+          searchCards: vi.fn().mockResolvedValue(first),
+          searchCardsAgentic,
+        }}
+        onAdd={vi.fn()}
+        onSetQuantity={vi.fn()}
+        onClose={vi.fn()}
+      />,
+    );
+
+    await user.click(
+      await screen.findByRole("button", { name: "Load more" }),
+    );
+    await waitFor(() =>
+      expect(searchCardsAgentic).toHaveBeenCalledWith(
+        'cards tagged "mana rock"',
+        2,
+        expect.any(AbortSignal),
+        expect.objectContaining({
+          tags: [{ id: "tag-mana-rock", name: "mana rock" }],
+        }),
+        false,
+        null,
+        [solRing.oracle_id],
+      ),
+    );
+    expect(
+      await screen.findAllByText("Ghalta, Primal Hunger"),
+    ).not.toHaveLength(0);
   });
 
   it("shows 12 results first and appends the next page with Load more", async () => {

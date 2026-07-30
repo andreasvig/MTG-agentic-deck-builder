@@ -1,4 +1,5 @@
 import {
+  AlertTriangle,
   Boxes,
   Columns3,
   Command,
@@ -8,6 +9,7 @@ import {
   MoreHorizontal,
   Pencil,
   Plus,
+  Trash2,
   Undo2,
   WandSparkles,
   X,
@@ -21,8 +23,9 @@ import {
   type SortMode,
   type ViewMode,
 } from "./components/DeckBoard";
+import { DeleteDeckDialog } from "./components/DeleteDeckDialog";
 import { SearchDrawer } from "./components/SearchDrawer";
-import type { CardSearchResult } from "./domain/card";
+import type { CardSearchResult, CardTagFilter } from "./domain/card";
 import { formatEuro, getCardImage } from "./domain/card";
 import {
   groupIdForEntry,
@@ -34,9 +37,11 @@ import { useMediaQuery } from "./hooks/useMediaQuery";
 import "./styles.css";
 
 interface SearchRequest {
+  id: number;
   targetGroupId?: string;
   targetLabel?: string;
   initialQuery?: string;
+  initialTags?: CardTagFilter[];
 }
 
 function App() {
@@ -44,7 +49,9 @@ function App() {
     deck,
     decks,
     announcement,
+    announcementTone,
     canUndo,
+    deletedDeckName,
     statistics,
     addCard,
     setQuantity,
@@ -54,19 +61,24 @@ function App() {
     renameDeck,
     createDeck,
     selectDeck,
+    deleteDeck,
+    restoreDeletedDeck,
+    clearAnnouncement,
     undo,
   } = useDeck();
   const { health } = useBackendHealth();
   const isMobile = useMediaQuery("(max-width: 860px)");
   const [view, setView] = useState<ViewMode>("visual");
-  const [group, setGroup] = useState<GroupMode>("custom");
+  const [group, setGroup] = useState<GroupMode>("type");
   const [sort, setSort] = useState<SortMode>("alphabet");
   const [navigationOpen, setNavigationOpen] = useState(false);
   const [searchRequest, setSearchRequest] = useState<SearchRequest | null>(null);
   const [selectedCard, setSelectedCard] = useState<CardSearchResult | null>(null);
   const [renamingDeck, setRenamingDeck] = useState(false);
+  const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
   const [deckNameDraft, setDeckNameDraft] = useState(deck.name);
   const returnFocus = useRef<HTMLElement | null>(null);
+  const nextSearchRequestId = useRef(1);
   const menuTrigger = useRef<HTMLButtonElement>(null);
   const sidebarRef = useRef<HTMLElement>(null);
   const sidebarClose = useRef<HTMLButtonElement>(null);
@@ -82,6 +94,7 @@ function App() {
       targetGroupId?: string,
       targetLabel?: string,
       initialQuery?: string,
+      initialTags?: CardTagFilter[],
     ) => {
       returnFocus.current =
         document.activeElement instanceof HTMLElement
@@ -90,7 +103,13 @@ function App() {
       if (isMobile) {
         setSelectedCard(null);
       }
-      setSearchRequest({ targetGroupId, targetLabel, initialQuery });
+      setSearchRequest({
+        id: nextSearchRequestId.current++,
+        targetGroupId,
+        targetLabel,
+        initialQuery,
+        initialTags,
+      });
     },
     [isMobile],
   );
@@ -98,6 +117,23 @@ function App() {
   const closeSearch = useCallback(() => {
     setSearchRequest(null);
     window.setTimeout(() => returnFocus.current?.focus(), 0);
+  }, []);
+
+  const closeCard = useCallback(() => {
+    setSelectedCard(null);
+  }, []);
+
+  const closeDeleteDialog = useCallback(() => {
+    setDeleteDialogOpen(false);
+  }, []);
+
+  const openTagSearch = useCallback((tag: CardTagFilter) => {
+    setSelectedCard(null);
+    setSearchRequest({
+      id: nextSearchRequestId.current++,
+      initialQuery: "",
+      initialTags: [tag],
+    });
   }, []);
 
   const closeNavigation = useCallback(() => {
@@ -146,6 +182,7 @@ function App() {
 
   useEffect(() => {
     setRenamingDeck(false);
+    setDeleteDialogOpen(false);
     setDeckNameDraft(deck.name);
     setSelectedCard(null);
   }, [deck.id, deck.name]);
@@ -174,6 +211,11 @@ function App() {
     setNavigationOpen(false);
   };
 
+  const confirmDeleteDeck = useCallback(() => {
+    deleteDeck(deck.id);
+    setDeleteDialogOpen(false);
+  }, [deck.id, deleteDeck]);
+
   const legalityCopy = {
     legal: "Size ready",
     warning: "Needs review",
@@ -186,12 +228,18 @@ function App() {
         ref={sidebarRef}
         className={`sidebar ${navigationOpen ? "sidebar--open" : ""}`}
         aria-hidden={
-          searchRequest || selectedCard || (isMobile && !navigationOpen)
+          searchRequest ||
+          selectedCard ||
+          deleteDialogOpen ||
+          (isMobile && !navigationOpen)
             ? true
             : undefined
         }
         inert={
-          searchRequest || selectedCard || (isMobile && !navigationOpen)
+          searchRequest ||
+          selectedCard ||
+          deleteDialogOpen ||
+          (isMobile && !navigationOpen)
             ? true
             : undefined
         }
@@ -305,12 +353,18 @@ function App() {
         className="workspace"
         id="deck"
         inert={
-          searchRequest || selectedCard || (isMobile && navigationOpen)
+          searchRequest ||
+          selectedCard ||
+          deleteDialogOpen ||
+          (isMobile && navigationOpen)
             ? true
             : undefined
         }
         aria-hidden={
-          searchRequest || selectedCard || (isMobile && navigationOpen)
+          searchRequest ||
+          selectedCard ||
+          deleteDialogOpen ||
+          (isMobile && navigationOpen)
             ? true
             : undefined
         }
@@ -369,15 +423,26 @@ function App() {
               </span>
             )}
             {!renamingDeck ? (
-              <button
-                className="icon-button icon-button--compact deck-name-edit"
-                type="button"
-                aria-label="Rename deck"
-                title="Rename deck"
-                onClick={beginDeckRename}
-              >
-                <Pencil aria-hidden="true" size={14} />
-              </button>
+              <span className="deck-identity__actions">
+                <button
+                  className="icon-button icon-button--compact deck-name-edit"
+                  type="button"
+                  aria-label="Rename deck"
+                  title="Rename deck"
+                  onClick={beginDeckRename}
+                >
+                  <Pencil aria-hidden="true" size={14} />
+                </button>
+                <button
+                  className="icon-button icon-button--compact deck-delete"
+                  type="button"
+                  aria-label={`Delete ${deck.name}`}
+                  title="Delete deck"
+                  onClick={() => setDeleteDialogOpen(true)}
+                >
+                  <Trash2 aria-hidden="true" size={14} />
+                </button>
+              </span>
             ) : null}
           </div>
           <div className="deck-metrics" aria-label="Deck summary">
@@ -464,6 +529,12 @@ function App() {
               </div>
               <span>{deck.cards.length} unique printings</span>
             </div>
+            {statistics.commandZoneProblem ? (
+              <div className="command-zone-warning" role="status">
+                <AlertTriangle aria-hidden="true" size={17} />
+                <span>{statistics.commandZoneProblem}</span>
+              </div>
+            ) : null}
             <DeckBoard
               entries={deck.cards}
               customGroups={deck.custom_groups}
@@ -487,7 +558,10 @@ function App() {
         className="mobile-toolbar"
         aria-label="Deck actions"
         inert={
-          searchRequest || selectedCard || (isMobile && navigationOpen)
+          searchRequest ||
+          selectedCard ||
+          deleteDialogOpen ||
+          (isMobile && navigationOpen)
             ? true
             : undefined
         }
@@ -538,23 +612,63 @@ function App() {
             : false
         }
         commanderColorIdentity={statistics.commanderColorIdentity}
+        onOpenCard={setSelectedCard}
+        onSelectTag={openTagSearch}
         onAdd={addCard}
         onSetQuantity={setQuantity}
         onMove={moveCard}
         onRemove={removeCard}
-        onClose={() => setSelectedCard(null)}
+        onClose={closeCard}
       />
 
       {searchRequest ? (
         <SearchDrawer
+          key={searchRequest.id}
           initialQuery={searchRequest.initialQuery}
+          initialTags={searchRequest.initialTags}
           targetGroupId={searchRequest.targetGroupId}
           targetLabel={searchRequest.targetLabel}
           entries={deck.cards}
+          suspended={selectedCard !== null}
           onAdd={addCard}
+          onOpenCard={setSelectedCard}
           onSetQuantity={setQuantity}
           onClose={closeSearch}
         />
+      ) : null}
+
+      {deleteDialogOpen ? (
+        <DeleteDeckDialog
+          deckName={deck.name}
+          cardCount={statistics.cardCount}
+          isOnlyDeck={decks.length === 1}
+          onCancel={closeDeleteDialog}
+          onConfirm={confirmDeleteDeck}
+        />
+      ) : null}
+
+      {announcementTone === "error" ? (
+        <div className="deck-toast deck-toast--error" role="alert">
+          <AlertTriangle aria-hidden="true" size={18} />
+          <span>{announcement}</span>
+          <button
+            className="icon-button icon-button--compact"
+            type="button"
+            aria-label="Dismiss deck warning"
+            onClick={clearAnnouncement}
+          >
+            <X aria-hidden="true" size={16} />
+          </button>
+        </div>
+      ) : null}
+
+      {deletedDeckName ? (
+        <div className="deck-toast deck-toast--deleted" role="status">
+          <span>{deletedDeckName} deleted.</span>
+          <button type="button" onClick={restoreDeletedDeck}>
+            Undo
+          </button>
+        </div>
       ) : null}
 
       <div className="sr-only" role="status" aria-live="polite">

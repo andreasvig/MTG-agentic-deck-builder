@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 from collections import Counter
 from dataclasses import dataclass, replace
 from decimal import Decimal
@@ -39,10 +40,18 @@ from mtg_deck_builder.domain import (
     CardSearchPage,
     CardSearchQuery,
     CardSearchResult,
+    EdhrecSearchEnhancement,
     LocalCardSearchRequest,
     LocalCardSearchResult,
     SearchDebugStage,
     SearchDebugSummary,
+)
+from mtg_deck_builder.edhrec_catalog import (
+    EdhrecAssociation,
+    EdhrecCatalogUnavailable,
+    EdhrecCommanderContext,
+    EdhrecCommanderRanking,
+    EdhrecCommanderService,
 )
 from mtg_deck_builder.providers import (
     CardSearchQueryError,
@@ -54,10 +63,56 @@ from mtg_deck_builder.search import (
     FuzzyTitleSearchProvider,
     matches_card_filters,
     preview_confidence_score,
+    resolve_tag_filter_oracle_ids,
 )
 from mtg_deck_builder.semantic_index import SemanticCardIndex, SemanticScoreResult
+from mtg_deck_builder.tagger_catalog import SQLiteTaggerCatalog
 
 _TOOL_CALL_ADAPTER = TypeAdapter(AgentSearchToolCall)
+_NESTED_TOOL_FIELDS = frozenset(
+    {
+        "name",
+        "mana",
+        "types",
+        "colors",
+        "power",
+        "toughness",
+        "price_eur",
+    }
+)
+_MAJOR_CARD_TYPES = frozenset(
+    {
+        "artifact",
+        "battle",
+        "creature",
+        "enchantment",
+        "instant",
+        "kindred",
+        "land",
+        "planeswalker",
+        "sorcery",
+    }
+)
+_ABSTRACT_TYPE_ALTERNATIVES: dict[str, tuple[str, ...]] = {
+    "permanent": (
+        "Artifact",
+        "Battle",
+        "Creature",
+        "Enchantment",
+        "Land",
+        "Planeswalker",
+    ),
+    "spell": (
+        "Artifact",
+        "Battle",
+        "Creature",
+        "Enchantment",
+        "Instant",
+        "Kindred",
+        "Planeswalker",
+        "Sorcery",
+    ),
+}
 
 
 @dataclass(frozen=True)
@@ -70,12 +125,30 @@ class ExecutedSearchTool:
     payload: dict[str, Any]
 
 
+@dataclass(frozen=True)
+class _AgentCommanderContext:
+    """Immutable commander context and optional EDHREC evidence for one round."""
+
+    card: CardSearchResult
+    edhrec_context: EdhrecCommanderContext | None
+    edhrec_ranking: EdhrecCommanderRanking | None
+    selected_theme_slug: str | None
+    selected_theme_name: str | None
+    enhancement: EdhrecSearchEnhancement
+
+
 class AgenticCardSearchUnavailable(CardSearchUnavailable):
     """An agentic failure with an optional sanitized trace for debug clients."""
 
-    def __init__(self, debug: SearchDebugSummary | None = None) -> None:
+    def __init__(
+        self,
+        debug: SearchDebugSummary | None = None,
+        *,
+        contract_error: bool = False,
+    ) -> None:
         super().__init__()
         self.debug = debug
+        self.contract_error = contract_error
 
 
 @dataclass(frozen=True)
@@ -97,6 +170,10 @@ class _StoredAgentSearch:
     tool_request_history: tuple[dict[str, Any], ...]
     next_candidate_id: int
     round_number: int
+    commander_oracle_id: UUID | None
+    enhance_with_edhrec: bool
+    edhrec_theme: str | None
+    edhrec: EdhrecSearchEnhancement
     created_at: float
 
 
@@ -139,11 +216,13 @@ class LocalCardSearchTool:
         default_max_results: int,
         hard_max_results: int,
         semantic_index: SemanticCardIndex | None = None,
+        tagger_catalog: SQLiteTaggerCatalog | None = None,
     ) -> None:
         self._catalog = catalog
         self._default_max_results = default_max_results
         self._hard_max_results = hard_max_results
         self._semantic_index = semantic_index
+        self._tagger_catalog = tagger_catalog
 
     async def search(
         self,
@@ -151,6 +230,7 @@ class LocalCardSearchTool:
         *,
         immutable_filters: CardSearchFilters,
         excluded_oracle_ids: frozenset[UUID] = frozenset(),
+        edhrec_ranking: EdhrecCommanderRanking | None = None,
     ) -> ExecutedSearchTool:
         limit = resolve_local_tool_limit(
             request,
@@ -158,16 +238,26 @@ class LocalCardSearchTool:
             default_max_results=self._default_max_results,
             hard_max_results=self._hard_max_results,
         )
-        if request.legality is not None and request.format is None:
-            raise AgentSearchContractError("legality requires a format")
+        if (
+            request.sort_by in {"edhrec_inclusion", "edhrec_synergy"}
+            and edhrec_ranking is None
+        ):
+            raise AgentSearchContractError(
+                "EDHREC sorting requires available commander evidence"
+            )
 
         entries = await self._catalog.entries()
+        tag_oracle_ids = await resolve_tag_filter_oracle_ids(
+            self._tagger_catalog,
+            immutable_filters,
+        )
         matches = await asyncio.to_thread(
             _filter_local_candidates,
             entries,
             request,
             immutable_filters,
             excluded_oracle_ids,
+            tag_oracle_ids,
         )
         semantic_result: SemanticScoreResult | None = None
         if request.semantic_sort is not None:
@@ -184,6 +274,7 @@ class LocalCardSearchTool:
             excluded_oracle_ids=excluded_oracle_ids,
             limit=limit,
             semantic_result=semantic_result,
+            edhrec_ranking=edhrec_ranking,
         )
         return ExecutedSearchTool(
             name="search_local_cards",
@@ -222,6 +313,7 @@ class AgenticCardSearchService:
         trace_logger: JsonlAgentSearchTraceLogger,
         trace_log_path: str,
         debug_default_enabled: bool,
+        edhrec_service: EdhrecCommanderService | None = None,
         sessions: AgenticSearchSessionStore | None = None,
     ) -> None:
         self._fuzzy_provider = fuzzy_provider
@@ -232,6 +324,7 @@ class AgenticCardSearchService:
         self._trace_logger = trace_logger
         self._trace_log_path = trace_log_path
         self._debug_default_enabled = debug_default_enabled
+        self._edhrec_service = edhrec_service
         self._sessions = sessions or AgenticSearchSessionStore()
         self._session_locks: dict[UUID, asyncio.Lock] = {}
 
@@ -257,6 +350,7 @@ class AgenticCardSearchService:
         is_continuation = request.page != 1
         if is_continuation and not self._settings.continuation.enabled:
             raise CardSearchQueryError
+        commander_context = await self._resolve_commander_context(request)
         selectable_preview = [] if is_continuation else shown_cards
         already_shown = shown_cards if is_continuation else []
         completed, debug = await self._execute_agent_round(
@@ -271,6 +365,7 @@ class AgenticCardSearchService:
             candidate_id_start=(len(already_shown) + 1 if is_continuation else 1),
             round_number=1,
             previous_tool_requests=(),
+            commander_context=commander_context,
         )
         session_id = uuid4()
         cards = _deduplicate_cards(completed.cards)
@@ -308,10 +403,99 @@ class AgenticCardSearchService:
             tool_request_history=(completed.tool.arguments,),
             next_candidate_id=completed.next_candidate_id,
             round_number=1,
+            commander_oracle_id=request.commander_oracle_id,
+            enhance_with_edhrec=request.enhance_with_edhrec,
+            edhrec_theme=request.edhrec_theme,
+            edhrec=(
+                commander_context.enhancement
+                if commander_context is not None
+                else EdhrecSearchEnhancement()
+            ),
             created_at=monotonic(),
         )
         await self._sessions.put(stored)
         return _page_from_stored(stored, page=request.page)
+
+    async def _resolve_commander_context(
+        self,
+        request: AgenticCardSearchRequest,
+    ) -> _AgentCommanderContext | None:
+        """Resolve commander details and degrade cleanly when EDHREC is unavailable."""
+
+        if request.commander_oracle_id is None:
+            return None
+        cards = await self._local_tool.cards_by_oracle_ids([request.commander_oracle_id])
+        commander = cards[0]
+        if not request.enhance_with_edhrec:
+            return _AgentCommanderContext(
+                card=commander,
+                edhrec_context=None,
+                edhrec_ranking=None,
+                selected_theme_slug=None,
+                selected_theme_name=None,
+                enhancement=EdhrecSearchEnhancement(),
+            )
+        if self._edhrec_service is None:
+            return _AgentCommanderContext(
+                card=commander,
+                edhrec_context=None,
+                edhrec_ranking=None,
+                selected_theme_slug=request.edhrec_theme,
+                selected_theme_name=None,
+                enhancement=EdhrecSearchEnhancement(
+                    status="unavailable",
+                    message=(
+                        "EDHREC commander data is unavailable. "
+                        "Agentic search used local and semantic evidence only."
+                    ),
+                ),
+            )
+        try:
+            context = await self._edhrec_service.context_for(request.commander_oracle_id)
+            selected_theme = next(
+                (
+                    theme
+                    for theme in context.themes
+                    if theme.slug == request.edhrec_theme
+                ),
+                None,
+            )
+            if request.edhrec_theme is not None and selected_theme is None:
+                raise CardSearchQueryError
+            ranking = await self._edhrec_service.ranking_for(
+                request.commander_oracle_id,
+                request.edhrec_theme,
+            )
+        except CardSearchQueryError:
+            raise
+        except EdhrecCatalogUnavailable:
+            return _AgentCommanderContext(
+                card=commander,
+                edhrec_context=None,
+                edhrec_ranking=None,
+                selected_theme_slug=request.edhrec_theme,
+                selected_theme_name=None,
+                enhancement=EdhrecSearchEnhancement(
+                    status="unavailable",
+                    message=(
+                        "EDHREC commander data could not be fetched. "
+                        "Agentic search used local and semantic evidence only."
+                    ),
+                ),
+            )
+        return _AgentCommanderContext(
+            card=commander,
+            edhrec_context=context,
+            edhrec_ranking=ranking,
+            selected_theme_slug=request.edhrec_theme,
+            selected_theme_name=(
+                selected_theme.name if selected_theme is not None else None
+            ),
+            enhancement=EdhrecSearchEnhancement(
+                status="applied",
+                source=ranking.source,
+            ),
+        )
 
     async def _execute_agent_round(
         self,
@@ -323,6 +507,7 @@ class AgenticCardSearchService:
         candidate_id_start: int,
         round_number: int,
         previous_tool_requests: tuple[dict[str, Any], ...],
+        commander_context: _AgentCommanderContext | None,
     ) -> tuple[_CompletedAgentRun, SearchDebugSummary | None]:
         trace_enabled = self._debug_default_enabled or request.debug
         trace = AgentSearchTraceBuilder(
@@ -332,6 +517,7 @@ class AgenticCardSearchService:
                 "debug": request.debug,
                 "round_number": round_number,
                 "previous_tool_requests": list(previous_tool_requests),
+                "commander_context": _commander_trace_payload(commander_context),
                 "preview_candidates": [
                     _numbered_candidate_payload(
                         candidate_id,
@@ -354,6 +540,7 @@ class AgenticCardSearchService:
                 candidate_id_start=candidate_id_start,
                 round_number=round_number,
                 previous_tool_requests=previous_tool_requests,
+                commander_context=commander_context,
                 trace=trace,
             )
         except asyncio.CancelledError as exc:
@@ -363,7 +550,10 @@ class AgenticCardSearchService:
             debug = await self._persist_failed_trace(trace, exc, trace_enabled)
             if isinstance(exc, CardSearchQueryError):
                 raise
-            raise AgenticCardSearchUnavailable(debug) from exc
+            raise AgenticCardSearchUnavailable(
+                debug,
+                contract_error=isinstance(exc, AgentSearchContractError),
+            ) from exc
 
         trace_record = trace.finish()
         log_written = False
@@ -397,6 +587,7 @@ class AgenticCardSearchService:
         candidate_id_start: int,
         round_number: int,
         previous_tool_requests: tuple[dict[str, Any], ...],
+        commander_context: _AgentCommanderContext | None,
         trace: AgentSearchTraceBuilder,
     ) -> _CompletedAgentRun:
         tools = _tool_definitions()
@@ -416,6 +607,7 @@ class AgenticCardSearchService:
                     include_full_card_details=(
                         self._settings.continuation.include_full_card_details_in_prompt
                     ),
+                    commander_context=commander_context,
                 ),
             },
         ]
@@ -442,6 +634,14 @@ class AgenticCardSearchService:
         call_id, tool_call, raw_arguments, normalizations = _parse_single_tool_call(
             assistant_message
         )
+        guarded_arguments, guardrail_changes = _apply_agent_filter_guardrails(
+            tool_call.arguments,
+            user_query=request.q,
+            immutable_filters=request.filters,
+        )
+        if guarded_arguments != tool_call.arguments:
+            tool_call = tool_call.model_copy(update={"arguments": guarded_arguments})
+        normalizations.extend(guardrail_changes)
         if tool_call.arguments.semantic_sort is None:
             tool_call = tool_call.model_copy(
                 update={
@@ -464,17 +664,28 @@ class AgenticCardSearchService:
         )
 
         started = perf_counter()
-        executed = await self._local_tool.search(
-            tool_call.arguments,
-            immutable_filters=request.filters,
-            excluded_oracle_ids=excluded_oracle_ids,
-        )
+        if commander_context is not None and commander_context.edhrec_ranking is not None:
+            executed = await self._local_tool.search(
+                tool_call.arguments,
+                immutable_filters=request.filters,
+                excluded_oracle_ids=excluded_oracle_ids,
+                edhrec_ranking=commander_context.edhrec_ranking,
+            )
+        else:
+            executed = await self._local_tool.search(
+                tool_call.arguments,
+                immutable_filters=request.filters,
+                excluded_oracle_ids=excluded_oracle_ids,
+            )
         tool_duration_ms = _elapsed_ms(started)
 
         union = _candidate_union(selectable_preview, executed.candidates)
         preview_oracle_ids = {card.oracle_id for card in selectable_preview}
         semantic_scores = {
             candidate.card.oracle_id: candidate.semantic_score for candidate in executed.candidates
+        }
+        tool_candidates_by_oracle_id = {
+            candidate.card.oracle_id: candidate for candidate in executed.candidates
         }
         numbered_cards = list(
             enumerate(
@@ -488,6 +699,17 @@ class AgenticCardSearchService:
                 card,
                 already_shown=card.oracle_id in preview_oracle_ids,
                 semantic_score=semantic_scores.get(card.oracle_id),
+                edhrec_association=(
+                    (
+                        commander_context.edhrec_ranking.associations.get(card.oracle_id)
+                        if commander_context is not None
+                        and commander_context.edhrec_ranking is not None
+                        else None
+                    )
+                    or _candidate_edhrec_association(
+                        tool_candidates_by_oracle_id.get(card.oracle_id)
+                    )
+                ),
             )
             for candidate_id, card in numbered_cards
         ]
@@ -583,7 +805,14 @@ class AgenticCardSearchService:
     ) -> CardSearchPage:
         assert request.search_session_id is not None
         stored = await self._sessions.get(request.search_session_id)
-        if stored is None or stored.query != request.q or stored.filters != request.filters:
+        if (
+            stored is None
+            or stored.query != request.q
+            or stored.filters != request.filters
+            or stored.commander_oracle_id != request.commander_oracle_id
+            or stored.enhance_with_edhrec != request.enhance_with_edhrec
+            or stored.edhrec_theme != request.edhrec_theme
+        ):
             raise CardSearchQueryError
         if request.page in stored.page_batches:
             return _page_from_stored(stored, page=request.page)
@@ -598,6 +827,7 @@ class AgenticCardSearchService:
         already_shown = list(
             await self._local_tool.cards_by_oracle_ids(request.already_shown_oracle_ids)
         )
+        commander_context = await self._resolve_commander_context(request)
         completed, debug = await self._execute_agent_round(
             request,
             selectable_preview=[],
@@ -617,6 +847,7 @@ class AgenticCardSearchService:
             candidate_id_start=stored.next_candidate_id,
             round_number=stored.round_number + 1,
             previous_tool_requests=stored.tool_request_history,
+            commander_context=commander_context,
         )
         existing_ids = {
             *(card.oracle_id for card in already_shown),
@@ -663,6 +894,11 @@ class AgenticCardSearchService:
             ),
             next_candidate_id=completed.next_candidate_id,
             round_number=stored.round_number + 1,
+            edhrec=(
+                commander_context.enhancement
+                if commander_context is not None
+                else EdhrecSearchEnhancement()
+            ),
             created_at=monotonic(),
         )
         await self._sessions.put(updated)
@@ -714,13 +950,18 @@ def _filter_local_candidates(
     request: LocalCardSearchRequest,
     immutable_filters: CardSearchFilters,
     excluded_oracle_ids: frozenset[UUID] = frozenset(),
+    tag_oracle_ids: frozenset[UUID] | None = None,
 ) -> list[tuple[float, AgentSearchCandidate]]:
     matches: list[tuple[float, AgentSearchCandidate]] = []
     for entry in entries:
         card = entry.card
         if card.oracle_id in excluded_oracle_ids:
             continue
-        if not matches_card_filters(card, immutable_filters):
+        if not matches_card_filters(
+            card,
+            immutable_filters,
+            tag_oracle_ids=tag_oracle_ids,
+        ):
             continue
         evidence: list[str] = []
         decisions: dict[str, bool] = {"immutable_ui_filters": True}
@@ -735,12 +976,6 @@ def _filter_local_candidates(
             evidence.append(f"name contains query; similarity {name_score:.3f}")
         else:
             name_score = 0
-        if request.oracle_text is not None:
-            oracle_text = _card_oracle_text(card)
-            if not _matches_text_conditions(oracle_text, request.oracle_text):
-                continue
-            decisions["oracle_text"] = True
-            evidence.append("Oracle-text conditions matched")
         if request.mana is not None:
             if (
                 request.mana.value_minimum is not None
@@ -786,12 +1021,6 @@ def _filter_local_candidates(
                 continue
             decisions["price_eur"] = True
             evidence.append("EUR price matched")
-        if request.format is not None:
-            expected = request.legality or "legal"
-            if card.legalities.get(request.format.casefold()) != expected:
-                continue
-            decisions["format"] = True
-            evidence.append(f"{request.format} legality matched")
         if request.sets is not None and card.set_code.casefold() not in {
             value.casefold() for value in request.sets
         }:
@@ -821,8 +1050,10 @@ def _rank_local_candidates(
     excluded_oracle_ids: frozenset[UUID],
     limit: int,
     semantic_result: SemanticScoreResult | None,
+    edhrec_ranking: EdhrecCommanderRanking | None,
 ) -> LocalCardSearchResult:
-    ranked: list[tuple[float, float, AgentSearchCandidate]] = []
+    sort_by = request.sort_by or "semantic"
+    ranked: list[tuple[tuple[float, ...], AgentSearchCandidate]] = []
     for name_score, candidate in matches:
         semantic_score = (
             semantic_result.scores[candidate.card.oracle_id]
@@ -839,15 +1070,63 @@ def _rank_local_candidates(
                     ],
                 }
             )
-        ranked.append((semantic_score or 0, name_score, candidate))
+        association = (
+            edhrec_ranking.associations.get(candidate.card.oracle_id)
+            if edhrec_ranking is not None
+            else None
+        )
+        if association is not None:
+            candidate = candidate.model_copy(
+                update={
+                    "edhrec_inclusion": association.inclusion,
+                    "edhrec_synergy": association.synergy,
+                    "edhrec_num_decks": association.num_decks,
+                    "edhrec_potential_decks": association.potential_decks,
+                    "exact_match_evidence": [
+                        *candidate.exact_match_evidence,
+                        (
+                            "EDHREC commander inclusion "
+                            f"{association.inclusion:.3f}"
+                        ),
+                        *(
+                            [f"EDHREC commander synergy {association.synergy:.3f}"]
+                            if association.synergy is not None
+                            else []
+                        ),
+                    ],
+                }
+            )
+        if sort_by == "edhrec_inclusion":
+            primary = (
+                1 if association is not None else 0,
+                association.inclusion if association is not None else 0,
+                semantic_score or 0,
+                name_score,
+            )
+        elif sort_by == "edhrec_synergy":
+            primary = (
+                1 if association is not None and association.synergy is not None else 0,
+                (
+                    association.synergy
+                    if association is not None and association.synergy is not None
+                    else 0
+                ),
+                semantic_score or 0,
+                name_score,
+            )
+        else:
+            primary = (
+                semantic_score or 0,
+                name_score,
+            )
+        ranked.append((primary, candidate))
     ranked.sort(
         key=lambda item: (
-            -item[0],
-            -item[1],
-            item[2].card.name.casefold(),
+            *(-value for value in item[0]),
+            item[1].card.name.casefold(),
         )
     )
-    candidates = [candidate for _, _, candidate in ranked[:limit]]
+    candidates = [candidate for _, candidate in ranked[:limit]]
     return LocalCardSearchResult(
         request=request,
         total_candidates=len(ranked),
@@ -870,6 +1149,21 @@ def _rank_local_candidates(
                     "minimum_score": None,
                 }
             ),
+            "primary_sort": sort_by,
+            "edhrec": {
+                "mode": (
+                    "commander_theme"
+                    if edhrec_ranking is not None
+                    else "not_available"
+                ),
+                "known_card_count": (
+                    len(edhrec_ranking.associations)
+                    if edhrec_ranking is not None
+                    else 0
+                ),
+                "minimum_inclusion": None,
+                "minimum_synergy": None,
+            },
             "immutable_filters": immutable_filters.model_dump(mode="json"),
             "excluded_oracle_card_count": len(excluded_oracle_ids),
             "result_limit": limit,
@@ -991,11 +1285,17 @@ def _tool_definitions() -> list[dict[str, Any]]:
                     "removed. semantic_sort is different: it never removes cards; "
                     "it cosine-sorts every surviving card by the meaning of the "
                     "natural-language intent, with no minimum score. All fields "
-                    "are optional. Avoid over-filtering vague requests. Use exact "
-                    "Oracle text only for wording likely to appear on cards, use "
-                    "numeric power/toughness for size, preserve symbols such as "
-                    "{T} and {X}, and duplicate a required symbol when occurrence "
-                    "count matters. name, types, and colors are nested objects."
+                    "are optional. Avoid over-filtering vague requests. Rules-text "
+                    "meaning belongs in semantic_sort. Use types or colors only "
+                    "when the user's search text explicitly asks to restrict the "
+                    "result cards themselves; never copy interface or commander "
+                    "filters. Use numeric power/toughness for size, preserve symbols "
+                    "such as {T} and {X}, and duplicate a required symbol when "
+                    "occurrence count matters. name, types, and colors are nested "
+                    "objects. sort_by may make semantic closeness, EDHREC inclusion, "
+                    "or EDHREC synergy the primary ordering. Use an EDHREC sort only "
+                    "when the user message says commander evidence is available. "
+                    "EDHREC evidence never removes a candidate."
                 ),
                 "parameters": LocalCardSearchRequest.model_json_schema(),
                 "strict": True,
@@ -1058,32 +1358,70 @@ def _normalize_tool_arguments(
     normalized = dict(arguments)
     changes: list[str] = []
 
+    for key, value in tuple(normalized.items()):
+        if key != "semantic_sort" and isinstance(value, str) and value.strip() in {"...", "…"}:
+            normalized.pop(key)
+            changes.append(f"omitted placeholder {key}")
+
+    for key in ("format", "legality"):
+        if key in normalized:
+            normalized.pop(key)
+            changes.append(f"removed runtime-owned {key} filter")
+
+    for key in _NESTED_TOOL_FIELDS:
+        value = normalized.get(key)
+        if not isinstance(value, str):
+            continue
+        stripped = value.strip()
+        if not (stripped.startswith("{") and stripped.endswith("}")):
+            continue
+        try:
+            decoded = json.loads(stripped)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(decoded, dict):
+            normalized[key] = decoded
+            changes.append(f"decoded JSON object string for {key}")
+
     name = normalized.get("name")
     if isinstance(name, str):
         normalized["name"] = {"query": name}
         changes.append("name string -> name.query")
 
-    for key in ("mana", "types"):
-        value = normalized.get(key)
-        if isinstance(value, str):
-            normalized[key] = {"must_contain_all": [value]}
-            changes.append(f"{key} string -> {key}.must_contain_all")
-        elif isinstance(value, list) and value and all(isinstance(item, str) for item in value):
-            normalized[key] = {"must_contain_all": value}
-            changes.append(f"{key} list -> {key}.must_contain_all")
+    mana = normalized.get("mana")
+    if isinstance(mana, str):
+        normalized["mana"] = {"must_contain_all": [mana]}
+        changes.append("mana string -> mana.must_contain_all")
+    elif isinstance(mana, list) and mana and all(isinstance(item, str) for item in mana):
+        normalized["mana"] = {"must_contain_all": mana}
+        changes.append("mana list -> mana.must_contain_all")
 
-    oracle_text = normalized.get("oracle_text")
-    if isinstance(oracle_text, str):
-        normalized["oracle_text"] = {"must_contain_any": [oracle_text]}
-        changes.append("oracle_text string -> oracle_text.must_contain_any")
+    types = normalized.get("types")
+    normalized_types, type_changes = _normalize_type_search(types)
+    if normalized_types is not types:
+        normalized["types"] = normalized_types
+    changes.extend(type_changes)
 
     colors = normalized.get("colors")
     if isinstance(colors, str):
-        normalized["colors"] = {"identity": [_normalize_magic_color(colors)]}
+        normalized["colors"] = _normalize_color_search([colors])
         changes.append("colors string -> colors.identity")
     elif isinstance(colors, list) and all(isinstance(item, str) for item in colors):
-        normalized["colors"] = {"identity": [_normalize_magic_color(item) for item in colors]}
+        normalized["colors"] = _normalize_color_search(colors)
         changes.append("colors list -> colors.identity")
+    elif isinstance(colors, dict):
+        identity = colors.get("identity")
+        if isinstance(identity, str):
+            normalized["colors"] = {
+                **colors,
+                **_normalize_color_search([identity]),
+            }
+            changes.append("colors.identity string -> colors.identity list")
+        elif isinstance(identity, list) and all(isinstance(item, str) for item in identity):
+            normalized["colors"] = {
+                **colors,
+                **_normalize_color_search(identity),
+            }
 
     for key in ("power", "toughness"):
         value = normalized.get(key)
@@ -1107,6 +1445,254 @@ def _normalize_tool_arguments(
     return normalized, changes
 
 
+def _apply_agent_filter_guardrails(
+    request: LocalCardSearchRequest,
+    *,
+    user_query: str,
+    immutable_filters: CardSearchFilters,
+) -> tuple[LocalCardSearchRequest, list[str]]:
+    """Remove inferred or duplicated hard filters before local execution."""
+
+    updates: dict[str, Any] = {}
+    changes: list[str] = []
+
+    if request.colors is not None and not _query_requests_color_filter(user_query):
+        updates["colors"] = None
+        changes.append(
+            "removed colors because the user's request did not ask to restrict result colors"
+        )
+
+    if request.types is not None:
+        immutable_types = {
+            *(value.casefold() for value in immutable_filters.card_types),
+            *(value.casefold() for value in immutable_filters.subtypes),
+        }
+        kept_required = [
+            value
+            for value in request.types.must_contain_all
+            if value.casefold() not in immutable_types
+            and _query_requests_type_filter(user_query, value)
+        ]
+        kept_alternatives = [
+            value
+            for value in request.types.must_contain_any
+            if value.casefold() not in immutable_types
+            and _query_requests_type_filter(user_query, value)
+        ]
+        kept_exclusions = [
+            value
+            for value in request.types.must_not_contain
+            if value.casefold() not in immutable_types
+            and _query_requests_type_filter(user_query, value, excluded=True)
+        ]
+        kept_values = kept_required + kept_alternatives + kept_exclusions
+        original_values = (
+            request.types.must_contain_all
+            + request.types.must_contain_any
+            + request.types.must_not_contain
+        )
+        if kept_values != original_values:
+            updates["types"] = (
+                request.types.model_copy(
+                    update={
+                        "must_contain_all": kept_required,
+                        "must_contain_any": kept_alternatives,
+                        "must_not_contain": kept_exclusions,
+                    }
+                )
+                if kept_values
+                else None
+            )
+            removed = [
+                value
+                for value in original_values
+                if value not in kept_values
+            ]
+            changes.append(
+                "removed redundant or unrequested type filters: " + ", ".join(removed)
+            )
+
+    if not updates:
+        return request, changes
+    return request.model_copy(update=updates), changes
+
+
+def _query_requests_color_filter(query: str) -> bool:
+    normalized = normalize_card_title(query)
+    words = set(normalized.split())
+    if words.intersection({"white", "blue", "black", "red", "green", "colorless"}):
+        return True
+    return bool(re.search(r"(?<![A-Za-z])[WUBRG]{1,5}(?![A-Za-z])", query)) or bool(
+        re.search(r"\b[wubrg]{2,5}\b", query.casefold())
+    )
+
+
+def _query_requests_type_filter(
+    query: str,
+    type_name: str,
+    *,
+    excluded: bool = False,
+) -> bool:
+    normalized_query = normalize_card_title(query)
+    variants = _type_phrase_variants(normalize_card_title(type_name))
+    query_words = normalized_query.split()
+    negative_predecessors = {
+        "another",
+        "cast",
+        "casts",
+        "control",
+        "controls",
+        "each",
+        "my",
+        "other",
+        "sacrifice",
+        "target",
+        "their",
+        "untap",
+        "your",
+    }
+    contextual_successors = {
+        "attack",
+        "attacks",
+        "die",
+        "dies",
+        "enter",
+        "enters",
+        "leave",
+        "leaves",
+        "matters",
+        "support",
+        "synergy",
+        "tribal",
+        "you",
+    }
+
+    for variant in variants:
+        variant_words = variant.split()
+        width = len(variant_words)
+        for index in range(len(query_words) - width + 1):
+            if query_words[index : index + width] != variant_words:
+                continue
+            previous = query_words[index - 1] if index else None
+            following = query_words[index + width] if index + width < len(query_words) else None
+            if excluded:
+                negative_context = {
+                    "exclude",
+                    "excluding",
+                    "no",
+                    "non",
+                    "not",
+                    "without",
+                }
+                if previous in negative_context:
+                    return True
+                continue
+            if previous in negative_predecessors or following in contextual_successors:
+                continue
+            if previous in {"when", "whenever"}:
+                continue
+            return True
+    return False
+
+
+def _type_phrase_variants(type_name: str) -> set[str]:
+    if not type_name:
+        return set()
+    words = type_name.split()
+    final = words[-1]
+    irregular = {
+        "elf": "elves",
+        "sorcery": "sorceries",
+    }
+    if final in irregular:
+        plural = irregular[final]
+    elif final.endswith("y") and len(final) > 1 and final[-2] not in "aeiou":
+        plural = final[:-1] + "ies"
+    elif final.endswith(("s", "x", "z", "ch", "sh")):
+        plural = final + "es"
+    else:
+        plural = final + "s"
+    return {type_name, " ".join([*words[:-1], plural])}
+
+
+def _normalize_type_search(value: object) -> tuple[object, list[str]]:
+    """Repair common type-filter shorthands without preserving impossible literals."""
+
+    if isinstance(value, str):
+        stripped = value.strip()
+        abstract_alternatives = _ABSTRACT_TYPE_ALTERNATIVES.get(stripped.casefold())
+        if abstract_alternatives is not None:
+            return (
+                {"must_contain_any": list(abstract_alternatives)},
+                [f"abstract type {stripped} -> types.must_contain_any"],
+            )
+        alternatives = _comma_separated_major_types(stripped)
+        if alternatives is not None:
+            return (
+                {"must_contain_any": alternatives},
+                ["comma-separated types string -> types.must_contain_any"],
+            )
+        return {"must_contain_all": [stripped]}, ["types string -> types.must_contain_all"]
+
+    if isinstance(value, list) and value and all(isinstance(item, str) for item in value):
+        return {"must_contain_all": value}, ["types list -> types.must_contain_all"]
+
+    if not isinstance(value, dict):
+        return value, []
+
+    required = value.get("must_contain_all")
+    if not isinstance(required, list) or not all(isinstance(item, str) for item in required):
+        return value, []
+
+    rewritten_required: list[str] = []
+    added_alternatives: list[str] = []
+    changed = False
+    for item in required:
+        stripped = item.strip()
+        abstract_alternatives = _ABSTRACT_TYPE_ALTERNATIVES.get(stripped.casefold())
+        if abstract_alternatives is not None:
+            added_alternatives.extend(abstract_alternatives)
+            changed = True
+            continue
+        comma_separated = _comma_separated_major_types(stripped)
+        if comma_separated is not None:
+            if len(comma_separated) >= 3:
+                added_alternatives.extend(comma_separated)
+            else:
+                rewritten_required.extend(comma_separated)
+            changed = True
+            continue
+        rewritten_required.append(stripped)
+
+    if not changed:
+        return value, []
+
+    rewritten = dict(value)
+    rewritten["must_contain_all"] = rewritten_required
+    if added_alternatives:
+        existing_alternatives = rewritten.get("must_contain_any")
+        combined = (
+            list(existing_alternatives)
+            if isinstance(existing_alternatives, list)
+            and all(isinstance(item, str) for item in existing_alternatives)
+            else []
+        )
+        for alternative in added_alternatives:
+            if alternative not in combined:
+                combined.append(alternative)
+        rewritten["must_contain_any"] = combined
+    return rewritten, ["repaired non-literal or comma-joined type conditions"]
+
+
+def _comma_separated_major_types(value: str) -> list[str] | None:
+    parts = [part.strip() for part in value.split(",")]
+    if len(parts) < 2 or any(not part for part in parts):
+        return None
+    if not all(part.casefold() in _MAJOR_CARD_TYPES for part in parts):
+        return None
+    return parts
+
+
 def _normalize_magic_color(value: str) -> str:
     aliases = {
         "white": "W",
@@ -1116,6 +1702,33 @@ def _normalize_magic_color(value: str) -> str:
         "green": "G",
     }
     return aliases.get(value.strip().casefold(), value.strip().upper())
+
+
+def _normalize_color_search(values: list[str]) -> dict[str, Any]:
+    identity: list[str] = []
+    include_colorless = False
+    for value in values:
+        stripped = value.strip()
+        if stripped.casefold() in {"c", "colorless"}:
+            include_colorless = True
+            continue
+        compact = "".join(
+            character
+            for character in stripped.upper()
+            if character not in {" ", ",", "/", "-", "+"}
+        )
+        normalized_values = (
+            list(compact)
+            if compact and all(character in "WUBRG" for character in compact)
+            else [_normalize_magic_color(stripped)]
+        )
+        for color in normalized_values:
+            if color not in identity:
+                identity.append(color)
+    result: dict[str, Any] = {"identity": identity}
+    if include_colorless:
+        result["include_colorless"] = True
+    return result
 
 
 def _assistant_tool_call_message(message: dict[str, Any]) -> dict[str, Any]:
@@ -1162,6 +1775,7 @@ def _numbered_candidate_payload(
     *,
     already_shown: bool,
     semantic_score: float | None = None,
+    edhrec_association: EdhrecAssociation | None = None,
 ) -> dict[str, Any]:
     """Build the compact, URL-free card shape used in agent messages and traces."""
 
@@ -1169,6 +1783,26 @@ def _numbered_candidate_payload(
         "id": candidate_id,
         "already_shown": already_shown,
         "semantic_score": semantic_score,
+        "edhrec_inclusion": (
+            edhrec_association.inclusion
+            if edhrec_association is not None
+            else None
+        ),
+        "edhrec_synergy": (
+            edhrec_association.synergy
+            if edhrec_association is not None
+            else None
+        ),
+        "edhrec_num_decks": (
+            edhrec_association.num_decks
+            if edhrec_association is not None
+            else None
+        ),
+        "edhrec_potential_decks": (
+            edhrec_association.potential_decks
+            if edhrec_association is not None
+            else None
+        ),
         "card": {
             "name": card.name,
             "mana_cost": _card_mana_cost(card) or None,
@@ -1182,6 +1816,113 @@ def _numbered_candidate_payload(
     }
 
 
+def _candidate_edhrec_association(
+    candidate: AgentSearchCandidate | None,
+) -> EdhrecAssociation | None:
+    if (
+        candidate is None
+        or candidate.edhrec_inclusion is None
+        or candidate.edhrec_num_decks is None
+        or candidate.edhrec_potential_decks is None
+    ):
+        return None
+    return EdhrecAssociation(
+        oracle_id=candidate.card.oracle_id,
+        num_decks=candidate.edhrec_num_decks,
+        potential_decks=candidate.edhrec_potential_decks,
+        synergy=candidate.edhrec_synergy,
+    )
+
+
+def _commander_trace_payload(
+    context: _AgentCommanderContext | None,
+) -> dict[str, Any] | None:
+    if context is None:
+        return None
+    return {
+        "oracle_id": str(context.card.oracle_id),
+        "name": context.card.name,
+        "type_line": context.card.type_line,
+        "color_identity": context.card.color_identity,
+        "edhrec": context.enhancement.model_dump(mode="json"),
+        "selected_theme": {
+            "slug": context.selected_theme_slug,
+            "name": context.selected_theme_name,
+        },
+        "available_themes": [
+            {
+                "slug": theme.slug,
+                "name": theme.name,
+                "deck_count": theme.deck_count,
+            }
+            for theme in (
+                context.edhrec_context.themes
+                if context.edhrec_context is not None
+                else ()
+            )
+        ],
+    }
+
+
+def _render_commander_context(
+    context: _AgentCommanderContext | None,
+) -> list[str]:
+    if context is None:
+        return ["Selected commander: None"]
+    card = context.card
+    identity = "".join(card.color_identity) or "colorless"
+    lines = [
+        "Selected commander:",
+        f"- {card.name}",
+        f"- Mana: {_card_mana_cost(card) or 'no mana cost'}",
+        f"- Type: {_card_type_line(card)}",
+        f"- Color identity: {identity}",
+        f"- Oracle text: {_card_oracle_text(card) or 'No Oracle text'}",
+    ]
+    if context.enhancement.status == "unavailable":
+        lines.extend(
+            [
+                "- EDHREC commander evidence: unavailable; use semantic ranking.",
+                (
+                    "- Do not request an EDHREC primary sort because this run has "
+                    "no EDHREC values."
+                ),
+            ]
+        )
+        return lines
+    if context.edhrec_context is None or context.edhrec_ranking is None:
+        lines.append("- EDHREC commander evidence: disabled in the interface.")
+        return lines
+
+    if context.selected_theme_name is not None:
+        lines.append(
+            "- Selected EDHREC deck theme: "
+            f"{context.selected_theme_name} ({context.selected_theme_slug})"
+        )
+    else:
+        lines.append("- Selected EDHREC deck theme: All commander decks")
+    themes = ", ".join(
+        theme.name for theme in context.edhrec_context.themes[:10]
+    )
+    lines.extend(
+        [
+            f"- Top EDHREC deck themes: {themes or 'None advertised'}",
+            (
+                "- EDHREC commander evidence is available to the local tool. "
+                "Every returned candidate will include inclusion and synergy when "
+                "EDHREC lists it for this commander/theme."
+            ),
+            (
+                "- You may set sort_by to edhrec_inclusion for broadly established "
+                "cards or edhrec_synergy for cards unusually specific to this "
+                "commander/theme. Keep semantic for intent-first requests. These "
+                "scores rank; they are never hard relevance filters."
+            ),
+        ]
+    )
+    return lines
+
+
 def _render_agent_user_message(
     request: AgenticCardSearchRequest,
     *,
@@ -1190,6 +1931,7 @@ def _render_agent_user_message(
     round_number: int,
     previous_tool_requests: tuple[dict[str, Any], ...],
     include_full_card_details: bool,
+    commander_context: _AgentCommanderContext | None,
 ) -> str:
     """Render the user's search as short natural text without provider fields."""
 
@@ -1206,6 +1948,9 @@ def _render_agent_user_message(
         *_render_filter_lines(request.filters),
         "",
     ]
+    lines.extend(_render_commander_context(commander_context))
+    if commander_context is not None:
+        lines.append("")
     if is_continuation:
         if previous_tool_requests:
             lines.extend(
@@ -1316,7 +2061,35 @@ def _render_preview_candidate(
 
 
 def _render_filter_lines(filters: CardSearchFilters) -> list[str]:
-    lines: list[str] = []
+    lines: list[str] = [
+        (
+            "- Commander legality: non-legal cards may be included"
+            if filters.include_non_commander_legal
+            else "- Commander legality: legal cards only"
+        ),
+    ]
+    if filters.commander_color_identity is not None:
+        identity = "".join(filters.commander_color_identity) or "colorless"
+        lines.append(
+            f"- Deck commander identity: {identity}; cards outside it may be included"
+            if filters.include_outside_commander_color_identity
+            else f"- Deck commander identity: {identity}; cards must stay within it"
+        )
+    if filters.tags:
+        lines.append(
+            "- Required card tags (immutable; the tool cannot remove or change these): "
+            + ", ".join(tag.name for tag in filters.tags)
+        )
+    if filters.card_types:
+        lines.append(
+            "- Required card types (immutable; every value must match): "
+            + ", ".join(filters.card_types)
+        )
+    if filters.subtypes:
+        lines.append(
+            "- Required card subtypes (immutable; every value must match): "
+            + ", ".join(filters.subtypes)
+        )
     if filters.colors:
         mode = "exactly" if filters.color_mode == "exact" else "can include"
         lines.append(f"- Color identity {mode}: {', '.join(filters.colors)}")
@@ -1328,7 +2101,7 @@ def _render_filter_lines(filters: CardSearchFilters) -> list[str]:
         )
     if filters.price_eur_min is not None or filters.price_eur_max is not None:
         lines.append("- EUR price: " + _format_range(filters.price_eur_min, filters.price_eur_max))
-    return lines or ["- None"]
+    return lines
 
 
 def _format_range(minimum: object | None, maximum: object | None) -> str:
@@ -1350,7 +2123,11 @@ def _render_tool_result_message(
         f"Tool used: {executed.name}",
         f"Candidate count: {len(candidates)}",
         (f"Semantic sort intent: {executed.arguments.get('semantic_sort', 'not requested')}"),
-        ("Hard filters ran before semantic sorting. No semantic score cutoff was applied."),
+        f"Primary sort: {executed.arguments.get('sort_by', 'semantic')}",
+        (
+            "Hard filters ran before ranking. Semantic and EDHREC values are "
+            "ranking evidence only; no score cutoff was applied."
+        ),
         (
             "Semantic closeness uses a 0-1 scale, where a larger value means the "
             "card is closer to the semantic sort intent."
@@ -1371,11 +2148,29 @@ def _render_tool_result_message(
             if semantic_score is not None
             else "not scored (fuzzy title preview only)"
         )
+        edhrec_inclusion = candidate["edhrec_inclusion"]
+        edhrec_synergy = candidate["edhrec_synergy"]
+        edhrec_decks = candidate["edhrec_num_decks"]
+        edhrec_potential = candidate["edhrec_potential_decks"]
+        if edhrec_inclusion is None:
+            commander_fit = "not listed for the selected commander/theme"
+        else:
+            synergy = (
+                f"{edhrec_synergy:.4f}"
+                if edhrec_synergy is not None
+                else "unavailable"
+            )
+            commander_fit = (
+                f"inclusion {edhrec_inclusion:.4f} "
+                f"({edhrec_decks}/{edhrec_potential} decks); "
+                f"synergy {synergy}"
+            )
         lines.extend(
             [
                 f"ID {candidate['id']}{shown}",
                 f"Name: {card['name']}",
                 f"Semantic closeness: {semantic_closeness}",
+                f"EDHREC commander fit: {commander_fit}",
                 (
                     f"Mana: {card['mana_cost'] or 'no mana cost'} "
                     f"(mana value {card['mana_value']:g})"
@@ -1469,6 +2264,7 @@ def _page_from_stored(
         interpretation=stored.interpretation,
         reranked=True,
         search_session_id=stored.session_id,
+        edhrec=stored.edhrec,
         debug=stored.debug if page == stored.debug_page else None,
         debug_runs=list(stored.debug_runs),
     )
