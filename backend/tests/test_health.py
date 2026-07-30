@@ -101,21 +101,24 @@ def test_settings_load_repository_search_yaml() -> None:
     assert settings.search.agentic.local_tool.default_max_results == 24
     assert "{T}" in settings.search.agentic.system_prompt
     assert '["{X}", "{X}"]' in settings.search.agentic.system_prompt
-    assert "sort_by chooses the primary ordering" in (
+    assert "`sort_by` picks the primary ordering" in (
         settings.search.agentic.system_prompt
     )
-    assert "edhrec_synergy favors cards" in settings.search.agentic.system_prompt
-    assert '"grave yard things that give me value"' in (settings.search.agentic.system_prompt)
-    assert "Do not repeat an earlier tool request unchanged." in (
+    assert "`edhrec_synergy`" in settings.search.agentic.system_prompt
+    assert "never resend an earlier tool request unchanged" in (
         settings.search.agentic.system_prompt
     )
+    # The prompt uses the markdown skeleton Andreas specified.
+    for heading in ("# Task", "# Inputs", "# Output", "# Tools", "# Guidelines"):
+        assert heading in settings.search.agentic.system_prompt
+    # Every worked example must be a valid tool payload with a semantic_sort.
     prompt_lines = settings.search.agentic.system_prompt.splitlines()
     example_payloads = [
-        json.loads(prompt_lines[index + 1])
-        for index, line in enumerate(prompt_lines)
-        if line == "Tool:"
+        json.loads(line.strip().strip("`"))
+        for line in prompt_lines
+        if line.strip().startswith("`{") and line.strip().endswith("}`")
     ]
-    assert len(example_payloads) == 11
+    assert len(example_payloads) == 8
     assert all("semantic_sort" in payload for payload in example_payloads)
 
 

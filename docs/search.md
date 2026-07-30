@@ -373,6 +373,38 @@ identifying user agent are independently validated. Environment overrides use
 the normal nested settings form, for example
 `MTG_EDHREC__DATABASE_PATH=local-data/card-edhrec.sqlite3`.
 
+## Prompt Structure
+
+Every rule the agent follows lives in one place: the `system_prompt` in
+`config.yaml`. It is static Markdown with no runtime injection, using this
+skeleton (ADR 0020):
+
+```text
+# Task        what the agent is and what a run must produce
+# Inputs      every section the user message can contain
+# Output      the interpretation and ranked_ids contract
+# Tools       search_local_cards, filter-versus-sort, how to read the result
+# Guidelines  the rules, plus hand-written worked examples
+```
+
+Everything else the model receives is data, not instruction:
+
+| Surface | Contains |
+| --- | --- |
+| User message | `## Request`, `## Interface filters`, `## Commander`, `## Fuzzy matches already shown`, `## Already showing`, `## Previous tool searches`, `## Round` |
+| Tool result message | `## Search`, `## Candidates (n)` |
+| Tool description | one line naming what the tool does |
+| Schema field descriptions | shape and units only |
+
+A section is omitted entirely when it carries no data. No sentence in the user
+or tool message may tell the model what to do, because a rule stated in two
+places can disagree with itself — that is how the tool description came to
+contradict the prompt about type filters.
+
+Prompt content is tested rather than trusted. `test_health` asserts the skeleton
+headings and parses every worked example in `# Guidelines` as a
+`LocalCardSearchRequest`, so an example cannot drift out of schema.
+
 The initial user prompt gives every already-visible fuzzy card a selectable ID
 and includes its mana, type, power/toughness, EUR estimate, and Oracle text.
 Those preview IDs are reserved at the front of the candidate union. The local

@@ -35,6 +35,7 @@ tradeoffs; they are not task lists.
 | [0017](0017-remove-exact-oracle-text-filter.md) | Accepted | Remove brittle exact Oracle-text filtering from the agent tool |
 | [0018](0018-runtime-owned-and-query-explicit-filters.md) | Partly superseded | Runtime-owned legality and query-explicit type/color filters |
 | [0019](0019-prompt-taught-agent-filters.md) | Accepted | Agent owns its type/color filters; intent taught in the prompt |
+| [0020](0020-system-prompt-owns-all-agent-logic.md) | Accepted | System prompt owns all logic; user and tool messages are data only |
 
 ## Updating Decisions
 

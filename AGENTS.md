@@ -135,6 +135,13 @@ Do not mutate deck state directly inside presentation components. Extend
   alternatives, and no type condition for a broad role that does not name a
   type. Interface-selected card types and subtypes are immutable AND filters.
   Keep defensive provider-boundary normalization covered by tests.
+- All agent logic lives in the `system_prompt` in `config.yaml`, written in
+  Markdown with the `# Task` / `# Inputs` / `# Output` / `# Tools` /
+  `# Guidelines` skeleton. The user message and the tool-result message carry
+  labelled data sections only and must contain no instruction; the
+  `search_local_cards` description stays one line; schema field descriptions
+  state shape and units only. Never state a rule in two of these places — that
+  is how the tool description came to contradict the prompt (ADR 0020).
 - The agent owns its own `types` and `colors`. Do not add runtime logic that
   deletes, relaxes, or rewrites a validated agent filter based on the wording of
   the user's query; that guard existed and was removed by ADR 0019 because a

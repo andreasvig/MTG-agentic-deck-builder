@@ -1270,23 +1270,10 @@ def _tool_definitions() -> list[dict[str, Any]]:
             "type": "function",
             "function": {
                 "name": "search_local_cards",
+                # One line only. All search logic lives in the system prompt, so
+                # that this description can never contradict it.
                 "description": (
-                    "Filter and semantically sort the complete local MTG catalog. "
-                    "Structured fields are hard filters: a card that fails one is "
-                    "removed. semantic_sort is different: it never removes cards; "
-                    "it cosine-sorts every surviving card by the meaning of the "
-                    "natural-language intent, with no minimum score. All fields "
-                    "are optional. Avoid over-filtering vague requests. Rules-text "
-                    "meaning belongs in semantic_sort. Use types or colors only "
-                    "when the user's search text explicitly asks to restrict the "
-                    "result cards themselves; never copy interface or commander "
-                    "filters. Use numeric power/toughness for size, preserve symbols "
-                    "such as {T} and {X}, and duplicate a required symbol when "
-                    "occurrence count matters. name, types, and colors are nested "
-                    "objects. sort_by may make semantic closeness, EDHREC inclusion, "
-                    "or EDHREC synergy the primary ordering. Use an EDHREC sort only "
-                    "when the user message says commander evidence is available. "
-                    "EDHREC evidence never removes a candidate."
+                    "Filter and sort the complete local Magic card catalog."
                 ),
                 "parameters": LocalCardSearchRequest.model_json_schema(),
                 "strict": True,
@@ -1688,59 +1675,36 @@ def _commander_trace_payload(
 def _render_commander_context(
     context: _AgentCommanderContext | None,
 ) -> list[str]:
+    """Render commander facts only. The system prompt owns how to use them."""
+
     if context is None:
-        return ["Selected commander: None"]
+        return []
     card = context.card
     identity = "".join(card.color_identity) or "colorless"
     lines = [
-        "Selected commander:",
-        f"- {card.name}",
-        f"- Mana: {_card_mana_cost(card) or 'no mana cost'}",
-        f"- Type: {_card_type_line(card)}",
-        f"- Color identity: {identity}",
-        f"- Oracle text: {_card_oracle_text(card) or 'No Oracle text'}",
+        f"Name: {card.name}",
+        f"Mana: {_card_mana_cost(card) or 'no mana cost'}",
+        f"Type: {_card_type_line(card)}",
+        f"Color identity: {identity}",
+        f"Oracle text: {_card_oracle_text(card) or 'No Oracle text'}",
     ]
     if context.enhancement.status == "unavailable":
-        lines.extend(
-            [
-                "- EDHREC commander evidence: unavailable; use semantic ranking.",
-                (
-                    "- Do not request an EDHREC primary sort because this run has "
-                    "no EDHREC values."
-                ),
-            ]
-        )
+        lines.append("EDHREC evidence: unavailable")
         return lines
     if context.edhrec_context is None or context.edhrec_ranking is None:
-        lines.append("- EDHREC commander evidence: disabled in the interface.")
+        lines.append("EDHREC evidence: disabled")
         return lines
 
+    lines.append("EDHREC evidence: available")
     if context.selected_theme_name is not None:
         lines.append(
-            "- Selected EDHREC deck theme: "
+            "Selected theme: "
             f"{context.selected_theme_name} ({context.selected_theme_slug})"
         )
     else:
-        lines.append("- Selected EDHREC deck theme: All commander decks")
-    themes = ", ".join(
-        theme.name for theme in context.edhrec_context.themes[:10]
-    )
-    lines.extend(
-        [
-            f"- Top EDHREC deck themes: {themes or 'None advertised'}",
-            (
-                "- EDHREC commander evidence is available to the local tool. "
-                "Every returned candidate will include inclusion and synergy when "
-                "EDHREC lists it for this commander/theme."
-            ),
-            (
-                "- You may set sort_by to edhrec_inclusion for broadly established "
-                "cards or edhrec_synergy for cards unusually specific to this "
-                "commander/theme. Keep semantic for intent-first requests. These "
-                "scores rank; they are never hard relevance filters."
-            ),
-        ]
-    )
+        lines.append("Selected theme: All commander decks")
+    themes = ", ".join(theme.name for theme in context.edhrec_context.themes[:10])
+    lines.append(f"Advertised themes: {themes or 'None'}")
     return lines
 
 
@@ -1754,66 +1718,29 @@ def _render_agent_user_message(
     include_full_card_details: bool,
     commander_context: _AgentCommanderContext | None,
 ) -> str:
-    """Render the user's search as short natural text without provider fields."""
+    """Render the user message as labelled data sections only.
+
+    Carries no instructions: every rule the model needs lives in the system
+    prompt, so this message cannot contradict it.
+    """
 
     is_continuation = request.page != 1 or round_number > 1
-    lines = [
-        (
-            "Please find additional Magic: The Gathering cards for this request:"
-            if is_continuation
-            else "Please find Magic: The Gathering cards for this request:"
-        ),
-        f'"{request.q}"',
-        "",
-        "Filters already chosen in the interface:",
-        *_render_filter_lines(request.filters),
-        "",
-    ]
-    lines.extend(_render_commander_context(commander_context))
-    if commander_context is not None:
-        lines.append("")
+    lines = ["## Request", request.q, "", "## Interface filters"]
+    lines.extend(_render_filter_lines(request.filters))
+
+    commander_lines = _render_commander_context(commander_context)
+    if commander_lines:
+        lines.extend(["", "## Commander", *commander_lines])
+
     if is_continuation:
         if previous_tool_requests:
-            lines.extend(
-                [
-                    "Previous local-tool searches already completed:",
-                    *[
-                        line
-                        for search_round, arguments in enumerate(
-                            previous_tool_requests,
-                            start=1,
-                        )
-                        for line in (
-                            f"Search round {search_round}:",
-                            json.dumps(
-                                arguments,
-                                ensure_ascii=False,
-                                indent=2,
-                                sort_keys=True,
-                            ),
-                        )
-                    ],
-                    "",
-                    (
-                        "Those searches were conclusive first passes: their strongest "
-                        "candidates have already been shown or examined. The user clicked "
-                        "Load more because they now want additional options."
-                    ),
-                    (
-                        "Actively change or broaden the next tool request. Do not submit "
-                        "any earlier tool request unchanged. Preserve the user's actual "
-                        "request and all interface filters, but relax agent-chosen hard "
-                        "filters, widen ranges or alternatives, remove unnecessary literal "
-                        "conditions, or expand semantic_sort toward adjacent useful roles."
-                    ),
-                    (
-                        "Later recommendations may be less ideal than the first results, "
-                        "but they must still fit the spirit of the request."
-                    ),
-                    "",
-                ]
-            )
-        lines.append("Already showing — these cards must not be returned or ranked again:")
+            lines.extend(["", "## Previous tool searches"])
+            for search_round, arguments in enumerate(previous_tool_requests, start=1):
+                lines.append(f"Round {search_round}:")
+                lines.append(
+                    json.dumps(arguments, ensure_ascii=False, indent=2, sort_keys=True)
+                )
+        lines.extend(["", "## Already showing"])
         if already_shown:
             for candidate_id, card in enumerate(already_shown, start=1):
                 if include_full_card_details:
@@ -1821,48 +1748,16 @@ def _render_agent_user_message(
                 else:
                     lines.append(f"{candidate_id}. {card.name} — {_card_type_line(card)}")
         else:
-            lines.append("- None")
-        lines.extend(
-            [
-                (
-                    "The local tool will also exclude cards examined during earlier "
-                    "rounds. Find genuinely new candidates."
-                ),
-                (
-                    f"This is continuation round {round_number}. Broaden or "
-                    "reinterpret the request when the earlier approach may be exhausted."
-                ),
-            ]
-        )
+            lines.append("None")
+        lines.extend(["", "## Round", str(round_number)])
     elif selectable_preview:
-        lines.append("The fuzzy title search has already shown these selectable cards to the user:")
+        lines.extend(["", "## Fuzzy matches already shown"])
         for candidate_id, card in enumerate(selectable_preview, start=1):
             lines.extend(_render_preview_candidate(candidate_id, card))
-        lines.extend(
-            [
-                (
-                    "These IDs are already valid final choices, even if the tool "
-                    "does not return the cards again."
-                ),
-                (
-                    "New tool results receive later, non-overlapping IDs. If the "
-                    "tool returns the exact same Oracle card, it keeps the existing "
-                    "ID instead of becoming a duplicate."
-                ),
-            ]
-        )
     else:
-        lines.append("No fuzzy title matches have been shown to the user yet.")
-    lines.extend(
-        [
-            "",
-            (
-                "Call exactly one search tool now. Wait for its result before "
-                "producing the final ranking."
-            ),
-        ]
-    )
-    return "\n".join(lines)
+        lines.extend(["", "## Fuzzy matches already shown", "None"])
+
+    return "\n".join(lines).rstrip() + "\n"
 
 
 def _render_preview_candidate(
@@ -1937,27 +1832,18 @@ def _render_tool_result_message(
     executed: ExecutedSearchTool,
     candidates: list[dict[str, Any]],
 ) -> str:
-    """Return the exact concise plain-text tool message sent to the final model."""
+    """Return the tool message as labelled data sections only.
+
+    Carries no instructions: the system prompt explains how to read these
+    fields, so this message cannot contradict it.
+    """
 
     lines = [
-        "The search tool has finished.",
-        f"Tool used: {executed.name}",
-        f"Candidate count: {len(candidates)}",
-        (f"Semantic sort intent: {executed.arguments.get('semantic_sort', 'not requested')}"),
+        "## Search",
+        f"Semantic sort intent: {executed.arguments.get('semantic_sort', 'not requested')}",
         f"Primary sort: {executed.arguments.get('sort_by', 'semantic')}",
-        (
-            "Hard filters ran before ranking. Semantic and EDHREC values are "
-            "ranking evidence only; no score cutoff was applied."
-        ),
-        (
-            "Semantic closeness uses a 0-1 scale, where a larger value means the "
-            "card is closer to the semantic sort intent."
-        ),
-        (
-            "Candidate IDs are temporary numbers for this search only. Cards marked "
-            "ALREADY SHOWN were visible to the user before this tool finished."
-        ),
         "",
+        f"## Candidates ({len(candidates)})",
     ]
     for candidate in candidates:
         card = candidate["card"]
@@ -2007,16 +1893,7 @@ def _render_tool_result_message(
                 "",
             ]
         )
-    lines.extend(
-        [
-            (
-                "Return the relevant candidate IDs in best-first order. You may "
-                "omit any candidate that does not meaningfully match the request."
-            ),
-            "Never invent an ID.",
-        ]
-    )
-    return "\n".join(lines)
+    return "\n".join(lines).rstrip() + "\n"
 
 
 def _card_title_scores(

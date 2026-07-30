@@ -243,9 +243,15 @@ Implemented:
   seven-step traces.
 - Focused seven-step inline agent trace with system prompt, user input,
   provider-returned thinking, tool call/response, final thinking, and output.
-- Natural URL-free user prompts with selectable, non-overlapping fuzzy IDs plus
-  price, Oracle text, and power/toughness, and an exact
-  readable tool-role message stored beside the untouched raw tool result.
+- Markdown system prompt using the `# Task` / `# Inputs` / `# Output` /
+  `# Tools` / `# Guidelines` skeleton, holding every rule and worked example
+  with no runtime injection.
+- Data-only user and tool messages built from labelled sections, a one-line
+  tool description, and shape-only schema field descriptions, so no surface can
+  contradict the system prompt (ADR 0020).
+- URL-free candidate details with selectable non-overlapping fuzzy IDs, price,
+  Oracle text, and power/toughness, and an exact readable tool-role message
+  stored beside the untouched raw tool result.
 
 Missing:
 

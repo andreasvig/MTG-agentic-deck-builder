@@ -416,14 +416,19 @@ def test_provider_shorthand_is_normalized_before_strict_validation() -> None:
 def test_agent_prompt_teaches_functional_versus_printed_type_vocabulary() -> None:
     prompt = Settings().search.agentic.system_prompt
 
-    assert "HOW COMMANDER PLAYERS DESCRIBE CARDS" in prompt
-    assert "YOU OWN YOUR FILTERS" in prompt
+    assert "# Task" in prompt
+    assert "# Inputs" in prompt
+    assert "# Output" in prompt
+    assert "# Tools" in prompt
+    assert "# Guidelines" in prompt
+    assert "## How Commander players describe cards" in prompt
+    assert "## You own your filters" in prompt
     # Functional categories the model must leave semantic.
     for category in ("removal", "ramp", "board wipe", "tutors"):
         assert category in prompt
     # Definitional terms that do justify a printed-type filter.
     assert "mana rock" in prompt
-    assert "elves -> Elf" in prompt
+    assert "elves are Elf" in prompt
     # The superseded lexical rule must not reappear.
     assert "only when the user's typed request names the color" not in prompt
 
@@ -957,7 +962,9 @@ def test_unconfigured_agent_still_returns_system_and_user_trace_steps(
     assert (
         "Magic: The Gathering card-search agent" in (debug.trace["stages"][0]["details"]["content"])
     )
-    assert '"green big creature"' in (debug.trace["stages"][1]["details"]["content"])
+    assert "## Request\ngreen big creature" in (
+        debug.trace["stages"][1]["details"]["content"]
+    )
 
 
 def test_agent_filters_reach_the_tool_even_when_the_query_never_names_them(
@@ -1047,7 +1054,7 @@ def test_agent_runs_one_tool_then_reuses_the_ranked_session(
     assert isinstance(initial_messages, list)
     initial_user_message = initial_messages[1]["content"]
     assert isinstance(initial_user_message, str)
-    assert '"green big creature"' in initial_user_message
+    assert "## Request\ngreen big creature" in initial_user_message
     assert "image_uris" not in initial_user_message
     final_messages = model.payloads[1]["messages"]
     assert isinstance(final_messages, list)
@@ -1071,11 +1078,11 @@ def test_agent_runs_one_tool_then_reuses_the_ranked_session(
         "You are a Magic: The Gathering card-search agent"
         in presentation_stages[0]["details"]["content"]
     )
-    assert '"green big creature"' in presentation_stages[1]["details"]["content"]
+    assert "## Request\ngreen big creature" in presentation_stages[1]["details"]["content"]
     assert presentation_stages[2]["details"]["reasoning"].startswith("The query asks")
     tool_result_trace = first.debug.trace["stages"][4]["details"]
     assert tool_result_trace["raw_tool_result"]["candidates"]
-    assert tool_result_trace["message_to_agent"].startswith("The search tool has finished.")
+    assert tool_result_trace["message_to_agent"].startswith("## Search")
     assert tool_result_trace["numbered_candidates"][0]["id"] == 1
     assert tool_result_trace["numbered_candidates"][0]["semantic_score"] == 0.9
     assert presentation_stages[5]["details"]["reasoning"] == "Ranked by fit."
@@ -1178,14 +1185,16 @@ def test_agent_prompt_and_tool_response_include_commander_theme_and_edhrec_score
     assert isinstance(initial_messages, list)
     user_message = initial_messages[1]["content"]
     assert isinstance(user_message, str)
-    assert "Selected commander:" in user_message
+    assert "## Commander" in user_message
+    assert "EDHREC evidence: available" in user_message
     assert "Ghalta, Primal Hunger" in user_message
-    assert "Selected EDHREC deck theme: Tokens (tokens)" in user_message
-    assert "Top EDHREC deck themes: Stompy, Tokens" in user_message
+    assert "Selected theme: Tokens (tokens)" in user_message
+    assert "Advertised themes: Stompy, Tokens" in user_message
     assert "Theme 10" in user_message
     assert "Theme 11" not in user_message
     assert "decks; slug" not in user_message
-    assert "sort_by to edhrec_inclusion" in user_message
+    # sort_by guidance belongs to the system prompt, not this data section.
+    assert "sort_by" not in user_message
     final_messages = model.payloads[1]["messages"]
     assert isinstance(final_messages, list)
     tool_message = final_messages[-1]["content"]
@@ -1256,18 +1265,18 @@ def test_exhausted_session_runs_one_continuation_with_already_shown_cards(
     assert isinstance(continuation_messages, list)
     continuation_prompt = continuation_messages[1]["content"]
     assert isinstance(continuation_prompt, str)
-    assert "Please find additional Magic" in continuation_prompt
-    assert "Previous local-tool searches already completed:" in continuation_prompt
-    assert "Search round 1:" in continuation_prompt
+    assert "## Previous tool searches" in continuation_prompt
+    assert "## Round\n2" in continuation_prompt
+    assert "Round 1:" in continuation_prompt
     assert '"semantic_sort": "green big creature"' in continuation_prompt
     assert '"minimum": 4.0' in continuation_prompt
-    assert "Do not submit any earlier tool request unchanged." in continuation_prompt
-    assert "less ideal than the first results" in continuation_prompt
-    assert "Already showing" in continuation_prompt
+    assert "## Already showing" in continuation_prompt
+    # The user message carries data only; broadening guidance lives in the system prompt.
+    assert "Do not" not in continuation_prompt
     assert "Ghalta, Primal Hunger" in continuation_prompt
     assert "Power/Toughness: 12/12" in continuation_prompt
     assert "Oracle text:" in continuation_prompt
-    assert "continuation round 2" in continuation_prompt
+    assert "## Round\n2" in continuation_prompt
     assert second.debug is not None
     assert second.debug.trace["request"]["round_number"] == 2
 
@@ -1320,9 +1329,10 @@ def test_empty_continuation_is_successful_and_can_be_retried(
     assert isinstance(third_round_messages, list)
     third_round_prompt = third_round_messages[1]["content"]
     assert isinstance(third_round_prompt, str)
-    assert third_round_prompt.count("Search round ") == 2
-    assert "Search round 1:" in third_round_prompt
-    assert "Search round 2:" in third_round_prompt
+    assert third_round_prompt.count("\nRound ") == 2
+    assert "Round 1:" in third_round_prompt
+    assert "Round 2:" in third_round_prompt
+    assert "## Round\n3" in third_round_prompt
 
 
 def test_empty_initial_result_can_start_a_continuation(
@@ -1360,9 +1370,9 @@ def test_empty_initial_result_can_start_a_continuation(
     assert isinstance(continuation_messages, list)
     prompt = continuation_messages[1]["content"]
     assert isinstance(prompt, str)
-    assert "Please find additional Magic" in prompt
+    assert "## Previous tool searches" in prompt
     assert "Already showing" in prompt
-    assert "- None" in prompt
+    assert "## Already showing\nNone" in prompt
 
 
 def test_agentic_results_keep_short_title_alias_confidence(
@@ -1391,8 +1401,8 @@ def test_agentic_results_keep_short_title_alias_confidence(
     assert "Power/Toughness: 12/12" in initial_user_message
     assert "EUR price estimate: €0.25" in initial_user_message
     assert "This spell costs {X} less to cast" in initial_user_message
-    assert "already valid final choices" in initial_user_message
-    assert "non-overlapping IDs" in initial_user_message
+    assert "## Fuzzy matches already shown" in initial_user_message
+    assert "ID 1 [ALREADY SHOWN]" in initial_user_message
     assert "image_uris" not in initial_user_message
     tool_message = model.payloads[1]["messages"][-1]["content"]
     assert "ID 1 [ALREADY SHOWN]" in tool_message

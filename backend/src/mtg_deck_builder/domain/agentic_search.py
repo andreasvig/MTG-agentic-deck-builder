@@ -83,10 +83,7 @@ class NameSearch(AgentSearchModel):
 
     query: BoundedString | None = Field(
         default=None,
-        description=(
-            "Case-insensitive complete or partial card-name filter. "
-            "Use semantic_sort for concepts rather than names."
-        ),
+        description="Case-insensitive complete or partial card-name filter.",
     )
 
 
@@ -119,18 +116,12 @@ class TypeSearch(TextConditions):
     must_contain_all: list[NonEmptyString] = Field(
         default_factory=list,
         max_length=50,
-        description=(
-            "Every listed literal type-line fragment must occur. Use separate "
-            'values for combinations, such as ["Artifact", "Creature"].'
-        ),
+        description="Every listed literal type-line fragment must occur.",
     )
     must_contain_any: list[NonEmptyString] = Field(
         default_factory=list,
         max_length=50,
-        description=(
-            "At least one listed literal type-line fragment must occur. Use "
-            'separate values for alternatives, such as ["Instant", "Sorcery"].'
-        ),
+        description="At least one listed literal type-line fragment must occur.",
     )
     must_not_contain: list[NonEmptyString] = Field(
         default_factory=list,
@@ -199,10 +190,7 @@ class LocalCardSearchRequest(AgentSearchModel):
 
     semantic_sort: BoundedString | None = Field(
         default=None,
-        description=(
-            "A natural-language description of the user's intended cards. "
-            "It sorts surviving candidates by meaning and never filters them."
-        ),
+        description="Natural-language description of the intended cards.",
     )
     sort_by: Literal[
         "semantic",
@@ -210,11 +198,7 @@ class LocalCardSearchRequest(AgentSearchModel):
         "edhrec_synergy",
     ] | None = Field(
         default=None,
-        description=(
-            "Primary candidate ordering. Defaults to semantic. EDHREC sorts are "
-            "available only when the runtime says commander evidence is available; "
-            "semantic closeness remains a tie-breaker."
-        ),
+        description="Primary candidate ordering. Defaults to semantic.",
     )
     name: NameSearch | None = None
     mana: ManaSearch | None = None

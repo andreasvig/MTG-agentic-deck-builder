@@ -118,6 +118,12 @@ All notable changes to this project are documented here.
 
 - Made Commander legality and format exclusively runtime-owned and removed them
   from the agent tool schema. The trace now discards stale model-supplied copies.
+- Rewrote the agent system prompt as Markdown with a `# Task` / `# Inputs` /
+  `# Output` / `# Tools` / `# Guidelines` skeleton and moved every rule into it.
+  The user message and tool-result message are now labelled data sections with
+  no instructions, the tool description is one line, and schema field
+  descriptions state shape only, so no surface can contradict the prompt
+  (ADR 0020).
 - Made the agent own its own `types` and `colors`. Validated filters now reach
   the local tool unmodified, and the system prompt teaches when a printed type
   is the right filter: cross-type functional categories such as removal, ramp,
