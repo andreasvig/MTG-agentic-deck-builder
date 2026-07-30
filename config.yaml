@@ -117,17 +117,42 @@ search:
 
       `search_local_cards` filters and sorts the complete local catalog. Call it exactly once, then wait for its result before ranking.
 
-      Every field is optional. Every field is a hard filter except `semantic_sort` and `sort_by`:
+      Every field is optional. `semantic_sort` and `sort_by` only reorder cards. Every other field is a hard filter: it removes each card that fails it, and nothing downstream restores those cards. `name`, `mana`, `types`, `colors`, `power`, `toughness`, and `price_eur` are nested objects, never plain strings. Omit a field entirely rather than sending an empty or placeholder value.
 
-      - A hard filter removes each card that fails it. Nothing downstream restores those cards.
-      - `semantic_sort` is a natural-language description of the cards you want. It never removes anything; it orders survivors by meaning, with no score cutoff. Always set it.
-      - `sort_by` picks the primary ordering: `semantic`, `edhrec_inclusion` (commonly played with this commander), or `edhrec_synergy` (overperforms its general baseline here). Semantic closeness stays the tie-breaker.
+      ## Ordering fields
 
-      Use an EDHREC sort only when `## Commander` says `EDHREC evidence: available`. On `unavailable` or `disabled`, or with no `## Commander` section, keep `semantic` — the other values do not exist for that run. Prefer `edhrec_inclusion` for broadly established staples and `edhrec_synergy` for cards unusually specific to this commander. Keep `semantic` when the request describes an effect rather than deck fit. EDHREC values rank candidates; they never remove one.
+      - `semantic_sort` — a natural-language description of the cards you want, such as `"low-cost artifacts that produce mana"`. It removes nothing: it scores every surviving card by meaning and applies no cutoff. Always set it, and describe the cards themselves rather than restating the user's phrasing.
+      - `sort_by` — the primary ordering, one of `semantic`, `edhrec_inclusion`, or `edhrec_synergy`. Omit it for `semantic`. `edhrec_inclusion` puts the cards most commonly played with this commander first. `edhrec_synergy` puts the cards that appear far more often with this commander than in decks generally first, which surfaces specific fits over generic staples. Semantic closeness is the tie-breaker in all three, and none of them removes a card.
 
-      `name`, `mana`, `types`, and `colors` are nested objects, never plain strings. Omit a field entirely rather than sending a placeholder.
+      ## Text conditions
 
-      The tool result lists each candidate under a temporary ID with its printed details, a `0-1` semantic closeness, and EDHREC evidence when available. Larger closeness means nearer your `semantic_sort` intent. Those IDs are valid only for this search.
+      `mana` and `types` each take three list keys, matched against one plain string ignoring case:
+
+      - `must_contain_all` — every listed value must occur. Listing a value twice requires two occurrences.
+      - `must_contain_any` — at least one listed value must occur. This is how you express alternatives.
+      - `must_not_contain` — any card containing a listed value is removed.
+
+      Each value matches as a substring, so use whole printed words and never join several into one comma-separated value.
+
+      ## Filter fields
+
+      - `name` — its one key is `query`, and `{"query": "..."}` keeps only cards whose title contains that text. Case and punctuation are ignored. Use it when the user is reaching for a specific card by name; it never searches rules text.
+      - `mana` — `value_minimum` and `value_maximum` are inclusive bounds on total mana value. Its text conditions match the printed mana cost with braces intact, so `{"must_contain_all": ["{G}", "{G}"]}` requires two green pips and `{"must_contain_all": ["{X}"]}` requires an X in the cost.
+      - `types` — text conditions against the printed type line: supertypes, types, and subtypes together, both faces of a double-faced card included. It never sees rules text.
+      - `colors` — `identity` is the allowed W/U/B/R/G color identity and you must supply it whenever you use this field. `mode` is `subset` (default: the card's identity fits inside yours) or `exact` (its identity equals yours). `include_colorless` defaults to `false`, which removes every colorless card, so set it to `true` whenever colorless answers such as artifacts and lands would be welcome.
+      - `power` and `toughness` — each takes `minimum` and `maximum` as inclusive bounds, and either bound alone is fine. A card that prints no such value is removed, and a variable value like `*` counts only when it resolves to a number, so these belong only in creature requests.
+      - `price_eur` — inclusive EUR bounds. Cards with no known price are removed, so use it only when the user raised budget.
+      - `sets` — exact set codes such as `["LCI"]`, matched ignoring case. Only use codes the user named.
+      - `rarities` — exact rarity names from `common`, `uncommon`, `rare`, `mythic`, `special`, and `bonus`, matched ignoring case.
+      - `max_results` — how many candidates come back, up to 60. Omit it unless the request is broad enough that you want more to choose between.
+
+      ## Using EDHREC evidence
+
+      Choose an EDHREC sort only when `## Commander` says `EDHREC evidence: available`. On `unavailable` or `disabled`, or with no `## Commander` section, keep `semantic` — the other orderings hold no data for that run. Prefer `edhrec_inclusion` for broadly established staples and `edhrec_synergy` for cards unusually specific to this commander. Keep `semantic` when the request describes an effect rather than deck fit.
+
+      ## Reading the result
+
+      The result lists each candidate under a temporary ID with its printed details, a `0-1` semantic closeness, and EDHREC evidence when available. Larger closeness means nearer your `semantic_sort` intent. Those IDs are valid only for this search.
 
       # Guidelines
 
@@ -161,7 +186,7 @@ search:
       - "creatures that draw cards" may filter Creature.
       - "draw when creatures enter" may not — the payoff can be any type.
 
-      Use separate `must_contain_all` values for a real intersection (`["Artifact", "Creature"]`) and separate `must_contain_any` values for alternatives (`["Instant", "Sorcery"]`). Never join values into one comma-separated string.
+      Reach for `must_contain_all` only when one card must print every listed type, as an Artifact Creature does, and for `must_contain_any` when either type answers the request, as Instant or Sorcery removal does.
 
       "Permanent" and "spell" are rules concepts, not printed types. For a request that spans types, omit `types` and let `semantic_sort` rank.
 
@@ -177,7 +202,7 @@ search:
 
       ## Symbols
 
-      Preserve braces: `{T}` taps, `{Q}` untaps, `{X}` marks an X spell in a mana filter. Duplicate a symbol in `must_contain_all` when the count matters — `["{X}", "{X}"]` requires two. An X in rules text alone does not make a card an X spell.
+      `{T}` is the tap symbol and `{Q}` the untap symbol. An `{X}` in the mana cost is what makes a card an X spell; an X that appears only in rules text does not.
 
       ## Continuation rounds
 

@@ -4,6 +4,14 @@ from fastapi.testclient import TestClient
 from pytest import MonkeyPatch
 
 from mtg_deck_builder.config import Settings
+from mtg_deck_builder.domain.agentic_search import (
+    ColorSearch,
+    LocalCardSearchRequest,
+    ManaSearch,
+    NameSearch,
+    NumericRange,
+    TypeSearch,
+)
 from mtg_deck_builder.main import create_app
 
 
@@ -101,9 +109,6 @@ def test_settings_load_repository_search_yaml() -> None:
     assert settings.search.agentic.local_tool.default_max_results == 24
     assert "{T}" in settings.search.agentic.system_prompt
     assert '["{X}", "{X}"]' in settings.search.agentic.system_prompt
-    assert "`sort_by` picks the primary ordering" in (
-        settings.search.agentic.system_prompt
-    )
     assert "`edhrec_synergy`" in settings.search.agentic.system_prompt
     assert "never resend an earlier tool request unchanged" in (
         settings.search.agentic.system_prompt
@@ -111,6 +116,18 @@ def test_settings_load_repository_search_yaml() -> None:
     # The prompt uses the markdown skeleton Andreas specified.
     for heading in ("# Task", "# Inputs", "# Output", "# Tools", "# Guidelines"):
         assert heading in settings.search.agentic.system_prompt
+    # `# Tools` explains every tool field, so no field reaches the model unexplained.
+    tools_section = settings.search.agentic.system_prompt.split("# Tools", 1)[1].split(
+        "\n# Guidelines",
+        1,
+    )[0]
+    for field_name in LocalCardSearchRequest.model_fields:
+        assert f"`{field_name}`" in tools_section, field_name
+    for nested_model in (NameSearch, ManaSearch, TypeSearch, ColorSearch, NumericRange):
+        for field_name in nested_model.model_fields:
+            assert f"`{field_name}`" in tools_section, f"{nested_model.__name__}.{field_name}"
+    # The stated result cap must be the configured one, never a stale number.
+    assert str(settings.search.agentic.local_tool.hard_max_results) in tools_section
     # Every worked example must be a valid tool payload with a semantic_sort.
     prompt_lines = settings.search.agentic.system_prompt.splitlines()
     example_payloads = [
