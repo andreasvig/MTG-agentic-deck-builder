@@ -113,6 +113,11 @@ All notable changes to this project are documented here.
   without score cutoffs.
 - Added a semantic-only agentic fallback and visible unavailable status when
   commander/theme evidence cannot be fetched.
+- Added a `weighted` primary sort and made it the agent's default ordering. It
+  averages semantic closeness and EDHREC commander inclusion using the weights
+  in `search.agentic.ranking.weighted`, renormalizes over whichever signals a
+  run has, and needs no commander evidence, so a commanderless search orders
+  exactly as `semantic` did (ADR 0021).
 
 ### Changed
 
@@ -134,6 +139,17 @@ All notable changes to this project are documented here.
 - Removed the exact Oracle-text field from the agent search tool. Rules text
   remains embedded for semantic retrieval and visible to the ranking model,
   without allowing invented wording to eliminate valid cards.
+- Replaced the agent tool's `name` substring filter with `name_sort` plus a
+  `name_similarity` ordering. Naming a card now ranks by fuzzy title similarity
+  and removes nothing, so a misspelling no longer empties the page: five of ten
+  measured attempts such as `thassas oracle` and `sol ing` previously returned
+  zero candidates. The two fields require each other, and name similarity stays
+  out of the `weighted` blend (ADR 0023).
+- Removed the `sets` and `rarities` fields from the agent search tool and its
+  prompt. Both described a printing rather than gameplay identity and invited an
+  invented code or a "best means mythic" filter that silently emptied the page.
+  Set, collector number, and rarity remain visible on cards, and the tool's
+  model-facing property set is now pinned by a test (ADR 0022).
 - Reduced agent prompt theme context to the ten most-played EDHREC theme names;
   the interface still exposes the complete theme list.
 - Limited frontend **Title confidence** badges to completed straight fuzzy

@@ -206,6 +206,29 @@ class AgentLocalToolSettings(BaseModel):
         return self
 
 
+class WeightedSortWeights(BaseModel):
+    """Relative weights blended by the agent's default `weighted` ordering."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    semantic: Annotated[float, Field(ge=0, le=1)] = 0.5
+    edhrec_inclusion: Annotated[float, Field(ge=0, le=1)] = 0.5
+
+    @model_validator(mode="after")
+    def at_least_one_signal_must_carry_weight(self) -> "WeightedSortWeights":
+        if self.semantic <= 0 and self.edhrec_inclusion <= 0:
+            raise ValueError("weighted sort requires at least one positive weight")
+        return self
+
+
+class AgentRankingSettings(BaseModel):
+    """Ordering weights applied after the local tool has filtered the catalog."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    weighted: WeightedSortWeights = Field(default_factory=WeightedSortWeights)
+
+
 class AgentContinuationSettings(BaseModel):
     """User-triggered search-expansion behavior."""
 
@@ -231,6 +254,7 @@ class AgenticSearchSettings(BaseModel):
     timeout_seconds: Annotated[float, Field(gt=0, le=120)] = 20
     debug: AgentDebugSettings = Field(default_factory=AgentDebugSettings)
     local_tool: AgentLocalToolSettings = Field(default_factory=AgentLocalToolSettings)
+    ranking: AgentRankingSettings = Field(default_factory=AgentRankingSettings)
     continuation: AgentContinuationSettings = Field(default_factory=AgentContinuationSettings)
     system_prompt: str = "You are a Magic: The Gathering card-search agent."
 

@@ -26,9 +26,8 @@ from mtg_deck_builder.card_catalog import (
     CatalogEntry,
     SQLiteCardCatalog,
     card_title_aliases,
-    normalize_card_title,
 )
-from mtg_deck_builder.config import AgenticSearchSettings
+from mtg_deck_builder.config import AgenticSearchSettings, WeightedSortWeights
 from mtg_deck_builder.domain import (
     AgenticCardSearchRequest,
     AgentRankedSearchOutput,
@@ -68,6 +67,9 @@ from mtg_deck_builder.semantic_index import SemanticCardIndex, SemanticScoreResu
 from mtg_deck_builder.tagger_catalog import SQLiteTaggerCatalog
 
 _TOOL_CALL_ADAPTER = TypeAdapter(AgentSearchToolCall)
+# The ordering the agent gets when it omits `sort_by`. It blends whichever
+# signals a run has, so unlike the EDHREC orderings it is always safe.
+DEFAULT_AGENT_SORT = "weighted"
 _NESTED_TOOL_FIELDS = frozenset(
     {
         "name",
@@ -214,12 +216,14 @@ class LocalCardSearchTool:
         *,
         default_max_results: int,
         hard_max_results: int,
+        weighted_weights: WeightedSortWeights | None = None,
         semantic_index: SemanticCardIndex | None = None,
         tagger_catalog: SQLiteTaggerCatalog | None = None,
     ) -> None:
         self._catalog = catalog
         self._default_max_results = default_max_results
         self._hard_max_results = hard_max_results
+        self._weighted_weights = weighted_weights or WeightedSortWeights()
         self._semantic_index = semantic_index
         self._tagger_catalog = tagger_catalog
 
@@ -274,6 +278,7 @@ class LocalCardSearchTool:
             limit=limit,
             semantic_result=semantic_result,
             edhrec_ranking=edhrec_ranking,
+            weighted_weights=self._weighted_weights,
         )
         return ExecutedSearchTool(
             name="search_local_cards",
@@ -956,15 +961,11 @@ def _filter_local_candidates(
             continue
         evidence: list[str] = []
         decisions: dict[str, bool] = {"immutable_ui_filters": True}
-        if request.name is not None and request.name.query:
-            normalized_query = normalize_card_title(request.name.query)
-            if not normalized_query or not any(
-                normalized_query in alias for alias in entry.aliases
-            ):
-                continue
-            name_score = name_similarity_score(request.name.query, card.name)
-            decisions["name"] = True
-            evidence.append(f"name contains query; similarity {name_score:.3f}")
+        if request.name_sort is not None:
+            # Scored here because this loop already runs off the event loop, and
+            # never filtered: a misspelling must not delete the intended card.
+            name_score = name_similarity_score(request.name_sort, card.name)
+            evidence.append(f"name similarity {name_score:.3f}")
         else:
             name_score = 0
         if request.mana is not None:
@@ -1012,14 +1013,6 @@ def _filter_local_candidates(
                 continue
             decisions["price_eur"] = True
             evidence.append("EUR price matched")
-        if request.sets is not None and card.set_code.casefold() not in {
-            value.casefold() for value in request.sets
-        }:
-            continue
-        if request.rarities is not None and card.rarity.casefold() not in {
-            value.casefold() for value in request.rarities
-        }:
-            continue
         matches.append(
             (
                 name_score,
@@ -1042,8 +1035,17 @@ def _rank_local_candidates(
     limit: int,
     semantic_result: SemanticScoreResult | None,
     edhrec_ranking: EdhrecCommanderRanking | None,
+    weighted_weights: WeightedSortWeights,
 ) -> LocalCardSearchResult:
-    sort_by = request.sort_by or "semantic"
+    sort_by = request.sort_by or DEFAULT_AGENT_SORT
+    # Signal availability is a property of the run, not of one card, so the
+    # weights are renormalized once here. Renormalizing per card would reward a
+    # card the commander's EDHREC page omits over one it lists with a low score.
+    weighted_signals = _available_weighted_signals(
+        weights=weighted_weights,
+        has_semantic=semantic_result is not None,
+        has_edhrec=edhrec_ranking is not None,
+    )
     ranked: list[tuple[tuple[float, ...], AgentSearchCandidate]] = []
     for name_score, candidate in matches:
         semantic_score = (
@@ -1087,12 +1089,15 @@ def _rank_local_candidates(
                     ],
                 }
             )
-        if sort_by == "edhrec_inclusion":
+        if sort_by == "name_similarity":
+            # Name similarity is deliberately alone here: it is chosen when the
+            # user is naming one card, and it stays out of the weighted blend.
+            primary = (name_score,)
+        elif sort_by == "edhrec_inclusion":
             primary = (
                 1 if association is not None else 0,
                 association.inclusion if association is not None else 0,
                 semantic_score or 0,
-                name_score,
             )
         elif sort_by == "edhrec_synergy":
             primary = (
@@ -1103,13 +1108,27 @@ def _rank_local_candidates(
                     else 0
                 ),
                 semantic_score or 0,
-                name_score,
+            )
+        elif sort_by == "weighted":
+            weighted_score = _weighted_sort_score(
+                signals=weighted_signals,
+                semantic_score=semantic_score,
+                inclusion=association.inclusion if association is not None else None,
+            )
+            candidate = candidate.model_copy(
+                update={
+                    "exact_match_evidence": [
+                        *candidate.exact_match_evidence,
+                        f"weighted sort score {weighted_score:.3f}",
+                    ],
+                }
+            )
+            primary = (
+                weighted_score,
+                semantic_score or 0,
             )
         else:
-            primary = (
-                semantic_score or 0,
-                name_score,
-            )
+            primary = (semantic_score or 0,)
         ranked.append((primary, candidate))
     ranked.sort(
         key=lambda item: (
@@ -1141,6 +1160,10 @@ def _rank_local_candidates(
                 }
             ),
             "primary_sort": sort_by,
+            "weighted_sort": {
+                "configured_weights": weighted_weights.model_dump(mode="json"),
+                "applied_weights": dict(weighted_signals),
+            },
             "edhrec": {
                 "mode": (
                     "commander_theme"
@@ -1160,6 +1183,40 @@ def _rank_local_candidates(
             "result_limit": limit,
         },
     )
+
+
+def _available_weighted_signals(
+    *,
+    weights: WeightedSortWeights,
+    has_semantic: bool,
+    has_edhrec: bool,
+) -> dict[str, float]:
+    """Return the weight each present signal contributes, normalized to sum to 1."""
+
+    present = {
+        name: weight
+        for name, weight, available in (
+            ("semantic", weights.semantic, has_semantic),
+            ("edhrec_inclusion", weights.edhrec_inclusion, has_edhrec),
+        )
+        if available and weight > 0
+    }
+    total = sum(present.values())
+    if total <= 0:
+        return {}
+    return {name: weight / total for name, weight in present.items()}
+
+
+def _weighted_sort_score(
+    *,
+    signals: dict[str, float],
+    semantic_score: float | None,
+    inclusion: float | None,
+) -> float:
+    """Blend the present 0-1 ordering signals into one 0-1 score."""
+
+    values = {"semantic": semantic_score or 0.0, "edhrec_inclusion": inclusion or 0.0}
+    return sum(weight * values[name] for name, weight in signals.items())
 
 
 def _matches_text_conditions(value: str, conditions: Any) -> bool:
@@ -1361,10 +1418,19 @@ def _normalize_tool_arguments(
             normalized[key] = decoded
             changes.append(f"decoded JSON object string for {key}")
 
-    name = normalized.get("name")
+    name = normalized.pop("name", None)
     if isinstance(name, str):
-        normalized["name"] = {"query": name}
-        changes.append("name string -> name.query")
+        normalized["name_sort"] = name
+        normalized["sort_by"] = "name_similarity"
+        changes.append("name string -> name_sort with name_similarity ordering")
+    elif isinstance(name, dict) and isinstance(name.get("query"), str):
+        normalized["name_sort"] = name["query"]
+        normalized["sort_by"] = "name_similarity"
+        changes.append("name.query object -> name_sort with name_similarity ordering")
+
+    if isinstance(normalized.get("name_sort"), str) and normalized.get("sort_by") is None:
+        normalized["sort_by"] = "name_similarity"
+        changes.append("name_sort without sort_by -> name_similarity ordering")
 
     mana = normalized.get("mana")
     if isinstance(mana, str):
@@ -1413,12 +1479,6 @@ def _normalize_tool_arguments(
                 continue
             normalized[key] = {"minimum": minimum}
             changes.append(f"{key} numeric string -> {key}.minimum")
-
-    for key in ("sets", "rarities"):
-        value = normalized.get(key)
-        if isinstance(value, str):
-            normalized[key] = [value]
-            changes.append(f"{key} string -> {key} list")
 
     return normalized, changes
 
@@ -1841,7 +1901,7 @@ def _render_tool_result_message(
     lines = [
         "## Search",
         f"Semantic sort intent: {executed.arguments.get('semantic_sort', 'not requested')}",
-        f"Primary sort: {executed.arguments.get('sort_by', 'semantic')}",
+        f"Primary sort: {executed.arguments.get('sort_by', DEFAULT_AGENT_SORT)}",
         "",
         f"## Candidates ({len(candidates)})",
     ]

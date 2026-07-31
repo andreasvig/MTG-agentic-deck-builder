@@ -146,7 +146,11 @@ def test_local_tool_limit_requires_criteria_or_immutable_filters() -> None:
     )
     with pytest.raises(AgentSearchContractError, match="hard maximum"):
         resolve_local_tool_limit(
-            LocalCardSearchRequest(name={"query": "walker"}, max_results=30),
+            LocalCardSearchRequest(
+                name_sort="walker",
+                sort_by="name_similarity",
+                max_results=30,
+            ),
             immutable_filters=CardSearchFilters(),
             default_max_results=12,
             hard_max_results=24,

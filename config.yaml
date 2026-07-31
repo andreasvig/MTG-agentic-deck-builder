@@ -61,15 +61,7 @@ search:
   agentic:
     enabled: true
     provider: openrouter
-    model: openai/gpt-5.6-luna
-    # Sent as OpenRouter's `reasoning.effort` on both the tool call and the final
-    # ranking: minimal, low, medium or high. Higher costs latency and tokens on
-    # every search, so raise it only if ranking quality needs it.
-    reasoning_effort: low
-    # Leave empty for models that reject `temperature`, such as the GPT-5 series.
-    # `provider.require_parameters` is on, so an unsupported parameter makes
-    # OpenRouter find no endpoint at all and the search fails with a 404.
-    temperature:
+    model: google/gemini-3.5-flash-lite
     max_tool_calls: 1
     max_tool_results: 60
     timeout_seconds: 20
@@ -290,55 +282,3 @@ edhrec:
   user_agent: >-
     MTG-Agentic-Deck-Builder/0.1.0
     (personal local testing; +https://github.com/andreasvig/MTG-agentic-deck-builder)
-
-printing_selection:
-  # Scryfall ships every printing of a card; the importer keeps exactly one per
-  # Oracle card and that choice decides the art, the image and the EUR estimate
-  # everywhere in the app. Ranking is: a printing needs an image, then a price,
-  # then it must not be special by the rules below, and only then does the
-  # cheapest one win. So an ordinary printing beats a special one even when the
-  # special is a few cents less. A card with no priced ordinary printing falls
-  # back to its cheapest special printing instead of leaving the catalog.
-  # Changing anything here needs `npm run catalog:sync -- --force` to take effect.
-  exclude_promotional: true   # Scryfall's own `promo` flag: prerelease, promo pack, FNM
-  exclude_full_art: true      # full-art basics and the Marvel/UB alternate-art lands
-  exclude_textless: true      # art-only printings with the rules text removed
-  exclude_foil_only: true     # no nonfoil finish, so always a premium product
-  special_set_types:
-    - promo
-    - funny            # Un-sets and Unfinity, silver-bordered and mostly not legal
-    - masterpiece      # Expeditions, Inventions, Invocations
-    - from_the_vault
-    - premium_deck
-    - arsenal          # Commander's Arsenal, Commander Collections
-    - spellbook        # Signature Spellbook
-    - eternal          # the premium Universes Beyond "Eternal" collections
-  special_set_codes:
-    # Secret Lair, which is set_type `box` alongside perfectly ordinary reprint
-    # products like Game Night and the Guild Kits, so it needs naming directly.
-    - sld
-    - slc
-    - slu
-  special_border_colors:
-    - borderless       # booster-fun treatments
-    - silver           # Un-set cards
-    - yellow           # Mystery Booster playtest cards
-  special_promo_types:
-    - boosterfun       # showcase, borderless and extended-art variants
-    - boxtopper
-    - concept
-    - embossed
-    - playtest
-    - poster
-    - scroll
-    - serialized
-    - sldbonus
-    - thick
-  special_frame_effects:
-    - etched
-    - extendedart
-    - fullart
-    - shatteredglass
-    - showcase
-  special_security_stamps:
-    - acorn            # Unfinity cards that are not tournament legal

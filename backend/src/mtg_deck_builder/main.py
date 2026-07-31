@@ -97,6 +97,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 catalog,
                 default_max_results=agentic.local_tool.default_max_results,
                 hard_max_results=agentic.local_tool.hard_max_results,
+                weighted_weights=agentic.ranking.weighted,
                 semantic_index=semantic_index,
                 tagger_catalog=tagger_catalog,
             ),

@@ -78,15 +78,6 @@ class TextConditions(AgentSearchModel):
     )
 
 
-class NameSearch(AgentSearchModel):
-    """Optional name search for the local card tool."""
-
-    query: BoundedString | None = Field(
-        default=None,
-        description="Case-insensitive complete or partial card-name filter.",
-    )
-
-
 class ManaSearch(TextConditions):
     """Combined mana-value and mana-cost conditions."""
 
@@ -192,31 +183,26 @@ class LocalCardSearchRequest(AgentSearchModel):
         default=None,
         description="Natural-language description of the intended cards.",
     )
+    name_sort: BoundedString | None = Field(
+        default=None,
+        description="Card name to order candidates by fuzzy title similarity.",
+    )
     sort_by: Literal[
+        "weighted",
         "semantic",
         "edhrec_inclusion",
         "edhrec_synergy",
+        "name_similarity",
     ] | None = Field(
         default=None,
-        description="Primary candidate ordering. Defaults to semantic.",
+        description="Primary candidate ordering. Defaults to weighted.",
     )
-    name: NameSearch | None = None
     mana: ManaSearch | None = None
     types: TypeSearch | None = None
     colors: ColorSearch | None = None
     power: NumericRange | None = None
     toughness: NumericRange | None = None
     price_eur: PriceRange | None = None
-    sets: list[NonEmptyString] | None = Field(
-        default=None,
-        max_length=100,
-        description="Allowed exact set codes.",
-    )
-    rarities: list[NonEmptyString] | None = Field(
-        default=None,
-        max_length=20,
-        description="Allowed exact rarity names.",
-    )
     max_results: Annotated[
         int | None,
         Field(
@@ -226,6 +212,17 @@ class LocalCardSearchRequest(AgentSearchModel):
             description="Maximum top candidates returned after filtering and sorting.",
         ),
     ] = None
+
+    @model_validator(mode="after")
+    def name_sort_and_name_similarity_require_each_other(self) -> "LocalCardSearchRequest":
+        # Pairing them keeps `name_sort` from being a silent no-op under another
+        # ordering, and keeps `name_similarity` from having nothing to sort by.
+        wants_name_order = self.sort_by == "name_similarity"
+        if wants_name_order and self.name_sort is None:
+            raise ValueError("name_similarity sorting requires name_sort")
+        if self.name_sort is not None and not wants_name_order:
+            raise ValueError("name_sort requires sort_by name_similarity")
+        return self
 
     def has_agent_criteria(self) -> bool:
         """Return whether the model supplied a meaningful search condition."""

@@ -5,6 +5,7 @@ from pathlib import Path
 from uuid import UUID, uuid5
 
 import pytest
+from pydantic import ValidationError
 
 from mtg_deck_builder.agentic_card_search import (
     AgenticCardSearchService,
@@ -16,7 +17,7 @@ from mtg_deck_builder.agentic_card_search import (
 )
 from mtg_deck_builder.agentic_search_debug import JsonlAgentSearchTraceLogger
 from mtg_deck_builder.card_catalog import CatalogEntry, card_title_aliases
-from mtg_deck_builder.config import AgenticSearchSettings, Settings
+from mtg_deck_builder.config import AgenticSearchSettings, Settings, WeightedSortWeights
 from mtg_deck_builder.domain import (
     AgenticCardSearchRequest,
     AgentSearchCandidate,
@@ -371,21 +372,181 @@ def test_local_tool_can_sort_by_edhrec_synergy_and_returns_all_ranking_evidence(
     assert result.payload["compiled_query"]["edhrec"]["minimum_synergy"] is None
 
 
-def test_local_name_query_is_a_filter_instead_of_a_second_sort() -> None:
+def test_agent_tool_schema_exposes_only_the_supported_search_fields() -> None:
+    # Printing-level conditions were removed on purpose: the agent searches
+    # gameplay identity, and the interface owns printing choices.
+    assert set(LocalCardSearchRequest.model_json_schema()["properties"]) == {
+        "semantic_sort",
+        "sort_by",
+        "name_sort",
+        "mana",
+        "types",
+        "colors",
+        "power",
+        "toughness",
+        "price_eur",
+        "max_results",
+    }
+    for removed in ({"sets": ["LCI"]}, {"rarities": ["rare"]}):
+        with pytest.raises(ValidationError):
+            LocalCardSearchRequest.model_validate(removed)
+
+
+def _green_commander_ranking() -> EdhrecCommanderRanking:
+    return EdhrecCommanderRanking(
+        associations={
+            GIGANTOSAURUS.oracle_id: EdhrecAssociation(
+                oracle_id=GIGANTOSAURUS.oracle_id,
+                num_decks=800,
+                potential_decks=1_000,
+                synergy=0.10,
+            ),
+            KALONIAN_TWINGROVE.oracle_id: EdhrecAssociation(
+                oracle_id=KALONIAN_TWINGROVE.oracle_id,
+                num_decks=300,
+                potential_decks=1_000,
+                synergy=0.20,
+            ),
+        },
+        source="cache",
+    )
+
+
+def test_weighted_sort_is_the_default_and_blends_semantic_with_edhrec_inclusion() -> None:
+    # Semantic alone would order Ghalta, Kalonian Twingrove, Gigantosaurus.
+    semantic_index = StubSemanticIndex(
+        {
+            GHALTA.oracle_id: 0.95,
+            KALONIAN_TWINGROVE.oracle_id: 0.80,
+            GIGANTOSAURUS.oracle_id: 0.70,
+        }
+    )
     tool = LocalCardSearchTool(  # type: ignore[arg-type]
-        StubCatalog([GHALTA, GIGANTOSAURUS]),
+        StubCatalog([GHALTA, GIGANTOSAURUS, KALONIAN_TWINGROVE]),
+        default_max_results=10,
+        hard_max_results=60,
+        weighted_weights=WeightedSortWeights(semantic=0.5, edhrec_inclusion=0.5),
+        semantic_index=semantic_index,  # type: ignore[arg-type]
+    )
+
+    result = asyncio.run(
+        tool.search(
+            LocalCardSearchRequest(semantic_sort="large green creature threats"),
+            immutable_filters=CardSearchFilters(),
+            edhrec_ranking=_green_commander_ranking(),
+        )
+    )
+
+    # 0.5*0.70 + 0.5*0.80 beats 0.5*0.80 + 0.5*0.30 beats 0.5*0.95 + 0.5*0.
+    assert [candidate.card.name for candidate in result.candidates] == [
+        "Gigantosaurus",
+        "Kalonian Twingrove",
+        "Ghalta, Primal Hunger",
+    ]
+    assert result.payload["compiled_query"]["primary_sort"] == "weighted"
+    assert result.payload["compiled_query"]["weighted_sort"]["applied_weights"] == {
+        "semantic": 0.5,
+        "edhrec_inclusion": 0.5,
+    }
+    assert "weighted sort score 0.750" in result.candidates[0].exact_match_evidence
+
+
+def test_weighted_sort_orders_like_semantic_without_commander_evidence() -> None:
+    semantic_index = StubSemanticIndex(
+        {
+            GHALTA.oracle_id: 0.95,
+            KALONIAN_TWINGROVE.oracle_id: 0.80,
+            GIGANTOSAURUS.oracle_id: 0.70,
+        }
+    )
+    tool = LocalCardSearchTool(  # type: ignore[arg-type]
+        StubCatalog([GHALTA, GIGANTOSAURUS, KALONIAN_TWINGROVE]),
+        default_max_results=10,
+        hard_max_results=60,
+        semantic_index=semantic_index,  # type: ignore[arg-type]
+    )
+
+    # Unlike the two EDHREC orderings, weighted must never reject a run without
+    # commander evidence: it is the default the agent gets when it says nothing.
+    result = asyncio.run(
+        tool.search(
+            LocalCardSearchRequest(
+                semantic_sort="large green creature threats",
+                sort_by="weighted",
+            ),
+            immutable_filters=CardSearchFilters(),
+        )
+    )
+
+    assert [candidate.card.name for candidate in result.candidates] == [
+        "Ghalta, Primal Hunger",
+        "Kalonian Twingrove",
+        "Gigantosaurus",
+    ]
+    assert result.payload["compiled_query"]["weighted_sort"]["applied_weights"] == {
+        "semantic": 1.0,
+    }
+
+
+def test_weighted_sort_uses_edhrec_alone_when_no_semantic_sort_was_requested() -> None:
+    tool = LocalCardSearchTool(  # type: ignore[arg-type]
+        StubCatalog([GHALTA, GIGANTOSAURUS, KALONIAN_TWINGROVE]),
         default_max_results=10,
         hard_max_results=60,
     )
 
     result = asyncio.run(
         tool.search(
-            LocalCardSearchRequest(name={"query": "Ghalta"}),  # type: ignore[arg-type]
+            LocalCardSearchRequest(types={"must_contain_all": ["Creature"]}),  # type: ignore[arg-type]
+            immutable_filters=CardSearchFilters(),
+            edhrec_ranking=_green_commander_ranking(),
+        )
+    )
+
+    assert [candidate.card.name for candidate in result.candidates] == [
+        "Gigantosaurus",
+        "Kalonian Twingrove",
+        "Ghalta, Primal Hunger",
+    ]
+    assert result.payload["compiled_query"]["weighted_sort"]["applied_weights"] == {
+        "edhrec_inclusion": 1.0,
+    }
+
+
+def test_name_similarity_orders_a_misspelled_name_without_removing_anything() -> None:
+    tool = LocalCardSearchTool(  # type: ignore[arg-type]
+        StubCatalog([GIGANTOSAURUS, KALONIAN_TWINGROVE, GHALTA]),
+        default_max_results=10,
+        hard_max_results=60,
+    )
+
+    # "Kalonain Twingrve" matches no card title as a substring, which is exactly
+    # the case the old hard filter turned into an empty page. The target also
+    # sorts last alphabetically, so passing this proves the ordering is by name
+    # similarity rather than by the name tie-breaker.
+    result = asyncio.run(
+        tool.search(
+            LocalCardSearchRequest(name_sort="Kalonain Twingrve", sort_by="name_similarity"),
             immutable_filters=CardSearchFilters(),
         )
     )
 
-    assert [candidate.card.name for candidate in result.candidates] == ["Ghalta, Primal Hunger"]
+    assert result.candidates[0].card.name == "Kalonian Twingrove"
+    assert result.payload["total_candidates"] == 3
+    assert result.payload["compiled_query"]["primary_sort"] == "name_similarity"
+    assert any(
+        "name similarity" in evidence
+        for evidence in result.candidates[0].exact_match_evidence
+    )
+
+
+def test_name_sort_and_name_similarity_require_each_other() -> None:
+    with pytest.raises(ValidationError, match="name_similarity sorting requires name_sort"):
+        LocalCardSearchRequest(sort_by="name_similarity")
+    with pytest.raises(ValidationError, match="name_sort requires sort_by name_similarity"):
+        LocalCardSearchRequest(name_sort="Ghalta")
+    with pytest.raises(ValidationError, match="name_sort requires sort_by name_similarity"):
+        LocalCardSearchRequest(name_sort="Ghalta", sort_by="weighted")
 
 
 def test_provider_shorthand_is_normalized_before_strict_validation() -> None:
@@ -400,13 +561,14 @@ def test_provider_shorthand_is_normalized_before_strict_validation() -> None:
     )
 
     assert normalized == {
-        "name": {"query": "Ghalta"},
+        "name_sort": "Ghalta",
+        "sort_by": "name_similarity",
         "types": {"must_contain_all": ["Creature"]},
         "colors": {"identity": ["G"]},
         "power": {"minimum": 5.0},
     }
     assert changes == [
-        "name string -> name.query",
+        "name string -> name_sort with name_similarity ordering",
         "types string -> types.must_contain_all",
         "colors string -> colors.identity",
         "power numeric string -> power.minimum",
@@ -422,7 +584,9 @@ def test_agent_prompt_teaches_functional_versus_printed_type_vocabulary() -> Non
     assert "# Tools" in prompt
     assert "# Guidelines" in prompt
     assert "## How Commander players describe cards" in prompt
-    assert "## You own your filters" in prompt
+    # Deliberately no assertion on a `## You own your filters` heading. It carried
+    # no body, so pinning it asserted nothing about what the prompt teaches while
+    # blocking any tidy-up of the section list. Pin taught content, not headings.
     # Functional categories the model must leave semantic.
     for category in ("removal", "ramp", "board wipe", "tutors"):
         assert category in prompt

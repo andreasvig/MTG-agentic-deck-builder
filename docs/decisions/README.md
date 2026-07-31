@@ -36,6 +36,10 @@ tradeoffs; they are not task lists.
 | [0018](0018-runtime-owned-and-query-explicit-filters.md) | Partly superseded | Runtime-owned legality and query-explicit type/color filters |
 | [0019](0019-prompt-taught-agent-filters.md) | Accepted | Agent owns its type/color filters; intent taught in the prompt |
 | [0020](0020-system-prompt-owns-all-agent-logic.md) | Accepted | System prompt owns all logic; user and tool messages are data only |
+| [0021](0021-weighted-default-agent-ordering.md) | Accepted | Weighted semantic + EDHREC inclusion blend is the default agent ordering |
+| [0022](0022-remove-set-and-rarity-agent-filters.md) | Accepted | Remove printing-level set and rarity filters from the agent tool |
+| [0023](0023-name-similarity-ordering-instead-of-a-name-filter.md) | Accepted | Card names order by fuzzy similarity instead of filtering by substring |
+| [0024](0024-cheapest-ordinary-printing-selection.md) | Accepted | Catalog keeps the cheapest ordinary printing, not the newest one |
 
 ## Updating Decisions
 
