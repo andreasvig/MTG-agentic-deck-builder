@@ -14,6 +14,7 @@ from mtg_deck_builder.agentic_card_search import (
     LocalCardSearchTool,
     _normalize_tool_arguments,
     _render_filter_lines,
+    _tool_definitions,
 )
 from mtg_deck_builder.agentic_search_debug import JsonlAgentSearchTraceLogger
 from mtg_deck_builder.card_catalog import CatalogEntry, card_title_aliases
@@ -1607,3 +1608,82 @@ def test_agent_can_omit_irrelevant_candidates(
     output_response = result.debug.trace["stages"][6]["details"]
     assert output_response["ranked_ids"] == [1]
     assert output_response["ranked_cards"] == [{"rank": 1, "name": "Ghalta, Primal Hunger"}]
+
+
+def _payload_probe_service(settings: AgenticSearchSettings) -> tuple[object, StubModelClient]:
+    client = StubModelClient([GHALTA])
+    service = AgenticCardSearchService(
+        fuzzy_provider=StubFuzzyProvider(),  # type: ignore[arg-type]
+        local_tool=StubTool([GHALTA]),  # type: ignore[arg-type]
+        model_client=client,  # type: ignore[arg-type]
+        settings=settings,
+        page_size=6,
+        trace_logger=None,
+        trace_log_path=None,
+        debug_default_enabled=False,
+    )
+    asyncio.run(service.search(AgenticCardSearchRequest(q="green big creature")))
+    return service, client
+
+
+def test_temperature_is_omitted_entirely_when_the_model_rejects_it() -> None:
+    # A model such as the GPT-5 series has no `temperature` endpoint, and
+    # `provider.require_parameters` turns an unsupported key into a 404 rather than
+    # ignoring it, so the key must be absent rather than null.
+    _, client = _payload_probe_service(
+        AgenticSearchSettings(enabled=True, temperature=None),
+    )
+
+    assert client.payloads, "expected the agent to issue model calls"
+    for payload in client.payloads:
+        assert "temperature" not in payload
+
+
+def test_configured_temperature_is_sent_on_every_model_call() -> None:
+    _, client = _payload_probe_service(
+        AgenticSearchSettings(enabled=True, temperature=0.25),
+    )
+
+    assert [payload["temperature"] for payload in client.payloads] == [0.25, 0.25]
+
+
+def test_configured_reasoning_effort_is_sent_on_every_model_call() -> None:
+    _, client = _payload_probe_service(
+        AgenticSearchSettings(enabled=True, reasoning_effort="low"),
+    )
+
+    assert [payload["reasoning"] for payload in client.payloads] == [  # type: ignore[index]
+        {"effort": "low", "exclude": False},
+        {"effort": "low", "exclude": False},
+    ]
+
+
+def test_advertised_tool_schema_avoids_provider_hostile_constructs() -> None:
+    definition = _tool_definitions()[0]["function"]
+    schema = definition["parameters"]
+
+    # `strict` would require every property to be listed in `required`, and every
+    # field of this tool is optional, so claiming it made OpenAI reject the call.
+    assert "strict" not in definition
+
+    patterns: list[str] = []
+
+    def collect(node: object) -> None:
+        if isinstance(node, dict):
+            pattern = node.get("pattern")
+            if isinstance(pattern, str):
+                patterns.append(pattern)
+            for value in node.values():
+                collect(value)
+        elif isinstance(node, list):
+            for item in node:
+                collect(item)
+
+    collect(schema)
+    # Pydantic renders Decimal as "number or numeric string", and that string
+    # alternative carries a negative lookahead OpenAI's validator refuses.
+    assert not [pattern for pattern in patterns if "(?!" in pattern or "(?=" in pattern]
+    assert schema["$defs"]["PriceRange"]["properties"]["minimum"]["anyOf"] == [
+        {"minimum": 0.0, "type": "number"},
+        {"type": "null"},
+    ]

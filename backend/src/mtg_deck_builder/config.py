@@ -249,6 +249,8 @@ class AgenticSearchSettings(BaseModel):
     enabled: bool = False
     provider: Literal["openrouter"] = "openrouter"
     model: str = "google/gemini-3.5-flash-lite"
+    reasoning_effort: Literal["minimal", "low", "medium", "high"] = "minimal"
+    temperature: Annotated[float, Field(ge=0, le=2)] | None = 0
     max_tool_calls: Literal[1] = 1
     max_tool_results: Annotated[int, Field(ge=1, le=60)] = 60
     timeout_seconds: Annotated[float, Field(gt=0, le=120)] = 20

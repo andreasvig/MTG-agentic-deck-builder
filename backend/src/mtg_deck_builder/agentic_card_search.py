@@ -11,7 +11,7 @@ from time import monotonic, perf_counter
 from typing import Any
 from uuid import UUID, uuid4
 
-from pydantic import TypeAdapter, ValidationError
+from pydantic import BaseModel, TypeAdapter, ValidationError
 
 from mtg_deck_builder.agentic_search import (
     AgentSearchContractError,
@@ -620,8 +620,8 @@ class AgenticCardSearchService:
             "messages": messages,
             "tools": tools,
             "tool_choice": "required",
-            "temperature": 0,
-            "reasoning": {"effort": "minimal", "exclude": False},
+            **self._temperature_payload(),
+            "reasoning": {"effort": self._settings.reasoning_effort, "exclude": False},
             "provider": {"require_parameters": True},
         }
         trace.add_stage("initial_model_request", initial_payload)
@@ -735,8 +735,8 @@ class AgenticCardSearchService:
         final_payload = {
             "model": self._settings.model,
             "messages": final_messages,
-            "temperature": 0,
-            "reasoning": {"effort": "minimal", "exclude": False},
+            **self._temperature_payload(),
+            "reasoning": {"effort": self._settings.reasoning_effort, "exclude": False},
             "provider": {"require_parameters": True},
             "response_format": {
                 "type": "json_schema",
@@ -782,6 +782,18 @@ class AgenticCardSearchService:
             cards=ranked_cards,
             next_candidate_id=candidate_id_start + len(union),
         )
+
+    def _temperature_payload(self) -> dict[str, float]:
+        """Send `temperature` only when configured, since not every model accepts it.
+
+        Reasoning models such as the GPT-5 series reject the parameter outright, and
+        `provider.require_parameters` turns an unsupported parameter into a routing
+        failure rather than a silently dropped field, so the key has to be absent.
+        """
+
+        if self._settings.temperature is None:
+            return {}
+        return {"temperature": self._settings.temperature}
 
     async def _page_stored_search(
         self,
@@ -1321,6 +1333,44 @@ def _decimal_in_range(
     )
 
 
+def _provider_tool_schema(model: type[BaseModel]) -> dict[str, Any]:
+    """Render a model's JSON schema for advertisement to a model provider.
+
+    Pydantic describes a `Decimal` field as "a number, or a numeric string", and
+    that string alternative carries a regex with a negative lookahead. OpenAI's
+    schema validator rejects lookarounds outright, so the whole tool call fails.
+    Dropping the string alternative is safe in both directions: it only narrows
+    what the tool advertises, and runtime validation still accepts either form.
+    """
+
+    def prune(node: Any) -> Any:
+        if isinstance(node, dict):
+            alternatives = node.get("anyOf")
+            if isinstance(alternatives, list):
+                kept = [
+                    alternative
+                    for alternative in alternatives
+                    if not _has_unsupported_pattern(alternative)
+                ]
+                # Never prune away every branch; an empty anyOf is invalid schema.
+                node = {**node, "anyOf": kept or alternatives}
+            return {key: prune(value) for key, value in node.items()}
+        if isinstance(node, list):
+            return [prune(item) for item in node]
+        return node
+
+    return prune(model.model_json_schema())
+
+
+def _has_unsupported_pattern(schema: Any) -> bool:
+    """Report whether a subschema constrains strings with an unsupported regex."""
+
+    if not isinstance(schema, dict):
+        return False
+    pattern = schema.get("pattern")
+    return isinstance(pattern, str) and ("(?!" in pattern or "(?=" in pattern)
+
+
 def _tool_definitions() -> list[dict[str, Any]]:
     return [
         {
@@ -1332,8 +1382,13 @@ def _tool_definitions() -> list[dict[str, Any]]:
                 "description": (
                     "Filter and sort the complete local Magic card catalog."
                 ),
-                "parameters": LocalCardSearchRequest.model_json_schema(),
-                "strict": True,
+                "parameters": _provider_tool_schema(LocalCardSearchRequest),
+                # Deliberately not `strict`. Strict mode requires every property to
+                # appear in `required`, expressing optionality as a nullable type,
+                # and every field of this tool is optional. Gemini ignored the flag,
+                # but OpenAI enforces it and rejected the whole call, so claiming it
+                # was simply untrue. `_normalize_tool_arguments` plus strict Pydantic
+                # validation is what actually guards these arguments.
             },
         },
     ]

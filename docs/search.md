@@ -7,9 +7,11 @@ confident cards visible and starts one bounded agentic search.
 
 The agent makes exactly one structured local-catalog tool call, sees the result
 in the same conversation, and makes one final structured call that ranks the
-relevant candidate IDs. The agent has no live Scryfall-query tool. Name, mana,
-explicit result type/color, power/toughness, price, set, and rarity conditions
-filter locally. Rules-text meaning belongs to semantic retrieval. Commander
+relevant candidate IDs. The agent has no live Scryfall-query tool. Mana,
+explicit result type/color, power/toughness, and price conditions filter
+locally. Card names are an ordering rather than a filter (see
+[`ADR 0023`](decisions/0023-name-similarity-ordering-instead-of-a-name-filter.md)). Printing-level set and rarity conditions are deliberately not offered
+(see [`ADR 0022`](decisions/0022-remove-set-and-rarity-agent-filters.md)). Rules-text meaning belongs to semantic retrieval. Commander
 legality and every interface selection are applied outside the agent tool.
 `semantic_sort` then cosine-sorts every survivor without a similarity threshold.
 See
@@ -145,13 +147,23 @@ tool candidate carries semantic closeness plus any available commander/theme
 inclusion, included-deck count, potential-deck count, and raw synergy. The
 agent selects one primary sort:
 
+- `weighted`: the default. A weighted average of semantic closeness and EDHREC
+  inclusion, using `search.agentic.ranking.weighted`.
 - `semantic`: intent closeness first.
+- `name_similarity`: fuzzy `WRatio` closeness to `name_sort`, for a request that
+  names one card. Paired with `name_sort` by schema validation and deliberately
+  excluded from the `weighted` blend.
 - `edhrec_inclusion`: cards most commonly included with this commander/theme.
 - `edhrec_synergy`: cards that most overperform their general baseline for this
   commander/theme.
 
-These are ranking signals only. There is no minimum score, unknown EDHREC cards
-are not treated as zero, and the final model may reorder or omit candidates.
+These are ranking signals only. There is no minimum score and the final model
+may reorder or omit candidates. As evidence, an unlisted card stays `None` and
+reports `not listed`; inside the `weighted` average it contributes zero
+inclusion, which demotes it without removing it. `weighted` renormalizes over
+the signals present in the run, so it needs no commander evidence, while the two
+EDHREC orderings are rejected without it. See
+[`ADR 0021`](decisions/0021-weighted-default-agent-ordering.md).
 An EDHREC failure does not fail the agent round: semantic ranking continues and
 the page reports the unavailable enhancement. See
 [`ADR 0016`](decisions/0016-commander-theme-evidence-in-agentic-search.md).
@@ -311,7 +323,9 @@ search:
   agentic:
     enabled: true
     provider: openrouter
-    model: google/gemini-3.5-flash-lite
+    model: openai/gpt-5.6-luna
+    reasoning_effort: low
+    temperature:
     max_tool_calls: 1
     local_tool:
       default_max_results: 24
@@ -469,10 +483,12 @@ The debug tool-call step shows the final validated arguments and lists every
 provider-boundary repair. The untouched provider message remains available only
 in the raw JSONL audit trace.
 
-All structured search conditions are hard filters. `semantic_sort` and
-`sort_by` are ranking controls: `semantic_sort` is a natural-language intent
-string, while `sort_by` selects `semantic`, `edhrec_inclusion`, or
-`edhrec_synergy` as the primary ordering. None filters or has a minimum score.
+All structured search conditions are hard filters. `semantic_sort`, `name_sort`,
+and `sort_by` are ranking controls: `semantic_sort` is a natural-language intent
+string, `name_sort` is a card name scored by fuzzy title similarity, and
+`sort_by` selects `weighted`, `semantic`, `edhrec_inclusion`, `edhrec_synergy`,
+or `name_similarity` as the primary ordering and defaults to `weighted`. None
+filters or has a minimum score.
 The service supplies the original user request when the model omits
 `semantic_sort`, so every agent round retains semantic evidence and uses it as
 a tie-breaker for EDHREC sorts. The prompt teaches
@@ -682,6 +698,19 @@ semantic fallback.
   local diagnostics to run `npm run catalog:sync`.
 - A missing OpenRouter key or unavailable model/provider returns a safe HTTP
   503 for the agentic phase; any confident fuzzy previews remain visible.
+- Model parameters are configuration, not constants: `reasoning_effort` and
+  `temperature` are sent on both the tool call and the final ranking. Leave
+  `temperature` empty for a model that has no such endpoint — reasoning models
+  including the GPT-5 series reject it, and because `provider.require_parameters`
+  is on, an unsupported parameter makes OpenRouter find no endpoint at all and
+  the search fails with HTTP 404 rather than ignoring the field.
+- The advertised tool schema is rendered for provider consumption rather than
+  passed through: it does not claim `strict`, because strict mode requires every
+  property to be listed in `required` while every field of this tool is optional,
+  and it omits the numeric-string alternative Pydantic renders for `Decimal`,
+  whose regex uses a negative lookahead that OpenAI's schema validator rejects.
+  Both would otherwise fail the call outright on OpenAI models while passing
+  silently on Gemini.
 - Common provider shorthands are normalized before validation, including
   compact color identities such as `WUBG`. Stale model-supplied `format` or
   `legality` fields are discarded because the interface owns those decisions.

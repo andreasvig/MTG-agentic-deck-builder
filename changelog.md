@@ -121,6 +121,17 @@ All notable changes to this project are documented here.
 
 ### Changed
 
+- Switched the search agent to `openai/gpt-5.6-luna` at `low` reasoning effort,
+  and made both `reasoning_effort` and `temperature` configurable instead of
+  hardcoded. Three provider incompatibilities had to be resolved: the model has no
+  `temperature` endpoint, so the key is now omitted when unset rather than sent as
+  null; the tool no longer claims `strict`, which requires every property to appear
+  in `required` while every field here is optional; and the advertised tool schema
+  drops the numeric-string alternative Pydantic renders for `Decimal`, whose regex
+  uses a negative lookahead that OpenAI's schema validator rejects. Together these
+  fix agent tool calls emitting nested objects as truncated strings, which was
+  returning zero results for queries such as "cheap mana rocks".
+
 - Changed catalog printing selection from the newest printing to the cheapest
   **ordinary** one, so a card no longer shows up as its full-art, Secret Lair or
   promo version. Ranking is image, then a price, then not special, then cheapest.

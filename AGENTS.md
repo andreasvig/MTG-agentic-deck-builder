@@ -124,12 +124,25 @@ Do not mutate deck state directly inside presentation components. Extend
   start the agentic phase.
 - The search agent may call only `search_local_cards`, exactly once per round.
   It may rank previews plus tool candidates and omit irrelevant cards.
+- Model parameters belong in configuration. `provider.require_parameters` is on,
+  so sending a parameter the chosen model lacks fails the whole call: leave
+  `temperature` empty for models that reject it. The advertised tool schema must
+  stay free of `strict` and of regex lookarounds, both of which pass silently on
+  Gemini and fail outright on OpenAI. Verify a model change with a live search,
+  not only with tests — a schema the provider refuses is green in every unit test.
 - Serve cached agent-ranked batches before running another model call. After
   exhaustion, one explicit **Load more** click authorizes one continuation
   round with all visible cards excluded.
-- Treat every local-tool field except `semantic_sort` as a hard filter.
-  `semantic_sort` must run after filters, must never discard by score, and must
-  use the catalog-coupled local embedding sidecar.
+- Treat every local-tool field except `semantic_sort`, `name_sort`, and
+  `sort_by` as a hard filter. `semantic_sort` must run after filters, must never
+  discard by score, and must use the catalog-coupled local embedding sidecar.
+- Card names order, never filter. `name_sort` scores fuzzy title similarity with
+  no threshold and no cap, and pairs with `sort_by: name_similarity` in both
+  directions. Name similarity stays out of the `weighted` blend.
+- An omitted `sort_by` means `weighted`, sourced from `DEFAULT_AGENT_SORT`.
+  `weighted` blends the signals a run actually has, so it must never require
+  commander evidence or reject a run; only `edhrec_inclusion` and
+  `edhrec_synergy` do. Its weights stay in `config.yaml`.
 - Treat type conditions as literal printed type-line fragments. Use separate
   `must_contain_all` values for true intersections, `must_contain_any` for
   alternatives, and no type condition for a broad role that does not name a
