@@ -369,6 +369,49 @@ class EdhrecSettings(BaseModel):
         return stripped
 
 
+class PrintingSelectionSettings(BaseModel):
+    """Rules deciding which printing of a card the local catalog stores and prices."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    exclude_promotional: bool = True
+    exclude_full_art: bool = True
+    exclude_textless: bool = True
+    exclude_foil_only: bool = True
+    special_set_types: tuple[str, ...] = (
+        "promo",
+        "funny",
+        "masterpiece",
+        "from_the_vault",
+        "premium_deck",
+        "arsenal",
+        "spellbook",
+        "eternal",
+    )
+    special_set_codes: tuple[str, ...] = ("sld", "slc", "slu")
+    special_border_colors: tuple[str, ...] = ("borderless", "silver", "yellow")
+    special_promo_types: tuple[str, ...] = (
+        "boosterfun",
+        "boxtopper",
+        "concept",
+        "embossed",
+        "playtest",
+        "poster",
+        "scroll",
+        "serialized",
+        "sldbonus",
+        "thick",
+    )
+    special_frame_effects: tuple[str, ...] = (
+        "etched",
+        "extendedart",
+        "fullart",
+        "shatteredglass",
+        "showcase",
+    )
+    special_security_stamps: tuple[str, ...] = ("acorn",)
+
+
 class Settings(BaseSettings):
     """Runtime settings loaded from environment variables and an optional .env file."""
 
@@ -391,6 +434,9 @@ class Settings(BaseSettings):
     scryfall_bulk_timeout_seconds: Annotated[float, Field(gt=0, le=3_600)] = 900.0
     scryfall_request_interval_seconds: Annotated[float, Field(ge=0, le=10)] = 0.1
     card_catalog_path: Path = Path("local-data/cards.sqlite3")
+    printing_selection: PrintingSelectionSettings = Field(
+        default_factory=PrintingSelectionSettings
+    )
     openrouter_api_key: SecretStr | None = Field(
         default=None,
         validation_alias=AliasChoices(

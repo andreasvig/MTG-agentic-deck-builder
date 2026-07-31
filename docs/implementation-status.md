@@ -21,7 +21,10 @@ not the intended end state.
 
 - Local SQLite catalog synchronized from Scryfall `default_cards`.
 - Streaming, timestamp-aware, atomic bulk import with every paper printing and
-  one representative result per Oracle card.
+  one representative result per Oracle card. Accepts Scryfall's JSON-array and
+  line-delimited exports, and keeps the cheapest ordinary printing rather than
+  the newest one, with the special-version rules in `printing_selection`
+  (ADR 0024).
 - Atomic semantic sidecar synchronized with the exact catalog, using local
   `BAAI/bge-small-en-v1.5` ONNX embeddings over title-resistant gameplay
   document v2. Documents include canonical rules/type/mana/stat text plus
@@ -49,7 +52,9 @@ not the intended end state.
 - Loading, empty, provider-unavailable, and retry states.
 - Default-on **Enhance with EDHREC** when exactly one commander is selected.
   Blank-query/filter-only pages sort by inclusion; typed agentic searches see
-  commander context and may sort by semantic closeness, inclusion, or synergy.
+  commander context and may sort by a weighted blend, semantic closeness,
+  inclusion, or synergy. The blend is the agent's default ordering and falls
+  back to semantic-only without commander evidence.
 - Optional EDHREC deck-theme selection from the commander's advertised themes;
   the selected theme is immutable across the agent prompt, local tool, session,
   and continuation rounds.

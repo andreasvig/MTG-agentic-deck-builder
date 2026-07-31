@@ -184,6 +184,19 @@ When the `CardSearchPage` contract changes, update all of:
 
 - `oracle_id` identifies a gameplay card.
 - `scryfall_id` identifies the selected printing.
+- The catalog keeps one printing per Oracle card, and that choice decides the
+  art, the image and the EUR estimate everywhere. It is the cheapest **ordinary**
+  printing: image first, then a price, then not special, then cheapest. Never
+  reorder those tiers casually — putting cheapness above ordinariness reinstates
+  full-art and Secret Lair versions, and putting ordinariness above price
+  presence drops cards out of every price filter. See
+  [ADR 0024](docs/decisions/0024-cheapest-ordinary-printing-selection.md).
+- What counts as a special printing is configuration (`printing_selection` in
+  `config.yaml`), not code. Changing it requires `catalog:sync --force`, because
+  selection happens at import time and never at query time.
+- Bulk import accepts Scryfall's JSON-array and line-delimited exports. The URI
+  suffix decides compression and format; the response headers no longer disclose
+  either.
 - `local-data/card-tagger.sqlite3` is optional derived enrichment keyed by
   `oracle_id`; explicit tag filters require it, and its bounded concepts are a
   versioned input to semantic document v2 when installed.

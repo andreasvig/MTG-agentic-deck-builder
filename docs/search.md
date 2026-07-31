@@ -24,12 +24,17 @@ builds `local-data/cards.sqlite3`, and ensures the local semantic sidecar at
 
 The importer:
 
-1. Discovers the current `default_cards` download.
+1. Discovers the current `default_cards` download, accepting either the JSON
+   array or the line-delimited export Scryfall now ships.
 2. Skips rebuilding when that bulk timestamp is already installed.
-3. Streams the compressed JSON without loading the complete export into memory.
+3. Streams the compressed body without loading the complete export into memory.
 4. Keeps eligible English paper printings.
 5. Stores every printing and selects one representative printing per
-   `oracle_id` for search results.
+   `oracle_id` for search results: the cheapest printing that is not a special
+   version, preferring one with an image and a price over both. `printing_selection`
+   in `config.yaml` defines what counts as special, and a card with no priced
+   ordinary printing falls back to its cheapest special one rather than being
+   dropped. See [`ADR 0024`](decisions/0024-cheapest-ordinary-printing-selection.md).
 6. Retains Oracle text, EUR price, and power/toughness in the local card record.
 7. Validates a temporary SQLite database.
 8. Atomically replaces the installed database only after a successful import.

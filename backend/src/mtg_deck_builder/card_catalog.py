@@ -17,14 +17,25 @@ from urllib.request import Request, urlopen
 from uuid import UUID
 
 import ijson
-from pydantic import AnyHttpUrl, BaseModel, ConfigDict, Field, ValidationError
+from pydantic import (
+    AnyHttpUrl,
+    BaseModel,
+    ConfigDict,
+    Field,
+    ValidationError,
+    model_validator,
+)
 
+from mtg_deck_builder.config import PrintingSelectionSettings
 from mtg_deck_builder.domain import CardSearchResult
 from mtg_deck_builder.providers.cards import CardSearchUnavailable
 from mtg_deck_builder.providers.scryfall import map_scryfall_card
 
-_SCHEMA_VERSION = 2
+_SCHEMA_VERSION = 3
 _BULK_TYPE = "default_cards"
+# Cents ceiling used to invert a price into an ascending selection key. Well above
+# the dearest printing Scryfall quotes, so no real card saturates it.
+_PRICE_CENTS_CEILING = 99_999_999
 
 
 @dataclass(frozen=True)
@@ -52,10 +63,26 @@ class _BulkDataItem(BaseModel):
 
     type: str
     updated_at: datetime
-    download_uri: AnyHttpUrl
-    content_type: str
+    # Scryfall retired the JSON-array export in favour of line-delimited JSON and
+    # dropped content_type/size from the listing, so every field but the type and
+    # timestamp is optional and at least one download URI has to be present.
+    download_uri: AnyHttpUrl | None = None
+    jsonl_download_uri: AnyHttpUrl | None = None
+    content_type: str | None = None
     content_encoding: str | None = None
-    size: Annotated[int, Field(ge=0)]
+    size: Annotated[int | None, Field(ge=0)] = None
+
+    @model_validator(mode="after")
+    def a_download_uri_must_be_offered(self) -> _BulkDataItem:
+        if self.download_uri is None and self.jsonl_download_uri is None:
+            raise ValueError("bulk dataset offered no download URI")
+        return self
+
+    @property
+    def source_uri(self) -> str:
+        """Prefer the line-delimited export, which is the shape Scryfall now ships."""
+
+        return str(self.jsonl_download_uri or self.download_uri)
 
 
 class _BulkDataList(BaseModel):
@@ -186,12 +213,14 @@ class ScryfallBulkCatalogSync:
         api_base_url: str,
         user_agent: str,
         timeout_seconds: float,
+        printing_selection: PrintingSelectionSettings | None = None,
         open_url: Callable[..., Any] = urlopen,
     ) -> None:
         self.target = target
         self.api_base_url = api_base_url.rstrip("/")
         self.user_agent = user_agent
         self.timeout_seconds = timeout_seconds
+        self.printing_selection = printing_selection or PrintingSelectionSettings()
         self._open_url = open_url
 
     def sync(self, *, force: bool = False) -> CatalogSyncResult:
@@ -214,18 +243,21 @@ class ScryfallBulkCatalogSync:
                 path=self.target,
             )
 
-        request = self._request(str(metadata.download_uri))
+        source_uri = metadata.source_uri
+        request = self._request(source_uri)
         with self._open_url(request, timeout=self.timeout_seconds) as response:
+            # The export is served as a gzip body with no Content-Encoding header,
+            # so the URI suffix decides compression whenever the headers stay quiet.
             encoding = response.headers.get("Content-Encoding") or metadata.content_encoding
-            stream: BinaryIO
-            if encoding and "gzip" in encoding.casefold():
-                stream = gzip.GzipFile(fileobj=response)
-            else:
-                stream = response
+            compressed = source_uri.casefold().endswith(".gz") or (
+                encoding is not None and "gzip" in encoding.casefold()
+            )
+            stream: BinaryIO = gzip.GzipFile(fileobj=response) if compressed else response
             return self.import_stream(
                 stream,
                 source_updated_at=source_updated_at,
-                source_uri=str(metadata.download_uri),
+                source_uri=source_uri,
+                line_delimited=_is_line_delimited(source_uri),
             )
 
     def import_stream(
@@ -234,8 +266,9 @@ class ScryfallBulkCatalogSync:
         *,
         source_updated_at: str,
         source_uri: str,
+        line_delimited: bool = False,
     ) -> CatalogSyncResult:
-        """Import a JSON array stream into a temporary DB, then swap it in."""
+        """Import a JSON array or JSONL stream into a temporary DB, then swap it in."""
 
         self.target.parent.mkdir(parents=True, exist_ok=True)
         file_descriptor, temporary_name = tempfile.mkstemp(
@@ -249,9 +282,10 @@ class ScryfallBulkCatalogSync:
         try:
             cards, printings, skipped = _build_database(
                 temporary_path,
-                ijson.items(stream, "item"),
+                _iter_bulk_payloads(stream, line_delimited=line_delimited),
                 source_updated_at=source_updated_at,
                 source_uri=source_uri,
+                printing_selection=self.printing_selection,
             )
             os.replace(temporary_path, self.target)
         except BaseException:
@@ -313,12 +347,30 @@ def normalize_card_title(value: str) -> str:
     return re.sub(r"[^a-z0-9]+", " ", value.casefold()).strip()
 
 
+def _is_line_delimited(source_uri: str) -> bool:
+    """Report whether the export URI names a line-delimited JSON body."""
+
+    return source_uri.casefold().removesuffix(".gz").endswith(".jsonl")
+
+
+def _iter_bulk_payloads(stream: BinaryIO, *, line_delimited: bool) -> Iterator[object]:
+    """Stream card payloads from either export shape without buffering the whole body."""
+
+    if not line_delimited:
+        yield from ijson.items(stream, "item")
+        return
+    for line in stream:
+        if stripped := line.strip():
+            yield json.loads(stripped)
+
+
 def _build_database(
     path: Path,
     payloads: Iterator[object],
     *,
     source_updated_at: str,
     source_uri: str,
+    printing_selection: PrintingSelectionSettings,
 ) -> tuple[int, int, int]:
     connection = sqlite3.connect(path)
     try:
@@ -387,7 +439,7 @@ def _build_database(
             printings += 1
 
             aliases = card_title_aliases(card)
-            selection_key = _selection_key(card, payload)
+            selection_key = _selection_key(card, payload, printing_selection)
             connection.execute(
                 """
                 INSERT INTO cards (
@@ -473,16 +525,73 @@ def _is_searchable_paper_card(payload: dict[str, Any]) -> bool:
     )
 
 
-def _selection_key(card: CardSearchResult, payload: dict[str, Any]) -> str:
+def _is_special_printing(payload: dict[str, Any], policy: PrintingSelectionSettings) -> bool:
+    """Report whether a printing is an alternate-art, promotional or collector version."""
+
+    def matches(value: object, allowed: tuple[str, ...]) -> bool:
+        return isinstance(value, str) and value.casefold() in {
+            entry.casefold() for entry in allowed
+        }
+
+    def intersects(values: object, allowed: tuple[str, ...]) -> bool:
+        if not isinstance(values, list):
+            return False
+        return any(matches(value, allowed) for value in values)
+
+    finishes = payload.get("finishes")
+    return (
+        (policy.exclude_promotional and bool(payload.get("promo")))
+        or (policy.exclude_full_art and bool(payload.get("full_art")))
+        or (policy.exclude_textless and bool(payload.get("textless")))
+        or (
+            policy.exclude_foil_only
+            and isinstance(finishes, list)
+            and not intersects(finishes, ("nonfoil",))
+        )
+        or matches(payload.get("set_type"), policy.special_set_types)
+        or matches(payload.get("set"), policy.special_set_codes)
+        or matches(payload.get("border_color"), policy.special_border_colors)
+        or matches(payload.get("security_stamp"), policy.special_security_stamps)
+        or intersects(payload.get("promo_types"), policy.special_promo_types)
+        or intersects(payload.get("frame_effects"), policy.special_frame_effects)
+    )
+
+
+def _selection_key(
+    card: CardSearchResult,
+    payload: dict[str, Any],
+    policy: PrintingSelectionSettings,
+) -> str:
+    """Rank a printing so the highest key is the one the catalog should keep.
+
+    Tiers, most significant first: a printing needs an image, then a price, then it
+    should be an ordinary rather than a special version, and only then does the
+    cheapest win. Cheapness sits below the ordinary tier deliberately — a plain
+    printing is preferred even when a full-art or promo one is a few cents less.
+    Cards with no priced ordinary printing keep falling back to the cheapest
+    special one rather than dropping out of the catalog.
+    """
+
     has_image = card.image_uris is not None or any(
         face.image_uris is not None for face in card.card_faces
     )
-    score = (
-        int(has_image) * 100
-        + int(card.prices.eur is not None) * 10
-        + int(not payload.get("promo", False))
+    price = card.prices.eur
+    # Clamped both ways so the field keeps a fixed width; a wider field would
+    # sort as a longer string and quietly break every comparison against it.
+    cheapness = (
+        _PRICE_CENTS_CEILING - max(0, min(int(price * 100), _PRICE_CENTS_CEILING))
+        if price is not None
+        else 0
     )
-    return f"{score:03d}:{payload.get('released_at', '')}:{card.scryfall_id}"
+    tiers = (
+        int(has_image),
+        int(price is not None),
+        int(not _is_special_printing(payload, policy)),
+    )
+    return (
+        f"{tiers[0]}{tiers[1]}{tiers[2]}"
+        f":{cheapness:08d}:{payload.get('released_at', '')}:{card.scryfall_id}"
+    )
 
 
 def _read_only_connection(path: Path) -> sqlite3.Connection:

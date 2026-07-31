@@ -121,6 +121,15 @@ All notable changes to this project are documented here.
 
 ### Changed
 
+- Changed catalog printing selection from the newest printing to the cheapest
+  **ordinary** one, so a card no longer shows up as its full-art, Secret Lair or
+  promo version. Ranking is image, then a price, then not special, then cheapest.
+  30.8% of priced cards were previously represented by a dearer printing than
+  their cheapest, median 1.62x, and 897 cards were wrongly excluded from a €1
+  price filter. What counts as special is configuration in `printing_selection`;
+  a card with no priced ordinary printing falls back to its cheapest special one.
+  Catalog schema version 3, so an installed catalog rebuilds itself
+  ([`ADR 0024`](docs/decisions/0024-cheapest-ordinary-printing-selection.md)).
 - Made Commander legality and format exclusively runtime-owned and removed them
   from the agent tool schema. The trace now discards stale model-supplied copies.
 - Rewrote the agent system prompt as Markdown with a `# Task` / `# Inputs` /
@@ -175,6 +184,11 @@ All notable changes to this project are documented here.
 
 ### Fixed
 
+- Fixed bulk catalog sync against Scryfall's current API, which replaced the
+  JSON-array export with line-delimited JSON, dropped `download_uri`,
+  `content_type` and `size` from the bulk listing, and serves the body as
+  `application/gzip` with no `Content-Encoding` header. Discovery now accepts
+  either shape and the URI suffix decides compression and format.
 - Normalized compact agent color identities such as `WUBG` and empty provider
   placeholders into the local tool's strict schema, and report remaining model
   contract failures as truthful HTTP 502 errors instead of

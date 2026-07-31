@@ -183,10 +183,12 @@ objects do not cross this boundary.
 
 ### `card_catalog.py`
 
-Discovers and streams Scryfall `default_cards`, builds temporary SQLite tables
-for all paper printings and canonical Oracle cards, validates the result, and
-atomically installs it. `SQLiteCardCatalog` reloads after a swapped file's
-modification time changes.
+Discovers and streams Scryfall `default_cards` in either the JSON-array or the
+line-delimited shape, builds temporary SQLite tables for all paper printings and
+canonical Oracle cards, validates the result, and atomically installs it. The one
+printing kept per Oracle card is the cheapest that is not a special version, per
+`printing_selection` and ADR 0024. `SQLiteCardCatalog` reloads after a swapped
+file's modification time changes.
 
 ### `tagger_catalog.py`
 

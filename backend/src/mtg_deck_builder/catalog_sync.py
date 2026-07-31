@@ -25,6 +25,7 @@ def main() -> None:
         api_base_url=settings.scryfall_base_url,
         user_agent=settings.scryfall_user_agent,
         timeout_seconds=settings.scryfall_bulk_timeout_seconds,
+        printing_selection=settings.printing_selection,
     ).sync(force=args.force)
     semantic_settings = settings.search.semantic_sort
     semantic_result = asyncio.run(

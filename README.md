@@ -216,9 +216,10 @@ reuse the preview ID, and the model may omit irrelevant results. See
 [`ADR 0009`](docs/decisions/0009-progressive-one-tool-agentic-search.md).
 
 Inside that tool, structured card conditions are hard filters.
-`semantic_sort` is non-filtering evidence; `sort_by` selects semantic
-closeness, EDHREC inclusion, or EDHREC synergy as the primary ordering. No
-ranking value has a threshold. The
+`semantic_sort` is non-filtering evidence; `sort_by` selects a weighted blend of
+semantic closeness and EDHREC inclusion, semantic closeness alone, EDHREC
+inclusion, or EDHREC synergy as the primary ordering, and defaults to the blend.
+No ranking value has a threshold. The
 agent prompt includes examples for recovering intent from imperfect queries.
 Type filters compare literal printed type-line fragments: combinations such as
 Artifact Creature use separate `must_contain_all` values, while alternatives
@@ -371,7 +372,9 @@ recorded in
 - No plaintext import/export.
 - No deck analytics.
 - No agent chat, tools, or confirmed patch workflow.
-- Search returns one representative printing per gameplay card.
+- Search returns one representative printing per gameplay card: the cheapest one
+  that is not a full-art, promo, foil-only or Secret Lair version. There is no
+  way to ask for a specific printing.
 - Scryfall images remain remote.
 
 The recommended implementation order is maintained in
