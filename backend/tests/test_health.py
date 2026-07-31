@@ -1,14 +1,15 @@
 import json
+from typing import get_args
 
 from fastapi.testclient import TestClient
 from pytest import MonkeyPatch
 
+from mtg_deck_builder.agentic_card_search import DEFAULT_AGENT_SORT
 from mtg_deck_builder.config import Settings
 from mtg_deck_builder.domain.agentic_search import (
     ColorSearch,
     LocalCardSearchRequest,
     ManaSearch,
-    NameSearch,
     NumericRange,
     TypeSearch,
 )
@@ -123,11 +124,23 @@ def test_settings_load_repository_search_yaml() -> None:
     )[0]
     for field_name in LocalCardSearchRequest.model_fields:
         assert f"`{field_name}`" in tools_section, field_name
-    for nested_model in (NameSearch, ManaSearch, TypeSearch, ColorSearch, NumericRange):
+    for nested_model in (ManaSearch, TypeSearch, ColorSearch, NumericRange):
         for field_name in nested_model.model_fields:
             assert f"`{field_name}`" in tools_section, f"{nested_model.__name__}.{field_name}"
+    # Every ordering the schema accepts must be explained, including the default.
+    sort_values = [
+        value
+        for member in get_args(LocalCardSearchRequest.model_fields["sort_by"].annotation)
+        for value in get_args(member)
+    ]
+    assert DEFAULT_AGENT_SORT in sort_values
+    for value in sort_values:
+        assert f"`{value}`" in tools_section, value
     # The stated result cap must be the configured one, never a stale number.
     assert str(settings.search.agentic.local_tool.hard_max_results) in tools_section
+    # Weights are Andreas's to tune; only the wiring is pinned here.
+    weights = settings.search.agentic.ranking.weighted
+    assert max(weights.semantic, weights.edhrec_inclusion) > 0
     # Every worked example must be a valid tool payload with a semantic_sort.
     prompt_lines = settings.search.agentic.system_prompt.splitlines()
     example_payloads = [
@@ -135,8 +148,12 @@ def test_settings_load_repository_search_yaml() -> None:
         for line in prompt_lines
         if line.strip().startswith("`{") and line.strip().endswith("}`")
     ]
-    assert len(example_payloads) == 8
+    # How many examples to carry is editorial, so this is a floor, not a pin.
+    assert len(example_payloads) >= 8
     assert all("semantic_sort" in payload for payload in example_payloads)
+    # A worked example the tool would reject teaches the model a payload that cannot run.
+    for payload in example_payloads:
+        LocalCardSearchRequest.model_validate(payload)
 
 
 def test_settings_accept_standard_openrouter_key_name(
