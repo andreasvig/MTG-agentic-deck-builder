@@ -867,7 +867,7 @@ select {
   color: var(--ink-soft);
   font: inherit;
   background: transparent;
-  border: 1px solid var(--border);
+  border: 1px solid var(--line-strong);
   border-radius: 5px;
   cursor: pointer;
 }
