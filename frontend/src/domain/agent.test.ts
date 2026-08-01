@@ -14,7 +14,6 @@ import {
   toDeckAgentHistory,
 } from "./agent";
 import type { DeckCardChange, DeckHistory, DeckSession } from "./history";
-import { DECK_HISTORY_SESSION_CAP } from "./history";
 
 function entry(
   content: string,
@@ -480,7 +479,7 @@ describe("posted deck history", () => {
       index: 0,
     });
     const raw = storedHistory(
-      Array.from({ length: DECK_HISTORY_SESSION_CAP + 12 }, (_, index) =>
+      Array.from({ length: 62 }, (_, index) =>
         recordedSession(index, "user", [change]),
       ),
     );
@@ -489,12 +488,16 @@ describe("posted deck history", () => {
 
     // A request over the bound is refused whole, which would fail the chat turn rather
     // than the history — so the browser prunes before it asks.
-    expect(posted.sessions).toHaveLength(DECK_HISTORY_SESSION_CAP);
+    //
+    // Pinned to the literal 50, deliberately, and NOT to `DECK_HISTORY_SESSION_CAP`.
+    // That constant is storage depth and exists to be tuned against the localStorage
+    // budget; this number is the backend's `MAX_HISTORY_SESSIONS`, and exceeding it 422s
+    // the turn. Asserting against the shared symbol would have let a quota-motivated
+    // change to read depth silently break every conversation with this test still green.
+    expect(posted.sessions).toHaveLength(50);
     // Oldest session first, and what was dropped is the oldest of them.
     expect(posted.sessions[0].started_at).toBe(recordedAt(12));
-    expect(posted.sessions.at(-1)?.started_at).toBe(
-      recordedAt(DECK_HISTORY_SESSION_CAP + 11),
-    );
+    expect(posted.sessions.at(-1)?.started_at).toBe(recordedAt(61));
   });
 
   it("keeps the total edit count and one edit's card count inside their bounds", () => {
@@ -541,6 +544,77 @@ describe("posted deck history", () => {
     // Spent newest-first: the newest session keeps its edit, the older one is trimmed.
     expect(posted.sessions.at(-1)?.edits).toHaveLength(1);
     expect(posted.sessions.at(-1)?.edits[0].cards).toHaveLength(250);
+  });
+
+  it("truncates a long reason and card name to the length the backend accepts", () => {
+    const change = recordedChange("N".repeat(400), null, {
+      quantity: 1,
+      section: "mainboard",
+      categories: ["unassigned"],
+      index: 0,
+    });
+    const session = recordedSession(1, "agent", []);
+    session.edits = [
+      {
+        id: "edit-long",
+        at: recordedAt(1),
+        summary: "+1 / −0",
+        reason: "R".repeat(500),
+        cards: [change],
+      },
+    ];
+
+    const posted = toDeckAgentHistory(storedHistory([session]), "deck-a", []);
+    const edit = posted.sessions[0].edits[0];
+
+    // `ShortLabel` is 200 characters and a request over it is refused whole, so an
+    // unbounded model reason would fail the whole chat turn. Nothing exercised this
+    // before: no fixture carried a label anywhere near the bound.
+    expect(edit.reason).toHaveLength(200);
+    expect(edit.cards[0].name).toHaveLength(200);
+  });
+
+  it("drops a stored change the backend would refuse rather than failing the turn", () => {
+    // None of these is producible by `deriveDeckDiff`. They are what a corrupted or
+    // hand-edited log can hold, and `parseDeckHistory` validates the container rather
+    // than every leaf. A rejected request is refused whole, so one bad change would stop
+    // the agent answering at all for this deck instead of costing it some history.
+    const good = recordedChange("Sol Ring", null, {
+      quantity: 1,
+      section: "mainboard",
+      categories: ["unassigned"],
+      index: 0,
+    });
+    const session = recordedSession(1, "user", []);
+    session.edits = [
+      {
+        id: "edit-corrupt",
+        at: recordedAt(1),
+        summary: "+1 / −0",
+        cards: [
+          good,
+          // Changed nothing, which the backend's own validator refuses.
+          { ...good, name: "Neither Side", before: null, after: null },
+          // Blank after stripping, so shorter than `ShortLabel` allows.
+          { ...good, name: "   " },
+          // Outside the copy bounds, and not an integer.
+          { ...good, name: "Too Many", after: { ...good.after!, quantity: 400 } },
+          { ...good, name: "Fractional", after: { ...good.after!, quantity: 1.5 } },
+          // A section the backend's Literal does not know.
+          {
+            ...good,
+            name: "Nowhere",
+            after: { ...good.after!, section: "sideboard" as never },
+          },
+        ],
+      },
+    ];
+
+    const posted = toDeckAgentHistory(storedHistory([session]), "deck-a", []);
+
+    expect(posted.sessions[0].edits[0].cards.map((card) => card.name)).toEqual([
+      "Sol Ring",
+    ]);
   });
 
   it("reads an absent, unreadable or unrecorded history as nothing recorded", () => {

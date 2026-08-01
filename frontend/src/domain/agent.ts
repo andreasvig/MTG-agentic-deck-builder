@@ -6,11 +6,7 @@ import {
   groupName,
 } from "./deck";
 import type { DeckCardPlacement, DeckHistory } from "./history";
-import {
-  DECK_HISTORY_SESSION_CAP,
-  createDeckHistory,
-  parseDeckHistory,
-} from "./history";
+import { createDeckHistory, parseDeckHistory } from "./history";
 
 export type DeckAgentRole = "user" | "assistant";
 
@@ -617,6 +613,18 @@ export interface DeckAgentDeckHistory {
 const MAX_POSTED_HISTORY_EDITS = 500;
 
 /**
+ * How many sessions one request may carry.
+ *
+ * Deliberately its own constant rather than `DECK_HISTORY_SESSION_CAP`, which the two
+ * happen to share. That one is *storage* depth — how much past the browser keeps — and it
+ * exists to be tuned against the localStorage budget. This one is the backend's
+ * `MAX_HISTORY_SESSIONS`, and exceeding it fails the whole chat turn with a 422. Reusing
+ * the storage constant here would mean that raising read depth for a quota reason silently
+ * broke every conversation, and no frontend test would have noticed.
+ */
+const MAX_POSTED_HISTORY_SESSIONS = 50;
+
+/**
  * How many card changes one posted edit may carry.
  *
  * Looser than the hundred an agent edit may ask for, because this records what actually
@@ -640,6 +648,44 @@ const MAX_POSTED_LABEL_CHARS = 200;
  * The budget is spent newest-first. What is dropped is old, and what survives is the part
  * a question about the deck as it is now can actually be about.
  */
+/**
+ * Whether one recorded change is one the backend will accept.
+ *
+ * Nothing the writer produces fails this — `deriveDeckDiff` always records a change that
+ * changed something, with a real name and a placement inside the bounds. But the log is
+ * read back out of `localStorage`, and `parseDeckHistory` validates the container rather
+ * than every leaf, so a corrupted or hand-edited log can hold a change the backend's
+ * contract refuses. A rejected request is refused **whole**, which would fail every chat
+ * turn for that deck — the agent simply stops answering — instead of costing the history
+ * the agent could have read. So the browser drops what it cannot post and asks anyway.
+ *
+ * The four ways a stored change can be unpostable, each matching a backend rule:
+ * a change with neither side (its `a_change_must_change_something` validator), a blank
+ * name (`ShortLabel`'s `min_length` after stripping), a copy count outside 0–99, and a
+ * section outside the two it knows.
+ */
+function isPostableChange(change: {
+  name: string;
+  before: DeckCardPlacement | null;
+  after: DeckCardPlacement | null;
+}): boolean {
+  if (!change.before && !change.after) {
+    return false;
+  }
+  if (change.name.trim().length === 0) {
+    return false;
+  }
+  return [change.before, change.after].every(
+    (placement) =>
+      placement === null ||
+      (Number.isInteger(placement.quantity) &&
+        placement.quantity >= 0 &&
+        placement.quantity <= MAX_DECK_EDIT_COPIES &&
+        (placement.section === "command_zone" ||
+          placement.section === "mainboard")),
+  );
+}
+
 export function toDeckAgentHistory(
   raw: string | null,
   deckId: string,
@@ -659,7 +705,7 @@ export function toDeckAgentHistory(
 
   const sessions: DeckAgentDeckSession[] = [];
   let budget = MAX_POSTED_HISTORY_EDITS;
-  for (const session of log.sessions.slice(-DECK_HISTORY_SESSION_CAP).reverse()) {
+  for (const session of log.sessions.slice(-MAX_POSTED_HISTORY_SESSIONS).reverse()) {
     if (budget <= 0) {
       break;
     }
@@ -678,6 +724,7 @@ export function toDeckAgentHistory(
         at: edit.at,
         ...(edit.reason ? { reason: shortLabel(edit.reason) } : {}),
         cards: edit.cards
+          .filter(isPostableChange)
           .slice(0, MAX_POSTED_HISTORY_EDIT_CARDS)
           .map((change) => ({
             name: shortLabel(change.name),
