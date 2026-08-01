@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import App from "./App";
 import type { Deck, DeckCardEntry } from "./domain/deck";
 import {
+  COMMAND_ZONE_GROUP_ID,
   createEmptyDeck,
   DECK_LIBRARY_STORAGE_KEY,
   DECK_STORAGE_KEY,
@@ -796,9 +797,11 @@ describe("agent deck edits", () => {
     await ask("Fix my ramp");
     expect(await screen.findByText("Added two copies.")).toBeInTheDocument();
 
-    // Two copies, not four, and one block rather than two. The edit states the count it
-    // wants afterwards, so applying it twice is the same deck — but a turn that handed
-    // it over twice would still say so here.
+    // Two copies, not four, and one block rather than two. Only the block count bites: an
+    // edit states the count it wants afterwards, so a second hand-over reaches quantity 2
+    // again, derives an empty diff, and `appendToHistory` returns the log it was given by
+    // reference — the quantity and the recorded-edit count are both satisfied by a double
+    // application. The transcript is not: each hand-over pushes its own block.
     expect(screen.getByLabelText("2 Sol Ring in deck")).toBeInTheDocument();
     expect(screen.getAllByText("Applied: +2 / −0")).toHaveLength(1);
     expect(storedHistorySessions()[0].edits).toHaveLength(1);
@@ -908,6 +911,225 @@ describe("agent deck edits", () => {
     // therefore always on screen — is still empty.
     expect(groupHeader("Ramp")).toHaveTextContent("2 cards");
     expect(groupHeader("Not assigned")).toHaveTextContent("0 cards");
+  });
+
+  it("renders an edit the deck refused as refused, keeping the undo on the one it took", async () => {
+    seedDeck({
+      cards: [
+        {
+          ...deckEntry(ghalta),
+          section: "command_zone",
+          categories: [COMMAND_ZONE_GROUP_ID],
+        },
+      ],
+    });
+    serveAgentTurn([
+      {
+        type: "deck_edit",
+        edit: {
+          deck_name: "Gruul Stompy",
+          reason: "You have no ramp at all.",
+          changes: [
+            {
+              scryfall_id: solRing.scryfall_id,
+              name: solRing.name,
+              quantity: 1,
+              previous_quantity: 0,
+              card: solRing,
+            },
+          ],
+        },
+      },
+      doneFrame("Sol Ring is in."),
+    ]);
+    render(<App />);
+
+    await ask("Fix my ramp");
+    expect(await screen.findByText("Sol Ring is in.")).toBeInTheDocument();
+    expect(screen.getByLabelText("1 Sol Ring in deck")).toBeInTheDocument();
+
+    const transcript = screen.getByRole("log", {
+      name: "Deck agent conversation",
+    });
+    expect(within(transcript).getByText("Applied: +1 / −0")).toBeInTheDocument();
+
+    // The backend does not enforce command-zone legality on purpose — one authority, in
+    // `domain/deck.ts` — so this is an edit the agent can and does emit and the browser
+    // refuses. Driven through the real stream, because the seam is the whole point.
+    serveAgentTurn([
+      {
+        type: "deck_edit",
+        edit: {
+          deck_name: "Gruul Stompy",
+          reason: "Counterspell is the better commander here.",
+          changes: [
+            {
+              scryfall_id: counterspell.scryfall_id,
+              name: counterspell.name,
+              quantity: 1,
+              previous_quantity: 0,
+              group: "Command zone",
+              card: counterspell,
+            },
+          ],
+        },
+      },
+      doneFrame("Counterspell should lead this deck."),
+    ]);
+
+    await ask("Make Counterspell my commander");
+    expect(
+      await screen.findByText("Counterspell should lead this deck."),
+    ).toBeInTheDocument();
+
+    // The transcript is the record, and it converges on what the deck did: refused, in the
+    // deck's own words. The toast says the same sentence and then goes away; this stays.
+    expect(within(transcript).getByText("Not applied")).toBeInTheDocument();
+    expect(
+      within(transcript).getByText(/cannot share the command zone with Ghalta/),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      /cannot share the command zone with Ghalta/,
+    );
+    // One applied block, from the turn that was applied. A second would be the transcript
+    // claiming a commander swap the deck never made.
+    expect(within(transcript).getAllByText(/^Applied:/)).toHaveLength(1);
+
+    // The deck refused whole: Counterspell is nowhere, and nothing new was recorded.
+    expect(screen.queryByLabelText("1 Counterspell in deck")).not.toBeInTheDocument();
+    expect(storedDeck().cards.map((entry) => entry.card.name)).toEqual([
+      "Ghalta, Primal Hunger",
+      "Sol Ring",
+    ]);
+    const sessions = storedHistorySessions();
+    expect(sessions).toHaveLength(1);
+    expect(sessions[0].edits).toHaveLength(1);
+
+    // And the Undo still belongs to the edit that happened, which it reverses whole.
+    const undo = within(transcript).getAllByRole("button", { name: "Undo" });
+    expect(undo).toHaveLength(1);
+    expect(
+      within(transcript).getByText("Applied: +1 / −0").closest(".deck-agent__edit"),
+    ).toContainElement(undo[0]);
+    await userEvent.setup().click(undo[0]);
+    expect(screen.queryByLabelText("1 Sol Ring in deck")).not.toBeInTheDocument();
+  });
+
+  it("renders an edit whose card it cannot identify as refused, not as applied", async () => {
+    seedDeck({ cards: [deckEntry(gamble)] });
+    serveAgentTurn([
+      {
+        type: "deck_edit",
+        edit: {
+          deck_name: "Gruul Stompy",
+          reason: "Cutting the weakest ramp.",
+          // A cut carries no card payload, because the deck is supposed to already hold
+          // the card — and this printing it does not hold. Reachable with no race at all:
+          // `edit_deck` can resolve a name to a printing other than the one in the deck.
+          changes: [
+            {
+              scryfall_id: "printing-a-different-gamble",
+              name: "Gamble",
+              quantity: 0,
+              previous_quantity: 1,
+            },
+          ],
+        },
+      },
+      doneFrame("Gamble is out."),
+    ]);
+    render(<App />);
+
+    await ask("Cut my weakest card");
+    expect(await screen.findByText("Gamble is out.")).toBeInTheDocument();
+
+    // The deck was never even asked, so nothing announced it and the transcript is the
+    // only place this can be said. Said it must be: the alternative is a durable block
+    // reading "Applied: +0 / −1" for an edit that got no further than the translation.
+    expect(screen.getByText("Not applied")).toBeInTheDocument();
+    expect(
+      screen.getByText(/named a card this deck cannot identify/),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/^Applied:/)).not.toBeInTheDocument();
+    expect(screen.queryByText("− Gamble")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Undo" })).not.toBeInTheDocument();
+    expect(screen.getByLabelText("1 Gamble in deck")).toBeInTheDocument();
+    expect(storedHistorySessions()).toEqual([]);
+  });
+
+  it("claims a move only when the deck made one", async () => {
+    seedDeck({
+      cards: [deckEntry(gamble, "group-ramp")],
+      custom_groups: [
+        { id: "group-ramp", name: "Ramp" },
+        { id: "group-removal", name: "Removal" },
+      ],
+    });
+    serveAgentTurn([
+      {
+        type: "deck_edit",
+        edit: {
+          deck_name: "Gruul Stompy",
+          reason: "Gamble is really removal.",
+          // Same quantity, and a group this deck does not have. The name is dropped rather
+          // than obeyed — which is correct, and leaves the change a no-op.
+          changes: [
+            {
+              scryfall_id: gamble.scryfall_id,
+              name: gamble.name,
+              quantity: 1,
+              previous_quantity: 1,
+              group: "Spot removal",
+              card: gamble,
+            },
+          ],
+        },
+      },
+      doneFrame("Filed under removal."),
+    ]);
+    render(<App />);
+
+    await ask("File Gamble under removal");
+    expect(await screen.findByText("Filed under removal.")).toBeInTheDocument();
+
+    // Nothing moved, so nothing is claimed. A `→ Gamble` line here would be a durable
+    // claim about a card that never left the group the user filed it in.
+    expect(screen.queryByText("→ Gamble")).not.toBeInTheDocument();
+    expect(screen.queryByText(/^Applied:/)).not.toBeInTheDocument();
+    expect(storedDeck().cards[0].categories).toEqual(["group-ramp"]);
+    expect(storedHistorySessions()).toEqual([]);
+
+    serveAgentTurn([
+      {
+        type: "deck_edit",
+        edit: {
+          deck_name: "Gruul Stompy",
+          reason: "Gamble is really removal.",
+          changes: [
+            {
+              scryfall_id: gamble.scryfall_id,
+              name: gamble.name,
+              quantity: 1,
+              previous_quantity: 1,
+              group: "Removal",
+              card: gamble,
+            },
+          ],
+        },
+      },
+      doneFrame("Moved to Removal."),
+    ]);
+
+    await ask("The group is called Removal");
+    expect(await screen.findByText("Moved to Removal.")).toBeInTheDocument();
+
+    // The same shape of change, this time naming a group the deck has: it moves, it is
+    // recorded, and the block says so on its third line — the one no test rendered before.
+    expect(screen.getByText("Applied: +0 / −0")).toBeInTheDocument();
+    expect(screen.getByText("→ Gamble")).toBeInTheDocument();
+    expect(storedDeck().cards[0].categories).toEqual(["group-removal"]);
+    expect(storedHistorySessions()).toHaveLength(1);
+    expect(screen.getByRole("button", { name: "Undo" })).toBeInTheDocument();
   });
 
   it("changes nothing on a turn that carried no deck edit", async () => {

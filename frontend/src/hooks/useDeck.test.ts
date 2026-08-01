@@ -18,7 +18,7 @@ import {
   parseDeckHistory,
 } from "../domain/history";
 import { counterspell, gamble, ghalta, solRing } from "../test/fixtures";
-import type { DeckEdit } from "./useDeck";
+import type { DeckEdit, DeckEditOutcome } from "./useDeck";
 import { useDeck } from "./useDeck";
 
 beforeEach(() => {
@@ -463,6 +463,63 @@ describe("useDeck applied edits", () => {
     expect(shapeOf(result.current.deck)).toBe(before);
     expect(recordedEdits(storedLog(result.current.deck.id))).toHaveLength(
       recordedBefore,
+    );
+  });
+
+  it("reports a refusal to the caller with the reason it announced", () => {
+    const { result } = renderHook(() => useDeck());
+    act(() => result.current.addCard(ghalta, COMMAND_ZONE_GROUP_ID));
+    const before = shapeOf(result.current.deck);
+    const recordedBefore = recordedEdits(
+      storedLog(result.current.deck.id),
+    ).length;
+
+    let refused: DeckEditOutcome | undefined;
+    act(() => {
+      refused = result.current.applyEdit(
+        {
+          changes: [
+            { card: solRing, quantity: 1 },
+            { card: counterspell, quantity: 1, groupId: COMMAND_ZONE_GROUP_ID },
+          ],
+          reason: "a second commander that cannot pair",
+        },
+        "agent",
+      );
+    });
+
+    // Dispatching told the caller nothing, so whoever asked recorded the edit as made.
+    // The verdict comes back instead, and it is the *same* sentence the announcement
+    // carries — a second wording would be a second thing to keep in step.
+    expect(refused).toEqual({
+      applied: false,
+      reason: result.current.announcement,
+    });
+    expect(refused).toEqual({
+      applied: false,
+      reason: expect.stringContaining("cannot share the command zone"),
+    });
+    expect(result.current.announcementTone).toBe("error");
+    // Reported and refused, not reported and applied: the deck and the log are exactly
+    // as the refusal found them.
+    expect(shapeOf(result.current.deck)).toBe(before);
+    expect(recordedEdits(storedLog(result.current.deck.id))).toHaveLength(
+      recordedBefore,
+    );
+
+    let accepted: DeckEditOutcome | undefined;
+    act(() => {
+      accepted = result.current.applyEdit(
+        { changes: [{ card: solRing, quantity: 1 }] },
+        "agent",
+      );
+    });
+
+    // And an edit the deck takes says so, or every applied block would read as refused.
+    expect(accepted).toEqual({ applied: true });
+    expect(cardNames(result.current.deck)).toContain("Sol Ring");
+    expect(recordedEdits(storedLog(result.current.deck.id))).toHaveLength(
+      recordedBefore + 1,
     );
   });
 

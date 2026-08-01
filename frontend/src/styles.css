@@ -849,6 +849,18 @@ select {
   border-radius: 0 7px 7px 0;
 }
 
+/*
+ * The same block for an edit the deck refused. Marked in danger rather than the accent,
+ * because its whole job is to say the change did not happen.
+ */
+.deck-agent__edit--refused {
+  border-left-color: var(--danger);
+}
+
+.deck-agent__edit--refused .deck-agent__edit-summary {
+  color: var(--danger);
+}
+
 .deck-agent__edit-summary {
   display: flex;
   align-items: center;

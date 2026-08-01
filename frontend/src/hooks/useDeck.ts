@@ -78,6 +78,18 @@ export interface DeckEdit {
   reason?: string;
 }
 
+/**
+ * What the deck did with an edit it was handed.
+ *
+ * The validators live here and only here, so the deck is the only thing that knows whether
+ * an edit happened — and a caller that assumed it did would describe an intention. The
+ * refusal travels back carrying the *same* sentence the announcement carries, because two
+ * places wording why an edit failed is two places to disagree.
+ */
+export type DeckEditOutcome =
+  | { applied: true }
+  | { applied: false; reason: string };
+
 interface DeletedDeckSnapshot {
   deck: Deck;
   index: number;
@@ -407,13 +419,27 @@ export function useDeck() {
   );
 
   /**
-   * Apply a whole resolved edit as one change. It runs the same validators the drag path
-   * runs, refuses entirely rather than in part, and lands as a single undo step and a single
-   * history entry under the given actor.
+   * Apply a whole resolved edit as one change, and report what became of it. It runs the
+   * same validators the drag path runs, refuses entirely rather than in part, and lands as a
+   * single undo step and a single history entry under the given actor.
+   *
+   * The verdict is reached here as well as in the reducer because `dispatch` cannot answer
+   * its caller: the reducer runs later and yields state, not a verdict. Both run the very
+   * same pure closure over the very same deck, so what is reported is what the reducer
+   * reaches — the reducer stays the authority on the deck, and this is only its report. The
+   * caller needs it because a refused edit that nobody was told about becomes a durable
+   * claim somewhere else that the edit happened.
    */
-  const applyEdit = useCallback((edit: DeckEdit, actor: DeckHistoryActor) => {
-    dispatch({ type: "apply_edit", edit, actor });
-  }, []);
+  const applyEdit = useCallback(
+    (edit: DeckEdit, actor: DeckHistoryActor): DeckEditOutcome => {
+      const result = deckEditMutation(edit)(deck);
+      dispatch({ type: "apply_edit", edit, actor });
+      return result && "error" in result
+        ? { applied: false, reason: result.error }
+        : { applied: true };
+    },
+    [deck],
+  );
 
   const createDeck = useCallback(() => {
     dispatch({ type: "create_deck" });

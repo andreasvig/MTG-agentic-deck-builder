@@ -867,6 +867,120 @@ it("hands a streamed deck edit to the deck and says what it applied", async () =
   expect(screen.getByText("+ Sol Ring, Arcane Signet")).toBeInTheDocument();
 });
 
+/** The sentence the deck itself produces for an illegal second commander. */
+const refusal =
+  "Counterspell cannot share the command zone with Ghalta, Primal Hunger. " +
+  "A second commander needs a legal Partner, Partner with, Friends forever, " +
+  "Choose a Background, or Doctor's companion pairing.";
+
+it("records an edit the deck refused as refused, and offers no undo for it", async () => {
+  const stream = drivenStream();
+  const onDeckEdit = vi.fn().mockReturnValue({ applied: false, reason: refusal });
+  const { unmount } = render(
+    <DeckAgentPanel
+      deckId="deck-a"
+      client={client(stream.chat)}
+      onDeckEdit={onDeckEdit}
+      onUndoDeckEdit={vi.fn()}
+    />,
+  );
+
+  await userEvent.type(
+    screen.getByLabelText("Message the deck agent"),
+    "Make Counterspell my commander",
+  );
+  await userEvent.click(screen.getByLabelText("Send message"));
+  await stream.deckEdit(deckEdit());
+
+  // The deck turned the edit down, so the block says so — while it streams and after it
+  // commits, because the two must show the same thing.
+  expect(screen.getByText("Not applied")).toBeInTheDocument();
+  expect(screen.getByText(refusal)).toBeInTheDocument();
+  expect(screen.queryByText(/^Applied:/)).not.toBeInTheDocument();
+
+  await stream.finish(reply("Counterspell cannot be your commander."));
+
+  expect(screen.getAllByText("Not applied")).toHaveLength(1);
+  expect(screen.getByText(refusal)).toBeInTheDocument();
+  // Nothing about the proposed edit survives as a claim: no counts, no card lines.
+  expect(screen.queryByText(/^Applied:/)).not.toBeInTheDocument();
+  expect(screen.queryByText(/^\+ /)).not.toBeInTheDocument();
+  expect(screen.queryByText(/^− /)).not.toBeInTheDocument();
+  // And no Undo. There is nothing recorded to reverse, so a button offering to reverse
+  // this would reverse somebody else's edit.
+  expect(screen.queryByRole("button", { name: "Undo" })).not.toBeInTheDocument();
+
+  // It is the durable record, so it has to still read as a refusal after a reload —
+  // where anything the stored transcript cannot carry would come back as an edit.
+  unmount();
+  render(
+    <DeckAgentPanel
+      deckId="deck-a"
+      client={client(stream.chat)}
+      onDeckEdit={onDeckEdit}
+      onUndoDeckEdit={vi.fn()}
+    />,
+  );
+  expect(screen.getByText("Not applied")).toBeInTheDocument();
+  expect(screen.getByText(refusal)).toBeInTheDocument();
+  expect(screen.queryByText(/^Applied:/)).not.toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: "Undo" })).not.toBeInTheDocument();
+});
+
+it("keeps the undo on the edit the deck took when a later one is refused", async () => {
+  const stream = drivenStream();
+  const onUndoDeckEdit = vi.fn();
+  const onDeckEdit = vi
+    .fn()
+    .mockReturnValueOnce({ applied: true, unmoved: [] })
+    .mockReturnValueOnce({ applied: false, reason: refusal });
+  render(
+    <DeckAgentPanel
+      deckId="deck-a"
+      client={client(stream.chat)}
+      onDeckEdit={onDeckEdit}
+      onUndoDeckEdit={onUndoDeckEdit}
+    />,
+  );
+
+  await userEvent.type(
+    screen.getByLabelText("Message the deck agent"),
+    "Fix my ramp, then make Counterspell my commander",
+  );
+  await userEvent.click(screen.getByLabelText("Send message"));
+  await stream.deckEdit(deckEdit());
+  await stream.deckEdit(
+    deckEdit({
+      reason: "Counterspell as a second commander.",
+      changes: [
+        {
+          scryfall_id: "printing-counterspell",
+          name: "Counterspell",
+          quantity: 1,
+          previous_quantity: 0,
+        },
+      ],
+    }),
+  );
+  await stream.finish(reply("One of those two worked."));
+
+  // The deck's last recorded change is the first edit, and that is the block the Undo
+  // belongs to: the refusal recorded nothing, so it cannot hold the affordance.
+  expect(screen.getByText("Applied: +2 / −2")).toBeInTheDocument();
+  expect(screen.getByText("Not applied")).toBeInTheDocument();
+  const undo = screen.getAllByRole("button", { name: "Undo" });
+  expect(undo).toHaveLength(1);
+  expect(
+    screen.getByText("Applied: +2 / −2").closest(".deck-agent__edit"),
+  ).toContainElement(undo[0]);
+  expect(
+    screen.getByText("Not applied").closest(".deck-agent__edit"),
+  ).not.toContainElement(undo[0]);
+
+  await userEvent.click(undo[0]);
+  expect(onUndoDeckEdit).toHaveBeenCalledTimes(1);
+});
+
 it("shows no applied block for a turn that changed nothing", async () => {
   const chat = vi
     .fn()
