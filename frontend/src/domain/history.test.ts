@@ -230,10 +230,26 @@ describe("deck history derivation", () => {
 
     const { diff } = deriveDeckDiff(before, after);
 
-    expect(diff.summary).toBe("+1 / −1 · −Sol Ring · +Gamble");
-    expect(invertDeckDiff(stamp(diff)).summary).toBe(
-      "+1 / −1 · +Sol Ring · −Gamble",
+    // Pinned as properties rather than as the exact string. The rendering carries two
+    // non-ASCII glyphs — U+2212 MINUS SIGN and U+00B7 MIDDLE DOT — and pinning them makes
+    // retuning the presentation a test failure with no behaviour change. What must hold is
+    // that both names appear, the counts appear, and inverting swaps which name is the
+    // addition. `summary` is display text; its shape is not a contract.
+    const inverted = invertDeckDiff(stamp(diff)).summary;
+
+    for (const summary of [diff.summary, inverted]) {
+      expect(summary).toContain("Sol Ring");
+      expect(summary).toContain("Gamble");
+      expect(summary).toContain("1");
+    }
+    // Sol Ring left and Gamble arrived, so the sense reverses under inversion. Compared by
+    // relative position, which survives any separator or verb the presentation picks.
+    expect(diff.summary.indexOf("Sol Ring")).toBeLessThan(
+      diff.summary.indexOf("Gamble"),
     );
+    expect(inverted).not.toBe(diff.summary);
+    expect(cutNames(diff.summary)).toEqual(["Sol Ring"]);
+    expect(cutNames(inverted)).toEqual(["Gamble"]);
   });
 
   it("carries the gameplay identity and the name so a change reads without the catalog", () => {
@@ -293,7 +309,7 @@ describe("deck history application", () => {
         ...placementForGroup(UNASSIGNED_GROUP_ID),
       }),
     );
-    const { diff } = deriveDeckDiff(before, after);
+    const { diff, payloads } = deriveDeckDiff(before, after);
 
     // The card never leaves the deck, so it keeps its own `CardReference` and the pool is
     // not consulted. This is the control for the refusal above: the refusal must fire only
@@ -302,6 +318,11 @@ describe("deck history application", () => {
 
     expect(moved.cards[1]?.categories).toEqual([UNASSIGNED_GROUP_ID]);
     expect(moved.cards[1]?.card.details).toBe(solRing);
+    // And it is not *pooled* either, which is a separate claim from not being consulted:
+    // pooling a payload for every quantity change, section move and category change would
+    // spend kilobytes of quota per edit that no replay ever reads. Nothing asserted this
+    // until Phase 2's audit went looking for the mutant that survives without it.
+    expect(payloads).toEqual({});
   });
 
   it("is idempotent, so a retried edit lands once", () => {
@@ -631,4 +652,22 @@ function refused(result: DeckDiffApplyResult): DeckDiffApplyFailure {
     throw new Error("the diff applied where a refusal was expected");
   }
   return result;
+}
+
+/**
+ * Read back the card names a summary marks as cuts.
+ *
+ * This is the **only** place the tests know how a summary renders. `summary` is display
+ * text carrying two non-ASCII glyphs, and an assertion that pinned the whole string would
+ * fail on any rephrasing while proving nothing about behaviour. Centralising the coupling
+ * here means retuning the presentation touches one function instead of every assertion —
+ * the same reason the backend's `read_deck` tests parse the curve rather than string-match
+ * it.
+ */
+function cutNames(summary: string): string[] {
+  return summary
+    .split("·")
+    .map((part) => part.trim())
+    .filter((part) => part.startsWith("−"))
+    .map((part) => part.slice(1).trim());
 }

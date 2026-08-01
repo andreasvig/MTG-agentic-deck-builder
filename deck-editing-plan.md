@@ -475,8 +475,14 @@ parseDeckHistory(value: unknown, fallback: DeckHistory): DeckHistory
    result**, not a `Deck`. The two-argument sketch had no way to reach the payloads. A
    refusal is recoverable so the reducer can announce it rather than be stranded by a
    throw, and a restore whose payload was pruned **refuses** rather than producing a
-   detail-less entry — such an entry prices at zero and vanishes from both validators,
-   which is worse than not undoing.
+   detail-less entry. Corrected 2026-08-01 after Phase 2's audit, because the original
+   claim understated it: such an entry does **not** price at zero. `getCardPrice`
+   (`domain/card.ts:272`) dereferences `card.prices` with no guard, and the `statistics`
+   memo calls it as `getCardPrice(entry.card.details as CardSearchResult)` — a cast that
+   launders `undefined` past the type checker — so a details-less entry **throws inside a
+   `useMemo` and takes the board down**. It is reachable without any diff at all:
+   `isDeckEntry` does not require `details`, so a deck persisted by an older build
+   hydrates into that state. Phase 3 guards it.
 4. **`appendToHistory` takes an options object and has no `now`.** The session gap is
    measured from `entry.at`, which the entry already carries; two sources for one edit's
    time is a disagreement waiting to happen. Refusing an empty diff returns **the same
