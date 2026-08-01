@@ -435,15 +435,63 @@ cd backend && .venv/bin/python -m ruff check src tests
 `frontend/src/domain/history.test.ts` (new). Nothing else — it must not touch
 `useDeck.ts` this phase.
 
-Implements the Part C schema and these pure functions:
+Implements the Part C schema and these pure functions.
 
-- `deriveDeckDiff(before: Deck, after: Deck): DeckEditEntry["cards"] + groups + name`
-- `invertDeckDiff(entry): entry` — swaps `before`/`after` on every change
-- `applyDeckDiff(deck, entry): Deck`
-- `appendToHistory(history, entry, actor, now): DeckHistory` — the 3-minute, same-actor
-  session rule
-- `pruneHistory(history, cap): DeckHistory` — oldest-first, garbage-collecting orphaned
-  payloads from the `cards` pool
+**Built and verified 2026-08-01. The list below is the real API — the sketch that
+preceded it was wrong in five places, each load-bearing. Phase 3 consumes exactly this,
+not the sketch.**
+
+```ts
+export const DECK_HISTORY_STORAGE_KEY = "manabase.deck-history.v1";
+export const DECK_HISTORY_SESSION_WINDOW_SECONDS = 180;
+export const DECK_HISTORY_SESSION_CAP = 50;
+export const DECK_HISTORY_PAYLOAD_CAP = 50;
+
+createDeckHistory(deckId: string): DeckHistory
+deriveDeckDiff(before: Deck, after: Deck): DeckDiffDerivation   // { diff, payloads }
+isEmptyDeckDiff(diff: DeckDiff): boolean
+invertDeckDiff(entry: DeckEditEntry): DeckEditEntry
+applyDeckDiff(deck, diff, payloads): DeckDiffApplyResult        // { ok: true, deck } | failure
+appendToHistory(history, { entry, payloads, actor, newSessionId }): DeckHistory
+pruneHistory(history, sessionCap, payloadCap): DeckHistory
+parseDeckHistory(value: unknown, fallback: DeckHistory): DeckHistory
+```
+
+1. **`DeckCardPlacement` carries `index`, and `DeckGroupPlacement` exists.** Without a
+   recorded position, undoing a removal re-appends the card and the restored deck is
+   order-different from the original — the round-trip property fails for every
+   middle-of-list edit. `index` is deliberately **excluded from change detection**:
+   cutting one card from a hundred shifts 59 positions, and counting those as 59 changes
+   would break B8 and make every summary wrong. Position is a restoration hint, not an
+   edit axis. **The honest limit this leaves**: a pure reorder of `cards` or
+   `custom_groups` derives zero changes. No mutator reorders either list today — display
+   order comes from `DeckBoard`'s sort — so it is unreachable, but it is the one way two
+   `Deck`s can differ that this diff does not model.
+2. **`DeckCardChange` carries `oracle_id`** as well as `scryfall_id`. `CardReference`
+   requires it, so a restore needs it, and it is the identity the singleton and
+   colour-identity warnings key on — so a change stays readable and linkable without the
+   catalog *and* without the payload pool.
+3. **`applyDeckDiff` takes the payload pool as a third argument and returns a typed
+   result**, not a `Deck`. The two-argument sketch had no way to reach the payloads. A
+   refusal is recoverable so the reducer can announce it rather than be stranded by a
+   throw, and a restore whose payload was pruned **refuses** rather than producing a
+   detail-less entry — such an entry prices at zero and vanishes from both validators,
+   which is worse than not undoing.
+4. **`appendToHistory` takes an options object and has no `now`.** The session gap is
+   measured from `entry.at`, which the entry already carries; two sources for one edit's
+   time is a disagreement waiting to happen. Refusing an empty diff returns **the same
+   history object**, so the caller detects it by reference.
+5. **`parseDeckHistory` and `createDeckHistory` were added.** Phase 3 owns persistence but
+   not this file, so without a validator here it would have to invent one inside a hook,
+   against the convention that puts `parseStoredDeck` / `parseStoredDeckLibrary` in
+   `domain/`. It takes an already-parsed `unknown` rather than a JSON string, leaving the
+   storage envelope Phase 3's choice.
+
+Two further properties Phases 3 and 5 depend on: `invertDeckDiff` preserves `id`, `at` and
+`reason` and recomputes only `summary`, so the **reducer** decides whether an undo pops the
+entry or records a new one; and `applyDeckDiff` never checks the `before` side against the
+deck it finds, which makes it **idempotent** — the property Phase 5's StrictMode assertion
+needs.
 
 **Verification protocol**
 
