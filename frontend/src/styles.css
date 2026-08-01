@@ -832,6 +832,64 @@ select {
 }
 
 /*
+ * What a turn changed about the deck, and the way back.
+ *
+ * Louder than a tool line and quieter than a message, because it sits between the
+ * two in kind: not something the agent said, not merely something it read, but
+ * something it did — and the deck already looks different by the time this renders.
+ * That is why the affordance beside it is an undo rather than a confirm.
+ */
+.deck-agent__edit {
+  margin: 0 0 6px;
+  padding: 6px 8px;
+  color: var(--ink-soft);
+  font-size: 10px;
+  background: var(--surface-subtle);
+  border-left: 2px solid var(--accent);
+  border-radius: 0 7px 7px 0;
+}
+
+.deck-agent__edit-summary {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  margin: 0;
+  font-weight: 600;
+}
+
+/* Pushes the undo to the trailing edge, so it lands in the same place every turn. */
+.deck-agent__edit-undo {
+  margin-inline-start: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 1px 5px;
+  color: var(--ink-soft);
+  font: inherit;
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  cursor: pointer;
+}
+
+.deck-agent__edit-undo:hover {
+  color: var(--ink);
+  background: var(--surface);
+}
+
+/*
+ * One line per direction, added and removed. `pre-wrap` because the line is built as
+ * text with its own marker: a long list of card names has to wrap rather than clip,
+ * since the names are the whole content.
+ */
+.deck-agent__edit-cards {
+  margin: 3px 0 0;
+  color: var(--muted);
+  font-size: 9.5px;
+  white-space: pre-wrap;
+}
+
+/*
  * One line per tool the agent ran, above the answer it produced. Deliberately
  * quieter than a message: it is a record of what was read, not something said.
  */
