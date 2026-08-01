@@ -263,11 +263,22 @@ Missing:
   (ADR 0036). Every entry carries a time, an actor, a summary and — for an agent edit —
   the model's reason, and edits group into sessions by actor and a three-minute gap, so an
   agent edit never joins a user's.
-- Undo replays the last recorded entry backwards and therefore **survives a reload**,
-  which the thirty-step in-memory snapshot stack it replaces could not. Undo depth is
-  bounded by the payload pool (50 printings) rather than by a step count; read depth is
-  every retained session (50). An entry whose payload has been pruned stays readable and
-  stops being replayable, and that refusal is announced rather than thrown.
+- The deck travels along that log rather than consuming it (ADR 0038). `DeckHistory.at`
+  names the newest applied edit, so Back replays one diff inverted, Forward replays the
+  next one as recorded, and the History panel between them jumps to any recorded diff in
+  one move. One function plans all three, and it plans rather than counts — an entry whose
+  payload has been pruned is readable but not replayable, so a button never offers a step
+  the reducer then refuses. A jump is refused whole rather than landing halfway.
+- All of it **survives a reload**, which the thirty-step in-memory snapshot stack it
+  replaces could not: the position is stored beside the log. Depth is bounded by the
+  payload pool (50 printings) rather than by a step count; read depth is every retained
+  session (50).
+- A new edit made while the deck stands behind the newest one discards what came after.
+  Those entries described a future the deck has been changed out of, and truncating them is
+  what keeps the cursor the newest edit in the log.
+- `read_history` marks an edit the user stepped back past as `(undone)` and explains the
+  marker once, only when something is marked — so "put that back" is a question the agent
+  can answer.
 - A deleted deck's history is archived with the deck and restored with it.
 - A permanent Command zone heading above groups derived from card type, which is the
   only grouping there is (ADR 0037).
@@ -438,10 +449,6 @@ missing or stale sidecar is an explicit unavailable state fixed by
 - Named deck snapshots, and server-side mutation history. The browser-local diff log
   is shipped (ADR 0036); making it survive a browser wipe or read across devices needs
   backend deck persistence first.
-- Redo. The log replays forward as easily as backward, so it is nearly free, and it needs
-  its own affordance (ADR 0036).
-- A history panel for the user. The agent reads history through `read_history`; the user
-  still sees only an Undo button.
 - A mobile entry point for the deck agent.
 - Any spend cap or budget: cost is reported, never enforced.
 

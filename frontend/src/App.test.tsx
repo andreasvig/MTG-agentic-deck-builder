@@ -247,6 +247,108 @@ describe("deck workspace", () => {
     ).toHaveTextContent("2 cards");
   });
 
+  it("steps back, forward, and jumps to a diff from the history panel", async () => {
+    const user = userEvent.setup();
+    const deck = createEmptyDeck(new Date("2026-01-01T00:00:00Z"));
+    deck.cards = [
+      {
+        card: {
+          oracle_id: solRing.oracle_id,
+          scryfall_id: solRing.scryfall_id,
+          name: solRing.name,
+          details: solRing,
+        },
+        quantity: 1,
+        section: "mainboard",
+      },
+    ];
+    window.localStorage.setItem(DECK_STORAGE_KEY, JSON.stringify(deck));
+    render(<App />);
+
+    // Nothing recorded yet, so neither direction is available and the panel says so.
+    const backButton = screen.getByRole("button", {
+      name: "Undo last deck change",
+    });
+    const forwardButton = screen.getByRole("button", {
+      name: "Redo next deck change",
+    });
+    expect(backButton).toBeDisabled();
+    expect(forwardButton).toBeDisabled();
+
+    await user.click(screen.getByRole("button", { name: "Deck history" }));
+    const panel = screen.getByLabelText("Recorded deck history");
+    expect(
+      within(panel).getByText(/Nothing recorded yet/),
+    ).toBeInTheDocument();
+    await user.click(
+      within(panel).getByRole("button", { name: "Close deck history" }),
+    );
+
+    // Three edits, so there is a past to walk.
+    await user.click(
+      screen.getByRole("button", { name: "Increase Sol Ring quantity" }),
+    );
+    await user.click(
+      screen.getByRole("button", { name: "Increase Sol Ring quantity" }),
+    );
+    await user.click(screen.getByRole("button", { name: "Rename deck" }));
+    const deckName = screen.getByRole("textbox", { name: "Deck name" });
+    await user.clear(deckName);
+    await user.type(deckName, "Rocks");
+    await user.keyboard("{Enter}");
+
+    expect(screen.getByRole("heading", { name: "Rocks" })).toBeInTheDocument();
+    expect(screen.getByText("3 / 100")).toBeInTheDocument();
+    expect(backButton).toBeEnabled();
+    expect(forwardButton).toBeDisabled();
+
+    await user.click(backButton);
+    expect(
+      screen.getByRole("heading", { name: "Untitled Commander" }),
+    ).toBeInTheDocument();
+    // Forward is the whole point: the rename is still recorded, so it can be replayed.
+    expect(forwardButton).toBeEnabled();
+
+    await user.click(forwardButton);
+    expect(screen.getByRole("heading", { name: "Rocks" })).toBeInTheDocument();
+    expect(forwardButton).toBeDisabled();
+
+    // The panel lists every recorded diff, newest first, and marks where the deck stands.
+    await user.click(screen.getByRole("button", { name: "Deck history" }));
+    const rows = screen.getByLabelText("Recorded deck history").querySelectorAll("li");
+    expect(rows).toHaveLength(4);
+    expect(rows[0]).toHaveTextContent("renamed to Rocks");
+    expect(rows[1]).toHaveTextContent("Sol Ring ×2 → ×3");
+    expect(rows[2]).toHaveTextContent("Sol Ring ×1 → ×2");
+    expect(rows[3]).toHaveTextContent("Before any edits");
+    expect(
+      within(rows[0] as HTMLElement).getByLabelText("The deck stands here"),
+    ).toBeInTheDocument();
+
+    // And clicking one moves the deck there in a single jump, across two edits at once.
+    await user.click(
+      within(rows[2] as HTMLElement).getByRole("button"),
+    );
+    expect(screen.getByText("2 / 100")).toBeInTheDocument();
+    expect(
+      screen.getByRole("heading", { name: "Untitled Commander" }),
+    ).toBeInTheDocument();
+
+    await user.click(
+      within(
+        screen.getByLabelText("Recorded deck history").querySelectorAll(
+          "li",
+        )[3] as HTMLElement,
+      ).getByRole("button"),
+    );
+    // Before every edit: the card is back to the one copy the stored deck opened with, not
+    // gone — a rewind is to the start of the *record*, not to an empty deck.
+    expect(screen.getByText("1 / 100")).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Undo last deck change" }),
+    ).toBeDisabled();
+  });
+
   it("confirms deck deletion, creates a safe fallback, and restores the deleted deck", async () => {
     const user = userEvent.setup();
     render(<App />);

@@ -53,6 +53,7 @@ tradeoffs; they are not task lists.
 | [0035](0035-the-deck-agent-searches-the-catalog-itself.md) | Accepted | The deck agent searches the catalog itself, owning every filter |
 | [0036](0036-auto-applied-agent-edits-on-a-derived-deck-history.md) | Accepted | Agent edits auto-apply; undo replays a diff history derived in the reducer |
 | [0037](0037-one-placement-axis-and-a-commander-the-agent-can-set.md) | Accepted | Custom groups removed; placement is a section, and the agent can set the commander |
+| [0038](0038-history-is-a-cursor-the-deck-travels-along.md) | Accepted | History is a cursor: back, forward, and a jump to any recorded diff |
 
 ## Updating Decisions
 

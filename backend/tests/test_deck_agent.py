@@ -388,6 +388,12 @@ def test_every_new_field_of_edit_deck_has_a_worked_example() -> None:
         f"defaults to {tools.read_history_default_sessions}"
         in tools.read_history_description
     )
+    # The marker the tool renders has to be the marker the description explains, or the
+    # model reads `(undone)` in a result and has been told nothing about what it means.
+    assert "`(undone)`" in tools.read_history_description
+    assert "the deck does not have it now" in " ".join(
+        tools.read_history_description.split()
+    )
 
 
 def test_agent_settings_reject_a_blank_prompt_and_an_unknown_effort() -> None:

@@ -41,7 +41,7 @@ describe("useDeck placement", () => {
       "Ghalta, Primal Hunger moved to the deck.",
     );
 
-    act(() => result.current.undo());
+    act(() => result.current.back());
 
     expect(result.current.deck.cards[0]?.section).toBe("command_zone");
   });
@@ -183,11 +183,11 @@ describe("useDeck history", () => {
         shapeOf(result.current.deck),
         `${step.label} must change the deck`,
       ).not.toBe(shapes[shapes.length - 1]);
-      expect(result.current.canUndo, `${step.label} must be undoable`).toBe(true);
+      expect(result.current.canGoBack, `${step.label} must be undoable`).toBe(true);
     }
 
     for (const step of [...steps].reverse()) {
-      act(() => result.current.undo());
+      act(() => result.current.back());
       expect(
         shapeOf(result.current.deck),
         `undoing ${step.label} must restore the deck it found`,
@@ -195,8 +195,8 @@ describe("useDeck history", () => {
     }
     // Undo pops the log rather than recording its inverse, so six edits undo exactly six
     // times and the seventh attempt finds an empty log.
-    expect(result.current.canUndo).toBe(false);
-    act(() => result.current.undo());
+    expect(result.current.canGoBack).toBe(false);
+    act(() => result.current.back());
     expect(result.current.announcement).toBe("Nothing to undo.");
     expect(shapeOf(result.current.deck)).toBe(
       shapeOf(createEmptyDeck(new Date(), "Untitled Commander")),
@@ -214,9 +214,9 @@ describe("useDeck history", () => {
 
     expect(second.result.current.deck.id).toBe(deckId);
     expect(second.result.current.deck.cards[0]?.quantity).toBe(4);
-    expect(second.result.current.canUndo).toBe(true);
+    expect(second.result.current.canGoBack).toBe(true);
 
-    act(() => second.result.current.undo());
+    act(() => second.result.current.back());
 
     expect(second.result.current.deck.cards[0]?.quantity).toBe(1);
 
@@ -224,10 +224,10 @@ describe("useDeck history", () => {
     // it proves is that the list of changes survived storage. The pool surviving is a separate
     // claim, and it needs a removal to undo rather than an add; the test below is the one that
     // makes it.
-    act(() => second.result.current.undo());
+    act(() => second.result.current.back());
 
     expect(second.result.current.deck.cards).toEqual([]);
-    expect(second.result.current.canUndo).toBe(false);
+    expect(second.result.current.canGoBack).toBe(false);
   });
 
   it("rebuilds a removed card from the pooled payload after a remount", () => {
@@ -244,9 +244,9 @@ describe("useDeck history", () => {
 
     expect(second.result.current.deck.id).toBe(deckId);
     expect(cardNames(second.result.current.deck)).toEqual(["Counterspell"]);
-    expect(second.result.current.canUndo).toBe(true);
+    expect(second.result.current.canGoBack).toBe(true);
 
-    act(() => second.result.current.undo());
+    act(() => second.result.current.back());
 
     // The whole `CardSearchResult` came back through JSON, not merely the card's name — an
     // entry restored without its details prices at nothing and disappears from both
@@ -282,26 +282,43 @@ describe("useDeck history", () => {
     expect(library).not.toContain("sessions");
   });
 
-  it("collects a payload the undo it belongs to has popped", () => {
+  it("keeps a stepped-back edit and its payload, and collects them when a new edit replaces it", () => {
     const { result } = renderHook(() => useDeck());
 
     act(() => result.current.addCard(solRing));
     act(() => result.current.removeCard(solRing.scryfall_id));
 
-    // Removing pooled Sol Ring's details, because undoing that removal would have to rebuild
-    // the card from them.
     const deckId = result.current.deck.id;
     expect(Object.keys(storedLog(deckId).cards)).toEqual([solRing.scryfall_id]);
 
-    act(() => result.current.undo());
-    act(() => result.current.undo());
+    act(() => result.current.back());
+    act(() => result.current.back());
 
-    // Undo pops the entry rather than recording an inverse, so once both entries are gone
-    // nothing can ever read that payload again and keeping it is pure quota. Nothing asserted
-    // this before, so a mutant that skipped the collection leaked for the deck's whole life
-    // with the suite still green.
-    expect(recordedEdits(storedLog(deckId))).toEqual([]);
-    expect(storedLog(deckId).cards).toEqual({});
+    // Both entries are still recorded and the payload is still pooled. This is the whole
+    // difference from the undo this replaced, which popped the entry: a forward step has to
+    // replay the add, and replaying an add rebuilds the card from the pool.
+    expect(recordedEdits(storedLog(deckId))).toHaveLength(2);
+    expect(Object.keys(storedLog(deckId).cards)).toEqual([solRing.scryfall_id]);
+    expect(result.current.deck.cards).toEqual([]);
+    expect(result.current.canGoForward).toBe(true);
+
+    act(() => result.current.forward());
+
+    // And it does replay: the card is back, with its details, from the pool.
+    expect(cardNames(result.current.deck)).toEqual(["Sol Ring"]);
+    expect(result.current.deck.cards[0]?.card.details).toBeTruthy();
+
+    act(() => result.current.back());
+    act(() => result.current.addCard(gamble));
+
+    // An edit made while behind the tip discards what came after. Those entries described a
+    // future the deck has now been changed out of, and Sol Ring's payload goes with them
+    // rather than sitting in the quota for the deck's whole life.
+    expect(
+      recordedEdits(storedLog(deckId)).map((edit) => edit.summary),
+    ).toEqual(["+1 · +Gamble"]);
+    expect(Object.keys(storedLog(deckId).cards)).toEqual([gamble.scryfall_id]);
+    expect(result.current.canGoForward).toBe(false);
   });
 
   it("does not offer an undo whose pooled card details are gone", () => {
@@ -324,9 +341,9 @@ describe("useDeck history", () => {
     // Read depth and undo depth are separate: the removal is still named in the log, and it
     // can no longer be replayed, so the button must not offer it.
     expect(recordedEdits(storedLog(deckId))[1]?.cards[0]?.name).toBe("Sol Ring");
-    expect(second.result.current.canUndo).toBe(false);
+    expect(second.result.current.canGoBack).toBe(false);
 
-    act(() => second.result.current.undo());
+    act(() => second.result.current.back());
 
     expect(second.result.current.announcementTone).toBe("error");
     expect(second.result.current.announcement).toContain("Sol Ring");
@@ -381,21 +398,21 @@ describe("useDeck history", () => {
     act(() => result.current.addCard(solRing));
     act(() => result.current.createDeck());
     act(() => result.current.selectDeck(deckId));
-    expect(result.current.canUndo).toBe(true);
+    expect(result.current.canGoBack).toBe(true);
 
     act(() => result.current.deleteDeck(deckId));
 
     expect(result.current.deck.id).not.toBe(deckId);
-    expect(result.current.canUndo).toBe(false);
+    expect(result.current.canGoBack).toBe(false);
     expect(storedLog(deckId).sessions).toEqual([]);
 
     act(() => result.current.restoreDeletedDeck());
 
     expect(result.current.deck.id).toBe(deckId);
     expect(recordedEdits(storedLog(deckId))).toHaveLength(1);
-    expect(result.current.canUndo).toBe(true);
+    expect(result.current.canGoBack).toBe(true);
 
-    act(() => result.current.undo());
+    act(() => result.current.back());
 
     expect(result.current.deck.cards).toEqual([]);
   });
@@ -437,7 +454,7 @@ describe("useDeck applied edits", () => {
       "agent",
     ]);
 
-    act(() => result.current.undo());
+    act(() => result.current.back());
 
     expect(cardNames(result.current.deck)).toEqual(["Counterspell"]);
     expect(result.current.deck.cards[0]?.quantity).toBe(1);
@@ -568,7 +585,7 @@ describe("useDeck applied edits", () => {
     // values, the typed API cannot express a third, and an event naming one is refused by
     // the reader in `domain/agent.ts` before the deck is ever asked.
     expect(result.current.deck.cards).toEqual([]);
-    expect(result.current.canUndo).toBe(false);
+    expect(result.current.canGoBack).toBe(false);
   });
 
   it("applies the same edit twice as one recorded change", () => {
@@ -669,9 +686,142 @@ describe("useDeck applied edits", () => {
     expect(result.current.deck.cards[0]?.quantity).toBe(2);
     expect(recordedEdits(storedLog(result.current.deck.id))).toHaveLength(1);
 
-    act(() => result.current.undo());
+    act(() => result.current.back());
 
     expect(result.current.deck.cards).toEqual([]);
+  });
+});
+
+describe("useDeck travel across a reload", () => {
+  it("remembers where the deck stands, so a forward step survives a reload", () => {
+    const first = renderHook(() => useDeck());
+    act(() => first.result.current.addCard(solRing));
+    act(() => first.result.current.addCard(gamble));
+    const deckId = first.result.current.deck.id;
+    act(() => first.result.current.back());
+
+    expect(cardNames(first.result.current.deck)).toEqual(["Sol Ring"]);
+    expect(storedLog(deckId).at).toBe(
+      recordedEdits(storedLog(deckId))[0]?.id,
+    );
+
+    const second = renderHook(() => useDeck());
+
+    // The old undo could not do this at all: it held snapshots in memory only, so a reload
+    // stranded every step. Now the position is part of the stored log.
+    expect(cardNames(second.result.current.deck)).toEqual(["Sol Ring"]);
+    expect(second.result.current.canGoForward).toBe(true);
+
+    act(() => second.result.current.forward());
+
+    expect(cardNames(second.result.current.deck)).toEqual([
+      "Sol Ring",
+      "Gamble",
+    ]);
+    expect(second.result.current.canGoForward).toBe(false);
+  });
+
+  it("reads a log written with no cursor at all as fully applied, not fully undone", () => {
+    const first = renderHook(() => useDeck());
+    act(() => first.result.current.addCard(solRing));
+    const deckId = first.result.current.deck.id;
+
+    // A log written before the cursor existed. Absent is not `null`: those decks have every
+    // recorded edit applied, and reading absent as `null` would tell the user on their next
+    // reload that their whole deck is undone and offer to redo it.
+    const envelope = JSON.parse(
+      window.localStorage.getItem(DECK_HISTORY_STORAGE_KEY) ?? "{}",
+    ) as Record<string, Record<string, unknown>>;
+    delete envelope[deckId].at;
+    window.localStorage.setItem(
+      DECK_HISTORY_STORAGE_KEY,
+      JSON.stringify(envelope),
+    );
+
+    const second = renderHook(() => useDeck());
+
+    expect(second.result.current.canGoForward).toBe(false);
+    expect(second.result.current.canGoBack).toBe(true);
+    expect(second.result.current.history.appliedEditId).toBe(
+      recordedEdits(storedLog(deckId)).at(-1)?.id,
+    );
+  });
+
+  it("jumps straight to a named edit, and rewinds to before all of them", () => {
+    const { result } = renderHook(() => useDeck());
+    act(() => result.current.addCard(solRing));
+    act(() => result.current.addCard(gamble));
+    act(() => result.current.addCard(counterspell));
+    const edits = result.current.history.edits;
+    expect(edits).toHaveLength(3);
+
+    act(() => result.current.jumpToEdit(edits[0].entry.id));
+
+    expect(cardNames(result.current.deck)).toEqual(["Sol Ring"]);
+    expect(result.current.announcement).toBe("Moved back 2 deck changes.");
+
+    act(() => result.current.jumpToEdit(null));
+
+    expect(result.current.deck.cards).toEqual([]);
+    // One step, so it is worded as the step it is rather than as a count.
+    expect(result.current.announcement).toBe("Last deck change undone.");
+    expect(result.current.canGoBack).toBe(false);
+
+    // And from the start there is nowhere further back to go.
+    act(() => result.current.back());
+    expect(result.current.announcement).toBe("Nothing to undo.");
+
+    act(() => result.current.jumpToEdit(edits[2].entry.id));
+
+    expect(cardNames(result.current.deck)).toEqual([
+      "Sol Ring",
+      "Gamble",
+      "Counterspell",
+    ]);
+    expect(result.current.announcement).toBe("Moved forward 3 deck changes.");
+  });
+
+  it("keeps each deck's position to itself", () => {
+    const { result } = renderHook(() => useDeck());
+    act(() => result.current.addCard(solRing));
+    act(() => result.current.addCard(gamble));
+    act(() => result.current.back());
+    const firstId = result.current.deck.id;
+
+    act(() => result.current.createDeck());
+    act(() => result.current.addCard(counterspell));
+
+    // A fresh deck has its own log and its own position, so the first deck's stepped-back
+    // state must not follow it: there is nothing to step forward into here.
+    expect(result.current.canGoForward).toBe(false);
+    expect(result.current.history.edits).toHaveLength(1);
+
+    act(() => result.current.selectDeck(firstId));
+
+    // And switching back finds the first deck exactly where it was left, one step behind.
+    expect(cardNames(result.current.deck)).toEqual(["Sol Ring"]);
+    expect(result.current.canGoForward).toBe(true);
+    act(() => result.current.forward());
+    expect(cardNames(result.current.deck)).toEqual(["Sol Ring", "Gamble"]);
+  });
+
+  it("carries the actor down from the session onto every entry it hands out", () => {
+    const { result } = renderHook(() => useDeck());
+    act(() => result.current.addCard(solRing));
+    act(() =>
+      result.current.applyEdit(
+        () => ({ changes: [{ card: gamble, quantity: 1 }], reason: "one more" }),
+        "agent",
+      ),
+    );
+
+    // The actor lives on the session, and anything rendering an edit needs it. Inferring it
+    // from the entry — a reason is present on every agent edit so far — is a proxy that holds
+    // until a user edit is given one.
+    expect(result.current.history.edits.map((held) => held.actor)).toEqual([
+      "user",
+      "agent",
+    ]);
   });
 });
 

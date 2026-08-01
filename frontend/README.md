@@ -36,14 +36,15 @@ src/
     DeckBoard.tsx             Grouping, sorting, cards, movement
     SearchDrawer.tsx          Search workflow and filters
     SearchTracePanel.tsx      Backend trace inspection
-    CardInspector.tsx         Centered card details and group action
+    CardInspector.tsx         Centered card details and placement control
+    DeckHistoryPanel.tsx      Recorded diffs, and travel to any of them
     CardArt.tsx               Remote art with fallback
     ConnectionStatus.tsx      Backend health state
   domain/
     card.ts                   Search/card types and helpers
     deck.ts                   Persistence schema, migration, warnings
   hooks/
-    useDeck.ts                Deck application service and undo
+    useDeck.ts                Deck application service, history and travel
     useBackendHealth.ts       Health polling
     useMediaQuery.ts          Responsive state
   lib/
@@ -74,7 +75,7 @@ operations for:
 - Move card between the command zone and the deck.
 - Create and select deck.
 - Rename deck.
-- Undo.
+- Travel along the recorded history: back, forward, or straight to a named edit.
 
 Deck deletion is confirmed and current-session recoverable through
 `useDeck.ts`. Add any further mutation through the same service rather than

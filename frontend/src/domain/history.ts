@@ -1,5 +1,6 @@
 import type { CardSearchResult } from "./card";
 import type { Deck, DeckCardEntry, DeckSection } from "./deck";
+import { sectionLabel } from "./deck";
 
 /**
  * The deck's edit log: what changed, when, and whether the user or the agent did it.
@@ -112,6 +113,13 @@ export interface DeckEditEntry extends DeckDiff {
   reason?: string;
 }
 
+/** One recorded edit with the session facts a reader needs, flattened out of its session. */
+export interface DeckHistoryEntry {
+  entry: DeckEditEntry;
+  actor: DeckHistoryActor;
+  sessionId: string;
+}
+
 /** A stretch of edits by one actor, with no gap longer than the session window. */
 export interface DeckSession {
   id: string;
@@ -137,6 +145,20 @@ export interface DeckHistory {
   sessions: DeckSession[];
   /** Keyed by `scryfall_id`. */
   cards: Record<string, CardSearchResult>;
+  /**
+   * The id of the newest edit the deck currently has applied, or `null` when the deck
+   * stands before every edit in the log.
+   *
+   * This is what makes a forward step possible. Undo used to *pop* the log, which left
+   * nothing to replay: the record of the edit was gone the moment it was reversed. Now the
+   * log is the whole past and this is a position in it, so everything after the cursor is
+   * an edit that happened, was stepped back past, and can be stepped into again.
+   *
+   * A log written before this field existed has no cursor. `parseDeckHistory` reads absent
+   * as the newest edit rather than as `null`, because those decks have every recorded edit
+   * applied — reading it as `null` would tell the user their whole deck is undone.
+   */
+  at: string | null;
 }
 
 /**
@@ -178,8 +200,168 @@ export interface DeckDiffApplyFailure {
  */
 export type DeckDiffApplyResult = { ok: true; deck: Deck } | DeckDiffApplyFailure;
 
+/**
+ * Where the deck should stand afterwards.
+ *
+ * One step in either direction, or a named edit — which is how the history panel moves the
+ * deck several edits at once. `{ editId: null }` is the state before the first recorded
+ * edit, which is reachable and is not the same as "no history".
+ */
+export type DeckHistoryDestination =
+  | "back"
+  | "forward"
+  | { editId: string | null };
+
+/**
+ * A journey the deck can actually make: the deck it lands on, and the cursor to record.
+ *
+ * `steps` and `direction` describe what was travelled, so the caller can say so without
+ * counting anything a second time.
+ */
+export interface DeckHistoryTravel {
+  ok: true;
+  deck: Deck;
+  at: string | null;
+  steps: number;
+  direction: "back" | "forward";
+}
+
+/**
+ * What travelling would do: a journey, a refusal, or `null` for nowhere to go.
+ *
+ * `null` is not a failure — it is the deck already standing where it was asked to stand,
+ * which is what a disabled Back button at the start of history means. It is distinct from a
+ * refusal, which is an edit that cannot be replayed and must be announced.
+ */
+export type DeckHistoryTravelResult = DeckHistoryTravel | DeckDiffApplyFailure | null;
+
 export function createDeckHistory(deckId: string): DeckHistory {
-  return { deck_id: deckId, sessions: [], cards: {} };
+  return { deck_id: deckId, sessions: [], cards: {}, at: null };
+}
+
+/**
+ * Every recorded edit, oldest first, each still carrying who made it.
+ *
+ * Travel is along one line of edits; sessions are how that line is *read*. Keeping the two
+ * apart is what lets a jump cross a session boundary without knowing there was one — but the
+ * actor sits on the session, so it is carried down here rather than left behind. Anything
+ * rendering an edit needs it, and the alternative is inferring the actor from something else
+ * on the entry: a reason is present on every agent edit *so far*, which makes it a proxy that
+ * works until a user edit is given one.
+ */
+export function historyEntries(history: DeckHistory): DeckHistoryEntry[] {
+  return history.sessions.flatMap((session) =>
+    session.edits.map((entry) => ({
+      entry,
+      actor: session.actor,
+      sessionId: session.id,
+    })),
+  );
+}
+
+/** The same line of edits without the reading apparatus, which is what travel walks. */
+export function historyEdits(history: DeckHistory): DeckEditEntry[] {
+  return historyEntries(history).map((held) => held.entry);
+}
+
+/**
+ * How many of the recorded edits the deck currently has applied.
+ *
+ * The cursor names an edit and this counts to it, so it is the *number of applied edits*
+ * and therefore also the index of the first undone one. `null` is zero applied.
+ *
+ * A cursor naming an edit the log no longer holds also counts zero. That can only happen if
+ * pruning dropped the session the cursor was in, and pruning drops the oldest — so every
+ * retained edit is newer than the cursor and none of them is applied. Reading it as the tip
+ * instead would offer to step back through edits the deck never had.
+ */
+export function appliedEditCount(history: DeckHistory): number {
+  if (history.at === null) {
+    return 0;
+  }
+  const index = historyEdits(history).findIndex(
+    (edit) => edit.id === history.at,
+  );
+  return index < 0 ? 0 : index + 1;
+}
+
+/** The edits stepped back past: recorded, not applied, and replayable forward again. */
+export function undoneEdits(history: DeckHistory): DeckEditEntry[] {
+  return historyEdits(history).slice(appliedEditCount(history));
+}
+
+/**
+ * Work out what travelling to a destination would do to the deck.
+ *
+ * Every movement goes through here — one step back, one step forward, and a jump of any
+ * length from the history panel — so a jump cannot come to disagree with the steps it is
+ * made of. It is also what `canGoBack` and `canGoForward` are computed from, which is why
+ * it plans rather than acts: a button that offered a step the reducer then refused would be
+ * lying, and the only way to know is to try the replay.
+ *
+ * Refused **whole**. A jump of six edits that fails on the fourth leaves the deck exactly
+ * where it was, because landing halfway would put the deck in a state no recorded edit
+ * describes and the cursor would then name the wrong one.
+ */
+export function planHistoryTravel(
+  deck: Deck,
+  history: DeckHistory,
+  destination: DeckHistoryDestination,
+): DeckHistoryTravelResult {
+  const edits = historyEdits(history);
+  const from = appliedEditCount(history);
+  const to = destinationIndex(edits, from, destination);
+  if (to === null || to === from) {
+    return null;
+  }
+
+  // Backwards, the entries are replayed inverted and newest first; forwards, as recorded and
+  // oldest first. Both walk the same list, which is what keeps a six-step jump identical to
+  // six single steps.
+  const backwards = to < from;
+  const travelled = backwards
+    ? edits.slice(to, from).reverse()
+    : edits.slice(from, to);
+
+  let current = deck;
+  for (const entry of travelled) {
+    const applied = applyDeckDiff(
+      current,
+      backwards ? invertDeckDiff(entry) : entry,
+      history.cards,
+    );
+    if (!applied.ok) {
+      return applied;
+    }
+    current = applied.deck;
+  }
+
+  return {
+    ok: true,
+    deck: current,
+    at: to === 0 ? null : (edits[to - 1]?.id ?? null),
+    steps: travelled.length,
+    direction: backwards ? "back" : "forward",
+  };
+}
+
+/** The number of applied edits a destination asks for, or `null` when it names none. */
+function destinationIndex(
+  edits: DeckEditEntry[],
+  from: number,
+  destination: DeckHistoryDestination,
+): number | null {
+  if (destination === "back") {
+    return from > 0 ? from - 1 : null;
+  }
+  if (destination === "forward") {
+    return from < edits.length ? from + 1 : null;
+  }
+  if (destination.editId === null) {
+    return 0;
+  }
+  const index = edits.findIndex((edit) => edit.id === destination.editId);
+  return index < 0 ? null : index + 1;
 }
 
 /**
@@ -369,6 +551,12 @@ export function applyDeckDiff(
  *
  * An edit that changed nothing is refused and the history is returned unchanged, so the log
  * never carries an entry with no changes in it.
+ *
+ * An edit made while the cursor is behind the tip **discards everything after it** first.
+ * Those edits described a future the deck has stepped out of, and once it has been changed
+ * from here they describe nothing that can be replayed: the deck they applied to no longer
+ * exists. Dropping them is also what keeps this function's own invariant — the cursor is the
+ * newest edit in the log — true by construction, which is what every other reader relies on.
  */
 export function appendToHistory(
   history: DeckHistory,
@@ -379,11 +567,12 @@ export function appendToHistory(
     return history;
   }
 
-  const open = history.sessions.at(-1);
+  const applied = truncateUndoneEdits(history);
+  const open = applied.sessions.at(-1);
   const sessions =
     open && canJoinSession(open, actor, entry.at)
       ? [
-          ...history.sessions.slice(0, -1),
+          ...applied.sessions.slice(0, -1),
           {
             ...open,
             ended_at: laterOf(open.ended_at, entry.at),
@@ -391,7 +580,7 @@ export function appendToHistory(
           },
         ]
       : [
-          ...history.sessions,
+          ...applied.sessions,
           {
             id: newSessionId,
             actor,
@@ -401,7 +590,43 @@ export function appendToHistory(
           },
         ];
 
-  return { ...history, sessions, cards: { ...history.cards, ...payloads } };
+  return {
+    ...applied,
+    sessions,
+    cards: { ...applied.cards, ...payloads },
+    at: entry.id,
+  };
+}
+
+/**
+ * Drop every edit after the cursor, so the log is exactly what the deck has applied.
+ *
+ * A session emptied by this is dropped with its edits: a stretch of editing with nothing
+ * left in it reads as a gap in the record rather than as a session. Pruning is left to
+ * `pruneHistory`, which the caller runs anyway — this returns the history it was given when
+ * there is nothing to drop, so `appendToHistory` can tell the ordinary case cheaply.
+ */
+export function truncateUndoneEdits(history: DeckHistory): DeckHistory {
+  const applied = appliedEditCount(history);
+  if (applied === historyEdits(history).length) {
+    return history;
+  }
+
+  let remaining = applied;
+  const sessions: DeckSession[] = [];
+  for (const session of history.sessions) {
+    if (remaining <= 0) {
+      break;
+    }
+    const edits = session.edits.slice(0, remaining);
+    remaining -= edits.length;
+    sessions.push({
+      ...session,
+      ended_at: edits[edits.length - 1]?.at ?? session.ended_at,
+      edits,
+    });
+  }
+  return { ...history, sessions };
 }
 
 /**
@@ -459,10 +684,21 @@ export function parseDeckHistory(
   ) {
     return fallback;
   }
+  const sessions = value.sessions as DeckSession[];
   return {
     deck_id: value.deck_id,
-    sessions: value.sessions,
+    sessions,
     cards: value.cards as Record<string, CardSearchResult>,
+    // Absent is not `null`. A log written before the cursor existed has every recorded edit
+    // applied, so absent reads as the newest edit; `null` is the deck deliberately stepped
+    // back before all of them, and a stored `null` has to survive the round trip or a reload
+    // would silently reapply everything the user stepped out of.
+    at:
+      value.at === null
+        ? null
+        : typeof value.at === "string"
+          ? value.at
+          : (sessions.at(-1)?.edits.at(-1)?.id ?? null),
   };
 }
 
@@ -481,6 +717,34 @@ function canJoinSession(
   );
 }
 
+/**
+ * One card change in words, in the one place that words one.
+ *
+ * Both the summary stored on an entry and the history panel that renders the entry read
+ * this, so a diff cannot be described two ways — the stored line and the line on screen are
+ * the same sentence about the same change.
+ */
+export function describeDeckCardChange(change: DeckCardChange): string {
+  const before = change.before?.quantity ?? 0;
+  const after = change.after?.quantity ?? 0;
+  if (change.before === null) {
+    return `+${change.name}`;
+  }
+  if (change.after === null) {
+    return `−${change.name}`;
+  }
+  if (after !== before) {
+    return `${change.name} ×${before} → ×${after}`;
+  }
+  // Where it went, not just that it went. A derivation records a card only when something
+  // about it changed, so an unchanged count means the section changed — and "moved" alone
+  // left the one axis a move can have unsaid. `read_history` names the destination for the
+  // agent for the same reason.
+  return change.after
+    ? `${change.name} → ${sectionLabel(change.after.section)}`
+    : `${change.name} moved`;
+}
+
 function summariseDeckDiff(
   cards: DeckCardChange[],
   name: DeckNameChange | undefined,
@@ -494,15 +758,7 @@ function summariseDeckDiff(
     const afterQuantity = change.after?.quantity ?? 0;
     added += Math.max(0, afterQuantity - beforeQuantity);
     removed += Math.max(0, beforeQuantity - afterQuantity);
-    if (change.before === null) {
-      parts.push(`+${change.name}`);
-    } else if (change.after === null) {
-      parts.push(`−${change.name}`);
-    } else if (afterQuantity !== beforeQuantity) {
-      parts.push(`${change.name} ×${beforeQuantity} → ×${afterQuantity}`);
-    } else {
-      parts.push(`${change.name} moved`);
-    }
+    parts.push(describeDeckCardChange(change));
   }
 
   if (name) {

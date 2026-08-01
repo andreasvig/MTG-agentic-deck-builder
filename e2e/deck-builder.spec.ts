@@ -169,6 +169,11 @@ async function waitForCardArt(page: Page, cardName: string) {
 }
 
 async function dragTo(page: Page, source: Locator, target: Locator) {
+  // Scrolled into view *before* either box is measured. `page.mouse.move` takes viewport
+  // coordinates and `boundingBox` returns page ones, so a handle below the fold is a
+  // mouse-down on empty space and a drag that silently never starts. The Command zone
+  // column is tall enough that scrolling the card into view leaves the target reachable.
+  await source.scrollIntoViewIfNeeded();
   const sourceBounds = await source.boundingBox();
   const targetBounds = await target.boundingBox();
   expect(sourceBounds).not.toBeNull();
@@ -188,6 +193,10 @@ async function dragTo(page: Page, source: Locator, target: Locator) {
   );
   await page.waitForTimeout(100);
   await page.mouse.up();
+  // dnd-kit suppresses the click that follows a pointer-up on a draggable node and drops
+  // that suppression a tick later, so without this the first click after any drag is
+  // swallowed — including a click on the card's own art, which sits inside the draggable.
+  await page.waitForTimeout(150);
 }
 
 test.beforeEach(async ({ page }) => {
@@ -251,6 +260,8 @@ test("desktop deck-building flow remains fast and reversible", async ({
   await expect(
     page.getByRole("heading", { name: "Command zone" }),
   ).toBeVisible();
+  // One grouping, derived from the cards: no mode to choose, no group to create, and no
+  // heading for cards belonging to no group (ADR 0037).
   await expect(
     page.getByRole("heading", { name: "Not assigned" }),
   ).toHaveCount(0);
@@ -259,16 +270,7 @@ test("desktop deck-building flow remains fast and reversible", async ({
   ).toHaveCount(0);
   await expect(
     page.getByRole("combobox", { name: "Group cards" }),
-  ).toHaveValue("type");
-  await page
-    .getByRole("combobox", { name: "Group cards" })
-    .selectOption("custom");
-  await expect(
-    page.getByRole("heading", { name: "Not assigned" }),
-  ).toBeVisible();
-  await expect(
-    page.getByRole("button", { name: "Add custom group" }),
-  ).toBeVisible();
+  ).toHaveCount(0);
   const initialGroupBounds = await page.locator(".visual-group").first().boundingBox();
   expect(initialGroupBounds).not.toBeNull();
   expect(initialGroupBounds?.width).toBeLessThanOrEqual(240);
@@ -360,44 +362,38 @@ test("desktop deck-building flow remains fast and reversible", async ({
   ).toBeVisible();
   await waitForCardArt(page, "Llanowar Elves");
 
-  await page.getByRole("button", { name: "Add custom group" }).click();
-  await page.getByRole("textbox", { name: "Group name" }).fill("Ramp");
-  await page.getByRole("button", { name: "Create custom group" }).click();
-  await expect(page.getByRole("heading", { name: "Ramp" })).toBeVisible();
-
-  const notAssignedGroup = page.locator('[data-group-id="unassigned"]');
-  const rampGroup = page
-    .locator(".visual-group")
-    .filter({ has: page.getByRole("heading", { name: "Ramp" }) });
+  // Drag is on in the only view there is, and the command zone is the one thing it can
+  // mean. In a real browser, because jsdom computes no layout and a drop target with no
+  // geometry cannot be dropped on.
+  const commandZone = page.locator('[data-group-id="command_zone"]');
+  const artifactGroup = page.locator('[data-group-id="type-Artifact"]');
   await dragTo(
     page,
     page.getByRole("button", { name: "Drag Sol Ring" }),
-    rampGroup,
+    commandZone,
   );
   await expect(
-    rampGroup.getByRole("button", { name: "Inspect Sol Ring" }),
+    commandZone.getByRole("button", { name: "Inspect Sol Ring" }),
   ).toBeVisible();
   await expect(
-    notAssignedGroup.getByRole("button", { name: "Inspect Sol Ring" }),
+    artifactGroup.getByRole("button", { name: "Inspect Sol Ring" }),
   ).toHaveCount(0);
 
+  // And dropping it on a card-type heading puts it back in the deck, which is the only
+  // thing such a drop can mean.
   await dragTo(
     page,
-    page.getByRole("button", { name: "Drag Llanowar Elves" }),
-    page.locator('[data-drop-target="new-group"]'),
+    page.getByRole("button", { name: "Drag Sol Ring" }),
+    page.locator('[data-group-id="type-Creature"]'),
   );
-  const droppedGroupName = page.getByRole("textbox", { name: "Group name" });
-  await expect(droppedGroupName).toBeFocused();
-  await droppedGroupName.fill("Mana dorks");
-  await page.getByRole("button", { name: "Create custom group" }).click();
-  const manaDorksGroup = page
-    .locator(".visual-group")
-    .filter({ has: page.getByRole("heading", { name: "Mana dorks" }) });
   await expect(
-    manaDorksGroup.getByRole("button", {
-      name: "Inspect Llanowar Elves",
-    }),
+    page
+      .locator('[data-group-id="type-Artifact"]')
+      .getByRole("button", { name: "Inspect Sol Ring" }),
   ).toBeVisible();
+  await expect(
+    commandZone.getByRole("button", { name: "Inspect Sol Ring" }),
+  ).toHaveCount(0);
 
   await page.getByRole("button", { name: "Inspect Sol Ring" }).click();
   const cardDialog = page.getByRole("dialog", { name: "Card details" });
@@ -412,10 +408,10 @@ test("desktop deck-building flow remains fast and reversible", async ({
         1440 / 2,
     ),
   ).toBeLessThan(3);
-  const customGroupSelect = page.getByRole("combobox", {
-    name: "Move Sol Ring to custom group",
+  const placementSelect = page.getByRole("combobox", {
+    name: "Move Sol Ring to another part of the deck",
   });
-  await expect(customGroupSelect).toHaveValue(/group-/);
+  await expect(placementSelect).toHaveValue("mainboard");
   await expect(
     cardDialog.getByRole("region", { name: "Card tags and related cards" }),
   ).toBeVisible();
@@ -432,12 +428,7 @@ test("desktop deck-building flow remains fast and reversible", async ({
     .getByRole("button", { name: "Close card search" })
     .click();
 
-  await page.getByRole("combobox", { name: "Group cards" }).selectOption("type");
-  await expect(page.getByRole("button", { name: "Add custom group" })).toHaveCount(
-    0,
-  );
   await expect(page.getByRole("heading", { name: "Artifact" })).toBeVisible();
-  await page.getByRole("combobox", { name: "Group cards" }).selectOption("custom");
 
   await page.screenshot({
     path: testInfo.outputPath("desktop-populated-visual.png"),
@@ -465,7 +456,6 @@ test("desktop deck-building flow remains fast and reversible", async ({
     page.getByRole("spinbutton", { name: "Sol Ring quantity" }),
   ).toBeVisible();
 
-  await page.getByRole("combobox", { name: "Group cards" }).selectOption("type");
   await expect(page.getByRole("heading", { name: "Artifact" })).toBeVisible();
   await expect(page.getByRole("heading", { name: "Creature" })).toBeVisible();
   await page
@@ -492,26 +482,47 @@ test("desktop deck-building flow remains fast and reversible", async ({
 
   await page.reload();
   await expect(page.getByRole("heading", { name: "Ramp Lab" })).toBeVisible();
-  await expect(
-    page.getByRole("combobox", { name: "Group cards" }),
-  ).toHaveValue("type");
   await expect(page.getByRole("heading", { name: "Artifact" })).toBeVisible();
   await expect(page.getByRole("heading", { name: "Creature" })).toBeVisible();
-  await page
-    .getByRole("combobox", { name: "Group cards" })
-    .selectOption("custom");
-  await expect(
-    page.getByRole("heading", { name: "Ramp", exact: true }),
-  ).toBeVisible();
-  await expect(
-    page.getByRole("heading", { name: "Mana dorks", exact: true }),
-  ).toBeVisible();
   await expect(
     page.getByRole("button", { name: "Inspect Sol Ring" }),
   ).toBeVisible();
   await expect(
     page.getByRole("button", { name: /Untitled Commander/ }),
   ).toBeVisible();
+
+  // Travel survives the reload, which is the whole reason the position is stored beside
+  // the log rather than held in memory (ADR 0038).
+  const backButton = page.getByRole("button", {
+    name: "Undo last deck change",
+  });
+  const forwardButton = page.getByRole("button", {
+    name: "Redo next deck change",
+  });
+  await expect(backButton).toBeEnabled();
+  await backButton.click();
+  await expect(forwardButton).toBeEnabled();
+  await forwardButton.click();
+  await expect(forwardButton).toBeDisabled();
+
+  // And the panel between them lists the recorded diffs and jumps to one.
+  await page.getByRole("button", { name: "Deck history" }).click();
+  const historyPanel = page.getByLabel("Recorded deck history");
+  await expect(historyPanel).toBeVisible();
+  await expect(historyPanel.getByText("renamed to Ramp Lab")).toBeVisible();
+  await expect(
+    historyPanel.getByLabel("The deck stands here"),
+  ).toHaveCount(1);
+  await historyPanel.getByText("Before any edits").click();
+  await expect(backButton).toBeDisabled();
+  await expect(
+    page.getByRole("heading", { name: "Untitled Commander" }).first(),
+  ).toBeVisible();
+
+  await page.screenshot({
+    path: testInfo.outputPath("desktop-history-panel.png"),
+    fullPage: true,
+  });
 });
 
 test("search loads six fuzzy results before appending the next page", async ({
@@ -1113,9 +1124,6 @@ test("commander colors warn before and after an illegal addition", async ({
   await expect(
     page.getByRole("heading", { name: "Maybeboard" }),
   ).toHaveCount(0);
-  await expect(
-    page.getByRole("combobox", { name: "Group cards" }),
-  ).toHaveValue("type");
 
   await openSearch(page);
   await expect(
@@ -1366,37 +1374,25 @@ test("mobile keeps primary deck actions reachable and contained", async ({
     mobileToolbar.getByRole("button", { name: "Add cards", exact: true }),
   ).toBeFocused();
 
-  await expect(
-    page.getByRole("combobox", { name: "Group cards" }),
-  ).toHaveValue("type");
-  await page
-    .getByRole("combobox", { name: "Group cards" })
-    .selectOption("custom");
-  await page.getByRole("button", { name: "Add custom group" }).click();
-  const mobileGroupInput = page.getByRole("textbox", { name: "Group name" });
-  const createGroupButton = page.getByRole("button", {
-    name: "Create custom group",
-  });
-  await expect(mobileGroupInput).toBeVisible();
-  await expect(createGroupButton).toBeVisible();
-  const mobileGroupInputBounds = await mobileGroupInput.boundingBox();
-  const createGroupBounds = await createGroupButton.boundingBox();
-  expect(mobileGroupInputBounds).not.toBeNull();
-  expect(createGroupBounds).not.toBeNull();
-  expect(mobileGroupInputBounds?.x).toBeGreaterThanOrEqual(0);
-  expect(
-    (mobileGroupInputBounds?.x ?? 0) + (mobileGroupInputBounds?.width ?? 0),
-  ).toBeLessThanOrEqual(390);
-  expect(createGroupBounds?.width).toBeGreaterThanOrEqual(40);
-  expect(createGroupBounds?.height).toBeGreaterThanOrEqual(40);
-  expect(
-    (createGroupBounds?.x ?? 0) + (createGroupBounds?.width ?? 0),
-  ).toBeLessThanOrEqual(390);
+  // Five buttons in the bottom bar now that Redo is one of them, on a 390px viewport.
+  // The grid was written for four, and a fifth silently overflowing is the kind of thing
+  // only a real layout can catch.
+  const mobileButtons = ["Add cards", "Layout", "Undo", "Redo", "More"];
+  for (const name of mobileButtons) {
+    const button = mobileToolbar.getByRole("button", { name, exact: true });
+    await expect(button).toBeVisible();
+    const bounds = await button.boundingBox();
+    expect(bounds).not.toBeNull();
+    expect(bounds?.x).toBeGreaterThanOrEqual(0);
+    expect((bounds?.x ?? 0) + (bounds?.width ?? 0)).toBeLessThanOrEqual(390);
+    // Still a tappable target at five across, which is the thing a sixth would break.
+    expect(bounds?.width).toBeGreaterThanOrEqual(40);
+    expect(bounds?.height).toBeGreaterThanOrEqual(40);
+  }
   await page.screenshot({
-    path: testInfo.outputPath("mobile-custom-group-editor.png"),
+    path: testInfo.outputPath("mobile-toolbar.png"),
     fullPage: false,
   });
-  await page.getByRole("button", { name: "Cancel custom group" }).click();
 
   await page.getByRole("button", { name: "Rename deck" }).click();
   const mobileDeckName = page.getByRole("textbox", { name: "Deck name" });
@@ -1412,6 +1408,14 @@ test("mobile keeps primary deck actions reachable and contained", async ({
     name: "Drag Llanowar Elves",
   });
   await expect(cardOptions).toBeVisible();
+  // The groups are a horizontal scroll-snap track on mobile, and the Command zone heading
+  // is always the first slot in it, so the next group starts part-way off screen. Centred
+  // rather than `scrollIntoViewIfNeeded`, which leaves a partly-visible node where it is —
+  // the question here is whether the card's controls fit the viewport, not where the track
+  // happens to be scrolled to.
+  await cardOptions.evaluate((node) =>
+    node.scrollIntoView({ inline: "center", block: "nearest" }),
+  );
   const cardOptionsBounds = await cardOptions.boundingBox();
   expect(cardOptionsBounds).not.toBeNull();
   expect(

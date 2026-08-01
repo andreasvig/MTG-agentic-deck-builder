@@ -24,21 +24,21 @@ import {
 } from "../domain/deck";
 import type {
   DeckDiff,
-  DeckDiffApplyResult,
   DeckEditEntry,
   DeckHistory,
   DeckHistoryActor,
+  DeckHistoryDestination,
 } from "../domain/history";
 import {
   appendToHistory,
-  applyDeckDiff,
   createDeckHistory,
   DECK_HISTORY_PAYLOAD_CAP,
   DECK_HISTORY_SESSION_CAP,
   DECK_HISTORY_STORAGE_KEY,
   deriveDeckDiff,
-  invertDeckDiff,
+  historyEntries,
   parseDeckHistory,
+  planHistoryTravel,
   pruneHistory,
 } from "../domain/history";
 
@@ -153,7 +153,7 @@ interface DeckState {
 
 type DeckAction =
   | { type: "mutate"; mutation: DeckMutation }
-  | { type: "undo" }
+  | { type: "travel"; destination: DeckHistoryDestination }
   | { type: "create_deck" }
   | { type: "select_deck"; deckId: string }
   | { type: "delete_deck"; deckId: string }
@@ -501,37 +501,64 @@ export function useDeck() {
     dispatch({ type: "clear_announcement" });
   }, []);
 
-  const undo = useCallback(() => {
-    dispatch({ type: "undo" });
+  /**
+   * Move the deck along its own history. One step either way, or straight to a named edit.
+   *
+   * Every movement is this one call, so a jump of six edits and six single steps are the same
+   * code taking the same path — there is no second implementation of "replay backwards" for
+   * the panel to drift away from.
+   */
+  const travel = useCallback((destination: DeckHistoryDestination) => {
+    dispatch({ type: "travel", destination });
   }, []);
 
+  const back = useCallback(() => travel("back"), [travel]);
+  const forward = useCallback(() => travel("forward"), [travel]);
+  const jumpToEdit = useCallback(
+    (editId: string | null) => travel({ editId }),
+    [travel],
+  );
+
+  const log = editLogFor(state.editLogs, deck.id);
+
   /**
-   * Whether the last recorded edit can actually be replayed backwards, established by
-   * planning the undo rather than by counting entries. An entry whose pooled card payloads
-   * have been pruned is readable but not replayable, so counting would light the button up
-   * for an undo the reducer then refuses.
+   * Whether a step is actually available, established by planning it rather than by counting
+   * entries. An entry whose pooled card payloads have been pruned is readable but not
+   * replayable, so counting would light a button up for a step the reducer then refuses.
    */
-  const canUndo = useMemo(
-    () => planUndo(deck, editLogFor(state.editLogs, deck.id))?.ok === true,
-    [deck, state.editLogs],
+  const canGoBack = useMemo(
+    () => planHistoryTravel(deck, log, "back")?.ok === true,
+    [deck, log],
+  );
+  const canGoForward = useMemo(
+    () => planHistoryTravel(deck, log, "forward")?.ok === true,
+    [deck, log],
   );
 
   /**
-   * The id of the deck's newest recorded edit, which is the one and only edit `undo` reverses.
+   * The deck's whole recorded past and where in it the deck currently stands.
+   *
+   * Handed out as the log itself rather than as a projection of it, because the panel that
+   * renders it needs every entry's diff, actor, time and reason — and deriving a second
+   * shape here is how a rendered history comes to disagree with the one travel walks.
+   */
+  const history = useMemo(
+    () => ({ appliedEditId: log.at, edits: historyEntries(log) }),
+    [log],
+  );
+
+  /**
+   * The id of the edit the deck currently stands on, which is the one and only edit a step
+   * back reverses.
    *
    * Read out of the log at every render rather than remembered from the last edit made, so it
    * follows whatever the deck actually did last — the agent's edit, a drag that came after it,
-   * or the edit before the one an undo just popped. Anything offering to reverse a *particular*
-   * edit compares against this: an offer attached by position promises the reversal of the
-   * newest thing on screen and delivers the reversal of the newest thing in the log, and those
-   * are the same thing only until they are not.
+   * or the edit before the one a step back moved past. Anything offering to reverse a
+   * *particular* edit compares against this: an offer attached by position promises the
+   * reversal of the newest thing on screen and delivers the reversal of the edit the deck
+   * actually stands on, and those are the same thing only until they are not.
    */
-  const lastRecordedEditId = useMemo(
-    () =>
-      editLogFor(state.editLogs, deck.id).sessions.at(-1)?.edits.at(-1)?.id ??
-      null,
-    [deck.id, state.editLogs],
-  );
+  const lastRecordedEditId = log.at;
 
   const statistics = useMemo(() => {
     const cardCount = deck.cards.reduce(
@@ -598,7 +625,9 @@ export function useDeck() {
     decks: state.library.decks,
     announcement: state.announcement,
     announcementTone: state.announcementTone,
-    canUndo,
+    canGoBack,
+    canGoForward,
+    history,
     lastRecordedEditId,
     deletedDeckName: state.deletedDeck?.deck.name ?? null,
     statistics,
@@ -613,7 +642,9 @@ export function useDeck() {
     deleteDeck,
     restoreDeletedDeck,
     clearAnnouncement,
-    undo,
+    back,
+    forward,
+    jumpToEdit,
   };
 }
 
@@ -795,33 +826,39 @@ function deckReducer(state: DeckState, action: DeckAction): DeckState {
     };
   }
 
-  if (action.type === "undo") {
+  if (action.type === "travel") {
     const log = editLogFor(state.editLogs, current.id);
-    const undone = planUndo(current, log);
-    if (undone === null) {
+    const travelled = planHistoryTravel(current, log, action.destination);
+    if (travelled === null) {
       return {
         ...state,
-        announcement: "Nothing to undo.",
+        announcement: nowhereToGo(action.destination),
         announcementTone: "status",
       };
     }
-    if (!undone.ok) {
+    if (!travelled.ok) {
       // A refusal is announced rather than thrown, and the deck is left exactly as it was.
-      // Undoing halfway would be worse than not undoing.
+      // Landing halfway through a jump would be worse than not moving at all.
       return {
         ...state,
-        announcement: undone.message,
+        announcement: travelled.message,
         announcementTone: "error",
       };
     }
     return {
       ...state,
       library: replaceDeck(state.library, {
-        ...undone.deck,
+        ...travelled.deck,
         updated_at: new Date().toISOString(),
       }),
-      editLogs: { ...state.editLogs, [current.id]: withoutLastEdit(log) },
-      announcement: "Last deck change undone.",
+      // The log is not touched. Everything the deck stepped back past is still recorded and
+      // still replayable — that is the whole difference from the undo this replaced, which
+      // popped the entry and left nothing to step forward into.
+      editLogs: {
+        ...state.editLogs,
+        [current.id]: { ...log, at: travelled.at },
+      },
+      announcement: travelledSentence(travelled.steps, travelled.direction),
       announcementTone: "status",
     };
   }
@@ -924,51 +961,31 @@ function editLogFor(
   return logs[deckId] ?? createDeckHistory(deckId);
 }
 
-/**
- * What undoing the last recorded edit would do, or `null` when nothing is recorded.
- *
- * `canUndo` and the `undo` action both come through here, so the button cannot promise an
- * undo the reducer then refuses. There are two ways an entry stops being replayable and both
- * arrive as the same refusal: its pooled payload was pruned, or the card it has to put back
- * never had a `details` payload to pool in the first place.
- */
-function planUndo(
-  deck: Deck,
-  log: DeckHistory,
-): DeckDiffApplyResult | null {
-  const entry = log.sessions.at(-1)?.edits.at(-1);
-  return entry ? applyDeckDiff(deck, invertDeckDiff(entry), log.cards) : null;
+/** What to say when a step is asked for and there is nowhere to step. */
+function nowhereToGo(destination: DeckHistoryDestination): string {
+  if (destination === "back") {
+    return "Nothing to undo.";
+  }
+  return destination === "forward"
+    ? "Nothing to redo."
+    : "The deck is already at that point in its history.";
 }
 
 /**
- * Drop the last recorded edit, because an undo pops the log rather than appending its inverse.
- *
- * The alternative would make undo itself undoable, and would leave the log describing an edit
- * the deck no longer contains. The agent reads this log to decide what to do next, so a log
- * that disagrees with the deck is the same class of error as a half-applied edit.
+ * What to say about a journey, counted from what was travelled rather than from what was
+ * asked for. A jump of one is worded as the step it is, because that is what the user did.
  */
-function withoutLastEdit(log: DeckHistory): DeckHistory {
-  const open = log.sessions.at(-1);
-  if (!open) {
-    return log;
+function travelledSentence(
+  steps: number,
+  direction: "back" | "forward",
+): string {
+  if (steps === 1) {
+    return direction === "back"
+      ? "Last deck change undone."
+      : "Deck change redone.";
   }
-  const edits = open.edits.slice(0, -1);
-  const sessions =
-    edits.length > 0
-      ? [
-          ...log.sessions.slice(0, -1),
-          // `ended_at` rewinds with the pop, or the next edit would join a session by a gap
-          // measured against an edit that is no longer in it.
-          { ...open, ended_at: edits[edits.length - 1].at, edits },
-        ]
-      : log.sessions.slice(0, -1);
-  // Pruning here is the garbage collection: the popped edit may have been the only reason a
-  // pooled payload was still worth keeping.
-  return pruneHistory(
-    { ...log, sessions },
-    DECK_HISTORY_SESSION_CAP,
-    DECK_HISTORY_PAYLOAD_CAP,
-  );
+  const word = direction === "back" ? "back" : "forward";
+  return `Moved ${word} ${steps} deck changes.`;
 }
 
 /** What applying one change did, so the announcement can name counts the applier is sure of. */

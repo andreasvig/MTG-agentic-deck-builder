@@ -4,12 +4,14 @@ import {
   Bug,
   Columns3,
   Command,
+  History,
   LayoutGrid,
   List,
   Menu,
   MoreHorizontal,
   Pencil,
   Plus,
+  Redo2,
   Settings2,
   Trash2,
   Undo2,
@@ -21,6 +23,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { CardInspector } from "./components/CardInspector";
 import { DeckAgentPanel } from "./components/DeckAgentPanel";
 import { DeckBoard, type SortMode, type ViewMode } from "./components/DeckBoard";
+import { DeckHistoryPanel } from "./components/DeckHistoryPanel";
 import { DeleteDeckDialog } from "./components/DeleteDeckDialog";
 import { SearchDrawer } from "./components/SearchDrawer";
 import type { CardSearchResult, CardTagFilter } from "./domain/card";
@@ -56,7 +59,9 @@ function App() {
     decks,
     announcement,
     announcementTone,
-    canUndo,
+    canGoBack,
+    canGoForward,
+    history,
     lastRecordedEditId,
     deletedDeckName,
     statistics,
@@ -71,7 +76,9 @@ function App() {
     deleteDeck,
     restoreDeletedDeck,
     clearAnnouncement,
-    undo,
+    back,
+    forward,
+    jumpToEdit,
   } = useDeck();
   const { health } = useBackendHealth();
   const [debugEnabled, setDebugEnabled] = useDebugMode();
@@ -84,6 +91,7 @@ function App() {
   const [renamingDeck, setRenamingDeck] = useState(false);
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [historyOpen, setHistoryOpen] = useState(false);
   // What the deck agent's tools read. Rebuilt from the deck rather than held
   // separately, so a card added mid-conversation is visible on the next question.
   const deckSnapshot = useMemo(
@@ -578,16 +586,48 @@ function App() {
               <option value="price">Price high-low</option>
             </select>
           </label>
-          <button
-            className="icon-button undo-button"
-            type="button"
-            disabled={!canUndo}
-            aria-label="Undo last deck change"
-            title="Undo"
-            onClick={undo}
-          >
-            <Undo2 aria-hidden="true" size={17} />
-          </button>
+          <div className="time-travel">
+            <button
+              className="icon-button undo-button"
+              type="button"
+              disabled={!canGoBack}
+              aria-label="Undo last deck change"
+              title="Back"
+              onClick={back}
+            >
+              <Undo2 aria-hidden="true" size={17} />
+            </button>
+            <button
+              className={`icon-button history-button ${
+                historyOpen ? "is-active" : ""
+              }`}
+              type="button"
+              aria-label="Deck history"
+              aria-expanded={historyOpen}
+              title="History"
+              onClick={() => setHistoryOpen((open) => !open)}
+            >
+              <History aria-hidden="true" size={17} />
+            </button>
+            <button
+              className="icon-button redo-button"
+              type="button"
+              disabled={!canGoForward}
+              aria-label="Redo next deck change"
+              title="Forward"
+              onClick={forward}
+            >
+              <Redo2 aria-hidden="true" size={17} />
+            </button>
+            {historyOpen ? (
+              <DeckHistoryPanel
+                edits={history.edits}
+                appliedEditId={history.appliedEditId}
+                onJump={jumpToEdit}
+                onClose={() => setHistoryOpen(false)}
+              />
+            ) : null}
+          </div>
           <div className="interface-settings">
             <button
               className={`icon-button ${settingsOpen ? "is-active" : ""}`}
@@ -656,7 +696,7 @@ function App() {
             deck={deckSnapshot}
             onOpenCard={setSelectedCard}
             onDeckEdit={applyAgentEdit}
-            onUndoDeckEdit={undo}
+            onUndoDeckEdit={back}
             undoableEditId={lastRecordedEditId}
             readDeckHistory={readDeckHistory}
           />
@@ -690,9 +730,13 @@ function App() {
           )}
           <span>Layout</span>
         </button>
-        <button type="button" disabled={!canUndo} onClick={undo}>
+        <button type="button" disabled={!canGoBack} onClick={back}>
           <Undo2 aria-hidden="true" size={20} />
           <span>Undo</span>
+        </button>
+        <button type="button" disabled={!canGoForward} onClick={forward}>
+          <Redo2 aria-hidden="true" size={20} />
+          <span>Redo</span>
         </button>
         <button type="button" onClick={() => setNavigationOpen(true)}>
           <MoreHorizontal aria-hidden="true" size={20} />

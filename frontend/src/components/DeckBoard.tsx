@@ -3,6 +3,7 @@ import {
   CirclePlus,
   GripVertical,
   Minus,
+  MoreHorizontal,
   Plus,
   Trash2,
 } from "lucide-react";
@@ -450,6 +451,21 @@ function ListRow({
       </span>
       <span>{formatEuro(getCardPrice(card) * entry.quantity, "—")}</span>
       <div className="list-actions">
+        {/*
+          Both, not one or the other. This used to show the drag handle *or* an inspect
+          button depending on the grouping mode, and with drag now unconditional the
+          inspect affordance had disappeared from the list entirely — leaving the row's
+          name button, whose accessible name is the card and its set, as the only way in.
+        */}
+        <button
+          className="icon-button icon-button--compact"
+          type="button"
+          aria-label={`Inspect ${card.name} details`}
+          title="Card details"
+          onClick={() => onSelect(card)}
+        >
+          <MoreHorizontal aria-hidden="true" size={16} />
+        </button>
         <button
           className="icon-button icon-button--compact card-drag-handle"
           type="button"

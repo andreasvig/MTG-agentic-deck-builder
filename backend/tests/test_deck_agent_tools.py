@@ -2268,6 +2268,55 @@ def test_read_history_renders_newest_first_as_you_and_me() -> None:
     assert "user" not in outcome.content
 
 
+def test_an_undone_edit_is_marked_and_explained_once() -> None:
+    # The newest session stepped back past, which is what the Back button leaves behind.
+    posted = make_history()
+    posted.sessions[-1].edits[0].undone = True
+
+    outcome = history({"limit": 2}, posted=posted)
+
+    assert outcome.content == "\n".join(
+        [
+            "## History",
+            '"Gruul Stompy" — 4 sessions recorded, showing the last 2.',
+            "1 edit is marked (undone): the user stepped back past it, so it happened "
+            "and the deck does not have it now. Stepping forward again is the user's to "
+            "do, not yours — but you may put a card back with edit_deck if they ask for "
+            "it.",
+            "",
+            "You, 14:24 (1 change)",
+            "  (undone) Ghalta, Primal Hunger → command zone",
+            "",
+            'Me, 14:11 (2 changes) — "swapping the weakest ramp for two rocks"',
+            f"  + Mind Stone, {REMOVED} Wayfarer's Bauble",
+        ]
+    )
+
+
+def test_a_history_with_nothing_undone_says_nothing_about_undone_edits() -> None:
+    outcome = history({"limit": 2})
+
+    # The control for the test above. An explanation of a marker that does not appear is a
+    # sentence the model has to work out is irrelevant, and every such sentence makes the
+    # ones that matter cheaper to skim past.
+    assert "undone" not in outcome.content
+    assert "(undone)" not in outcome.content
+
+
+def test_the_undone_count_is_of_what_was_shown_not_of_the_whole_log() -> None:
+    posted = make_history()
+    # The oldest session, which a limit of 2 does not reach.
+    posted.sessions[0].edits[0].undone = True
+
+    outcome = history({"limit": 2}, posted=posted)
+
+    # Counting the whole log would promise a marker the reader cannot find, and sending
+    # them looking for it is worse than not mentioning it.
+    assert "undone" not in outcome.content
+
+    assert "1 edit is marked" in history({"limit": 4}, posted=posted).content
+
+
 def test_read_history_honours_the_limit_and_the_configured_default() -> None:
     one = history({"limit": 1})
     default = history()

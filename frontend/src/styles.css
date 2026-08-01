@@ -578,6 +578,119 @@ select {
   display: inline-flex;
 }
 
+/* Back, History and Forward read as one control, so they sit in one box. The panel is
+   positioned against this rather than the page, the same way the settings popover is. */
+.time-travel {
+  position: relative;
+  display: inline-flex;
+  gap: 3px;
+  align-items: center;
+}
+
+.history-panel {
+  position: absolute;
+  z-index: 30;
+  top: calc(100% + 8px);
+  right: 0;
+  display: flex;
+  width: 320px;
+  max-height: min(60vh, 460px);
+  flex-direction: column;
+  background: var(--surface);
+  border: 1px solid var(--line-strong);
+  border-radius: 6px;
+  box-shadow: var(--shadow-panel);
+}
+
+.history-panel > header {
+  display: flex;
+  min-height: 36px;
+  align-items: center;
+  gap: 7px;
+  padding: 0 6px 0 10px;
+  color: var(--ink-soft);
+  border-bottom: 1px solid var(--line);
+}
+
+.history-panel > header > h2 {
+  margin: 0;
+  flex: 1;
+  font-size: 10px;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.history-panel__empty {
+  margin: 0;
+  padding: 14px 12px;
+  color: var(--muted);
+  font-size: 9px;
+  line-height: 1.5;
+}
+
+.history-panel__list {
+  overflow-y: auto;
+  margin: 0;
+  padding: 4px;
+  list-style: none;
+}
+
+.history-row > button {
+  display: flex;
+  width: 100%;
+  flex-direction: column;
+  gap: 3px;
+  padding: 7px 8px;
+  text-align: left;
+  background: transparent;
+  border: 0;
+  border-radius: 5px;
+}
+
+.history-row > button:hover {
+  background: var(--surface-subtle);
+}
+
+/* The one row the deck actually stands on. A left rule rather than a fill, so the rows
+   above it — the edits stepped back past — still read as part of the same list. */
+.history-row--current > button {
+  background: var(--surface-subtle);
+  box-shadow: inset 2px 0 0 var(--accent-dark);
+}
+
+.history-row__head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--ink);
+  font-size: 9px;
+  font-weight: 800;
+}
+
+.history-row__head > time {
+  color: var(--muted);
+  font-weight: 700;
+}
+
+.history-row__here {
+  margin-left: auto;
+  color: var(--accent-dark);
+}
+
+.history-row__reason {
+  color: var(--ink-soft);
+  font-size: 9px;
+  font-style: italic;
+  line-height: 1.45;
+}
+
+.history-row__lines {
+  color: var(--muted);
+  font-size: 9px;
+  line-height: 1.45;
+}
+
 .interface-settings__panel {
   position: absolute;
   z-index: 30;
@@ -1302,6 +1415,215 @@ select {
   background: #70698b;
 }
 
+.visual-card-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 9px;
+  align-content: start;
+  padding: 8px;
+}
+
+.deck-card {
+  position: relative;
+  display: grid;
+  min-width: 0;
+  gap: 5px;
+}
+
+.deck-card--dragging,
+.deck-list__row--dragging {
+  opacity: 0.28;
+}
+
+.card-drag-handle {
+  cursor: grab;
+  touch-action: none;
+}
+
+.card-drag-handle:active {
+  cursor: grabbing;
+}
+
+.drag-card-preview {
+  display: grid;
+  width: 142px;
+  gap: 6px;
+  padding: 7px;
+  color: var(--ink);
+  background: var(--surface);
+  border: 1px solid #9fa8a1;
+  border-radius: 5px;
+  box-shadow: 0 14px 34px rgba(19, 25, 21, 0.26);
+}
+
+.drag-card-preview .card-art {
+  aspect-ratio: 488 / 680;
+  border-radius: 4px;
+}
+
+.drag-card-preview strong {
+  overflow: hidden;
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.deck-card__art {
+  position: relative;
+  display: block;
+  width: 100%;
+  aspect-ratio: 488 / 680;
+  padding: 0;
+  overflow: hidden;
+  background: #dfe3df;
+  border: 0;
+  border-radius: 5px;
+  box-shadow: 0 1px 2px rgba(24, 30, 26, 0.25);
+}
+
+.deck-card__art:hover .card-art {
+  filter: brightness(0.96);
+}
+
+.card-art {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  background: #dfe3df;
+}
+
+.card-art--missing {
+  display: flex;
+  min-height: 100%;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  padding: 12px;
+  color: var(--muted);
+  font-size: 9px;
+  font-weight: 650;
+  text-align: center;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+}
+
+.deck-card__quantity,
+.deck-card__warning {
+  position: absolute;
+  top: 6px;
+  display: grid;
+  min-width: 25px;
+  height: 23px;
+  place-items: center;
+  color: #ffffff;
+  background: rgba(25, 31, 27, 0.88);
+  border: 1px solid rgba(255, 255, 255, 0.26);
+  border-radius: 4px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
+}
+
+.deck-card__quantity {
+  left: 6px;
+  padding: 0 5px;
+  font-size: 10px;
+  font-weight: 800;
+}
+
+.deck-card__warning {
+  right: 6px;
+  min-width: 23px;
+  color: #ffe0a6;
+}
+
+.deck-card__meta {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  min-width: 0;
+  align-items: center;
+  gap: 5px;
+  padding: 0 1px;
+}
+
+.deck-card__meta button {
+  overflow: hidden;
+  padding: 0;
+  color: var(--ink);
+  font-size: 9px;
+  font-weight: 720;
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  background: transparent;
+  border: 0;
+}
+
+.command-zone-warning {
+  display: flex;
+  max-width: 720px;
+  align-items: flex-start;
+  gap: 7px;
+  margin-top: 12px;
+  padding: 9px 11px;
+  color: #7d5018;
+  font-size: 10px;
+  line-height: 1.4;
+  background: var(--warning-soft);
+  border: 1px solid #e5ca9b;
+  border-radius: 5px;
+}
+
+.command-zone-warning svg {
+  flex: 0 0 auto;
+}
+
+.deck-card__meta span {
+  color: var(--muted);
+  font-size: 8px;
+  font-variant-numeric: tabular-nums;
+}
+
+.deck-card__actions {
+  display: grid;
+  grid-template-columns: 28px 24px 28px minmax(28px, 1fr);
+  min-height: 28px;
+  overflow: hidden;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+}
+
+.deck-card__actions button {
+  display: grid;
+  min-width: 0;
+  place-items: center;
+  padding: 0;
+  color: var(--muted);
+  background: transparent;
+  border: 0;
+  border-right: 1px solid var(--line);
+}
+
+.deck-card__actions button:last-child {
+  border-right: 0;
+}
+
+.deck-card__actions button:hover {
+  color: var(--accent-dark);
+  background: var(--accent-soft);
+}
+
+.deck-card__actions output {
+  display: grid;
+  place-items: center;
+  color: var(--ink-soft);
+  font-size: 9px;
+  font-weight: 750;
+  font-variant-numeric: tabular-nums;
+  border-right: 1px solid var(--line);
+}
+
 .visual-group__empty {
   display: flex;
   min-height: 82px;
@@ -1388,8 +1710,8 @@ select {
 .deck-list__head,
 .deck-list__row {
   display: grid;
-  grid-template-columns: 48px minmax(190px, 1.5fr) minmax(150px, 1fr) 70px 70px 64px;
-  min-width: 665px;
+  grid-template-columns: 48px minmax(190px, 1.5fr) minmax(150px, 1fr) 70px 70px 92px;
+  min-width: 693px;
   align-items: center;
   gap: 8px;
   padding: 0 10px;
@@ -1406,7 +1728,7 @@ select {
 }
 
 .deck-list__group {
-  min-width: 665px;
+  min-width: 693px;
 }
 
 .deck-list__empty-group {
@@ -4319,7 +4641,7 @@ select {
     z-index: 70;
     inset: auto 0 0;
     display: grid;
-    grid-template-columns: repeat(4, minmax(0, 1fr));
+    grid-template-columns: repeat(5, minmax(0, 1fr));
     height: calc(58px + env(safe-area-inset-bottom));
     padding: 4px 5px env(safe-area-inset-bottom);
     background: rgba(255, 255, 255, 0.97);

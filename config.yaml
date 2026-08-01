@@ -442,6 +442,11 @@ agent:
       `limit` is how many of the most recent sessions to read, from 1 to 50. It
       defaults to 10, which is more editing than an evening usually holds.
 
+      An edit marked `(undone)` is one the user has stepped back past with the Back
+      button. It happened and it is recorded, and the deck does not have it now. That
+      mark is the one thing in this record that contradicts the deck, so read it: an
+      answer that treats an undone cut as still cut names a card the user has put back.
+
       This is the record, not the deck. What the deck holds right now is read_deck.
 
     # The field reference for search_cards. Deliberately the same shape as

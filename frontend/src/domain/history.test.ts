@@ -13,16 +13,21 @@ import type {
 } from "./history";
 import {
   appendToHistory,
+  appliedEditCount,
   applyDeckDiff,
   createDeckHistory,
   DECK_HISTORY_PAYLOAD_CAP,
   DECK_HISTORY_SESSION_CAP,
   DECK_HISTORY_STORAGE_KEY,
+  describeDeckCardChange,
   deriveDeckDiff,
+  historyEdits,
   invertDeckDiff,
   isEmptyDeckDiff,
   parseDeckHistory,
+  planHistoryTravel,
   pruneHistory,
+  undoneEdits,
 } from "./history";
 import { counterspell, gamble, ghalta, solRing } from "../test/fixtures";
 
@@ -376,6 +381,257 @@ describe("deck history sessions", () => {
     expect(history.sessions[0]?.edits).toHaveLength(6);
     expect(Object.keys(history.cards)).toEqual([solRing.scryfall_id]);
     expect(Object.keys(history.cards)).toHaveLength(1);
+  });
+});
+
+describe("deck history wording", () => {
+  it("names where a moved card went, in the one place a change is put into words", () => {
+    const toCommandZone = deriveDeckDiff(
+      baseDeck(),
+      edited((deck) =>
+        withEntry(deck, counterspell.scryfall_id, { section: "command_zone" }),
+      ),
+    ).diff;
+    const toDeck = deriveDeckDiff(
+      baseDeck(),
+      edited((deck) =>
+        withEntry(deck, ghalta.scryfall_id, { section: "mainboard" }),
+      ),
+    ).diff;
+
+    // "Counterspell moved" leaves the one axis a move can have unsaid, and the panel and
+    // the stored summary read the same function, so both would have said it.
+    expect(describeDeckCardChange(toCommandZone.cards[0])).toBe(
+      "Counterspell → Command zone",
+    );
+    expect(toCommandZone.summary).toContain("Counterspell → Command zone");
+    expect(describeDeckCardChange(toDeck.cards[0])).toBe(
+      "Ghalta, Primal Hunger → Deck",
+    );
+
+    // The other three shapes, so a change that renamed itself would be caught here.
+    const added = deriveDeckDiff(
+      baseDeck(),
+      edited((deck) => ({
+        ...deck,
+        cards: [...deck.cards, makeEntry(gamble, "mainboard")],
+      })),
+    ).diff;
+    expect(describeDeckCardChange(added.cards[0])).toBe("+Gamble");
+    const removed = deriveDeckDiff(
+      baseDeck(),
+      edited((deck) => ({
+        ...deck,
+        cards: deck.cards.filter(
+          (entry) => entry.card.scryfall_id !== solRing.scryfall_id,
+        ),
+      })),
+    ).diff;
+    expect(describeDeckCardChange(removed.cards[0])).toBe("−Sol Ring");
+    const requantified = deriveDeckDiff(
+      baseDeck(),
+      edited((deck) =>
+        withEntry(deck, solRing.scryfall_id, { quantity: 3 }),
+      ),
+    ).diff;
+    expect(describeDeckCardChange(requantified.cards[0])).toBe(
+      "Sol Ring ×1 → ×3",
+    );
+  });
+});
+
+describe("deck history travel", () => {
+  /** The four-addition log, plus the deck those four additions produce. */
+  function travelFixture(): { history: DeckHistory; deck: Deck } {
+    const history = additionHistory();
+    return {
+      history,
+      deck: {
+        ...baseDeck(),
+        cards: [solRing, ghalta, counterspell, gamble].map((card) =>
+          makeEntry(card, "mainboard"),
+        ),
+      },
+    };
+  }
+
+  it("starts at the newest edit, with nothing to step forward into", () => {
+    const { history, deck } = travelFixture();
+
+    expect(history.at).toBe("edit-3");
+    expect(appliedEditCount(history)).toBe(4);
+    expect(undoneEdits(history)).toEqual([]);
+    expect(planHistoryTravel(deck, history, "forward")).toBeNull();
+  });
+
+  it("steps back one edit without touching the log", () => {
+    const { history, deck } = travelFixture();
+
+    const travelled = planHistoryTravel(deck, history, "back");
+
+    expect(travelled).toMatchObject({ ok: true, steps: 1, direction: "back" });
+    if (!travelled?.ok) {
+      throw new Error("the step should have been possible");
+    }
+    expect(travelled.at).toBe("edit-2");
+    expect(travelled.deck.cards.map((entry) => entry.card.name)).toEqual([
+      "Sol Ring",
+      "Ghalta, Primal Hunger",
+      "Counterspell",
+    ]);
+    // The plan is a plan. Nothing about the log changed, which is what leaves the edit
+    // available to step forward into.
+    expect(history.at).toBe("edit-3");
+    expect(historyEdits(history)).toHaveLength(4);
+  });
+
+  it("steps forward into an edit it stepped back past, landing on the same deck", () => {
+    const { history, deck } = travelFixture();
+    const back = planHistoryTravel(deck, history, "back");
+    if (!back?.ok) {
+      throw new Error("the step back should have been possible");
+    }
+    const stepped: DeckHistory = { ...history, at: back.at };
+
+    const forward = planHistoryTravel(back.deck, stepped, "forward");
+
+    expect(forward).toMatchObject({ ok: true, steps: 1, direction: "forward" });
+    if (!forward?.ok) {
+      throw new Error("the step forward should have been possible");
+    }
+    expect(forward.at).toBe("edit-3");
+    // Back then forward is the deck it started on. Not merely the same card names: the
+    // restored entry is rebuilt from the pooled payload, so an inversion that dropped
+    // `details` would pass a name check and fail this one.
+    expect(forward.deck).toEqual(deck);
+  });
+
+  it("jumps several edits at once, and a jump is exactly the steps it is made of", () => {
+    const { history, deck } = travelFixture();
+
+    const jumped = planHistoryTravel(deck, history, { editId: "edit-1" });
+
+    expect(jumped).toMatchObject({ ok: true, steps: 2, direction: "back" });
+    if (!jumped?.ok) {
+      throw new Error("the jump should have been possible");
+    }
+
+    // The same journey taken one step at a time has to land on the same deck, or the panel
+    // and the buttons are two different implementations of the same idea.
+    let stepwise = deck;
+    let log = history;
+    for (let step = 0; step < 2; step += 1) {
+      const single = planHistoryTravel(stepwise, log, "back");
+      if (!single?.ok) {
+        throw new Error("each single step should have been possible");
+      }
+      stepwise = single.deck;
+      log = { ...log, at: single.at };
+    }
+    expect(jumped.deck).toEqual(stepwise);
+    expect(jumped.at).toBe(log.at);
+  });
+
+  it("rewinds to before the first edit, which is not the same as having no history", () => {
+    const { history, deck } = travelFixture();
+
+    const rewound = planHistoryTravel(deck, history, { editId: null });
+
+    expect(rewound).toMatchObject({ ok: true, steps: 4, direction: "back" });
+    if (!rewound?.ok) {
+      throw new Error("the rewind should have been possible");
+    }
+    expect(rewound.at).toBeNull();
+    expect(rewound.deck.cards).toEqual([]);
+
+    // And from there every edit is still recorded and still ahead of the deck.
+    const start: DeckHistory = { ...history, at: null };
+    expect(appliedEditCount(start)).toBe(0);
+    expect(undoneEdits(start)).toHaveLength(4);
+    expect(planHistoryTravel(rewound.deck, start, "back")).toBeNull();
+    expect(
+      planHistoryTravel(rewound.deck, start, { editId: null }),
+    ).toBeNull();
+  });
+
+  it("refuses a whole jump when one edit on the path cannot be replayed", () => {
+    const { history, deck } = travelFixture();
+    // The payload the second addition needs, gone. Exactly what pruning leaves behind.
+    const pruned: DeckHistory = {
+      ...history,
+      cards: Object.fromEntries(
+        Object.entries(history.cards).filter(
+          ([id]) => id !== ghalta.scryfall_id,
+        ),
+      ),
+    };
+    const rewound = planHistoryTravel(deck, pruned, { editId: null });
+    if (!rewound?.ok) {
+      throw new Error("stepping back never needs a payload");
+    }
+    const start: DeckHistory = { ...pruned, at: null };
+
+    const forward = planHistoryTravel(rewound.deck, start, { editId: "edit-3" });
+
+    // Refused whole rather than landing on the one edit before the gap: a deck left halfway
+    // through a jump is in a state no recorded edit describes, and the cursor would then
+    // name an edit that is not the one applied.
+    expect(forward).toMatchObject({ ok: false, problem: "missing_payload" });
+    if (forward === null || forward.ok) {
+      throw new Error("the jump should have been refused");
+    }
+    expect(forward.message).toContain("Ghalta");
+    // Stepping into the one edit before the gap is still fine, which is what makes this a
+    // refusal of the *path* rather than of the whole log.
+    expect(
+      planHistoryTravel(rewound.deck, start, { editId: "edit-0" }),
+    ).toMatchObject({ ok: true, steps: 1 });
+  });
+
+  it("goes nowhere for an edit it does not hold, rather than to the nearest one", () => {
+    const { history, deck } = travelFixture();
+
+    expect(
+      planHistoryTravel(deck, history, { editId: "edit-never-recorded" }),
+    ).toBeNull();
+    // And nowhere for the edit the deck already stands on.
+    expect(planHistoryTravel(deck, history, { editId: "edit-3" })).toBeNull();
+  });
+
+  it("discards the stepped-back edits when a new one is recorded", () => {
+    const { history } = travelFixture();
+    const stepped: DeckHistory = { ...history, at: "edit-1" };
+    const { diff, payloads } = additionDiff();
+
+    const appended = appendToHistory(stepped, {
+      entry: stamp(diff, "edit-new", atSeconds(4 * 3600)),
+      payloads,
+      actor: "user",
+      newSessionId: "session-new",
+    });
+
+    // The two edits after the cursor described a future the deck has been changed out of.
+    // Keeping them would leave the log describing edits that cannot be replayed onto any
+    // deck that exists, and would break the invariant every reader relies on: the cursor is
+    // the newest edit in the log.
+    expect(historyEdits(appended).map((edit) => edit.id)).toEqual([
+      "edit-0",
+      "edit-1",
+      "edit-new",
+    ]);
+    expect(appended.at).toBe("edit-new");
+    expect(undoneEdits(appended)).toEqual([]);
+  });
+
+  it("counts a cursor the log no longer holds as nothing applied", () => {
+    const { history, deck } = travelFixture();
+    // Only reachable if pruning dropped the session the cursor was in, and pruning drops the
+    // oldest — so every retained edit is newer than the cursor, and none of them is applied.
+    const orphaned: DeckHistory = { ...history, at: "edit-dropped" };
+
+    expect(appliedEditCount(orphaned)).toBe(0);
+    expect(undoneEdits(orphaned)).toHaveLength(4);
+    expect(planHistoryTravel(deck, orphaned, "back")).toBeNull();
   });
 });
 

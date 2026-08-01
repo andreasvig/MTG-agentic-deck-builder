@@ -16,7 +16,7 @@ The first manual editing slice is usable and tested.
 | Card search and filters | Shipped |
 | Fuzzy title scores and traces | Shipped |
 | Browser-local deck library | Shipped |
-| Durable per-deck edit history, and undo replayed from it | Shipped |
+| Durable per-deck edit history, with back, forward and a jump to any diff | Shipped |
 | Custom groups and derived card types | Shipped |
 | Color-identity and singleton warnings | Partial validation |
 | Backend deck persistence | Not implemented |
@@ -59,6 +59,8 @@ The application currently supports:
 - Group the deck by derived card type, which is the only grouping there is.
 - Switch between visual stacks and a dense list.
 - Sort by name, mana value, or price.
+- Step back, forward, and straight to any recorded diff from the History panel between
+  the two buttons — including after a reload, because the position is stored with the log.
 - Edit quantities, remove cards, and undo — including after a reload, because undo
   replays a durable per-deck history rather than an in-memory stack.
 - Ask the agent to make the change instead. It applies straight to the board, as one
@@ -440,8 +442,8 @@ recorded in
   deck already has and cannot create one, it does not reorder anything, and Partner and
   background command zones are unhandled here as they are in the other tools.
 - Deck history is browser-local and per deck, so it does not survive a browser wipe and
-  is not readable across devices. The user cannot see it either: the agent reads history,
-  and the interface exposes only the Undo button. There is no redo.
+  is not readable across devices. There is no branching: stepping back and then editing
+  discards what came after, as every undo stack does.
 - Search returns one representative printing per gameplay card: the cheapest one
   that is not a full-art, promo, foil-only or Secret Lair version. There is no
   way to ask for a specific printing.

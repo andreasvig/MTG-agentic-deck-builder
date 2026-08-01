@@ -227,6 +227,11 @@ class DeckAgentDeckHistoryEdit(DeckAgentModel):
         list[DeckAgentDeckHistoryChange],
         Field(max_length=MAX_HISTORY_EDIT_CARDS),
     ] = Field(default_factory=list)
+    # Whether the user has stepped back past this edit. It happened, it is recorded, and
+    # the deck does not currently have it. Posted rather than filtered out because "put
+    # that back" is the question an undone edit answers; defaults to false so a client
+    # that does not track a position posts an ordinary applied history.
+    undone: bool = False
 
 
 class DeckAgentDeckSession(DeckAgentModel):

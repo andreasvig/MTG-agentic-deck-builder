@@ -112,6 +112,14 @@ Do not change these without an explicit product decision and ADR update:
   add a `Deck` field without adding it to `domain/history.ts` and extending the
   round-trip property table — a field the diff does not model is a field undo
   silently stops undoing.
+- The log is the deck's whole past and `DeckHistory.at` is where the deck stands
+  in it (ADR 0038). Nothing removes a recorded edit except `appendToHistory`,
+  which discards the undone tail before appending — that is what keeps the cursor
+  the newest edit in the log, and every other reader relies on it.
+- Every movement goes through `planHistoryTravel`. Do not add a second path for
+  the panel or for a keyboard shortcut: a jump is exactly the steps it is made
+  of, and it plans rather than counts so a button cannot offer a step the reducer
+  then refuses. A jump that cannot replay in full moves the deck not at all.
 
 ## Architecture Boundaries
 
@@ -282,7 +290,8 @@ When the `CardSearchPage` contract changes, update all of:
   same quota (ADR 0036). Card payloads are pooled one per printing under `cards`, only
   for a card entering or leaving the deck, and orphans are collected on write — do not
   pool one per change. Two caps bound it and mean different things:
-  `DECK_HISTORY_PAYLOAD_CAP` is undo depth, `DECK_HISTORY_SESSION_CAP` is read depth.
+  `DECK_HISTORY_PAYLOAD_CAP` is travel depth in *either* direction — the undone tail is
+  the newest, so it keeps its payloads — and `DECK_HISTORY_SESSION_CAP` is read depth.
   Neither is the cap on what the browser *posts*: those are separate constants in
   `domain/agent.ts` keyed to the backend's `MAX_HISTORY_SESSIONS` / `MAX_HISTORY_EDITS`,
   because exceeding a posted bound is a 422 that fails the whole chat turn. Do not

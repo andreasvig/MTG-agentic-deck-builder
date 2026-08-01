@@ -480,17 +480,27 @@ function recordedSession(
   };
 }
 
-function storedHistory(sessions: DeckSession[]): string {
+function storedHistory(
+  sessions: DeckSession[],
+  at?: string | null,
+): string {
   const history: DeckHistory = {
     deck_id: "deck-a",
     sessions,
     cards: {},
+    // The tip unless a test says otherwise: a log with a cursor behind it is the special
+    // case, and every test that does not care about travel is about a deck that has
+    // everything applied.
+    at:
+      at === undefined
+        ? (sessions.at(-1)?.edits.at(-1)?.id ?? null)
+        : at,
   };
   return JSON.stringify({ "deck-a": history });
 }
 
 describe("posted deck history", () => {
-  it("projects a recorded edit into what the agent reads, naming the group", () => {
+  it("projects a recorded edit into what the agent reads", () => {
     const raw = storedHistory([
       recordedSession(
         1,
@@ -538,6 +548,41 @@ describe("posted deck history", () => {
         },
       ],
     });
+  });
+
+  it("marks the edits the deck has stepped back past, and only those", () => {
+    const stepped = storedHistory(
+      [
+        recordedSession(1, "user", [recordedChange("Sol Ring", null, placed(1))]),
+        recordedSession(2, "agent", [
+          recordedChange("Gamble", null, placed(1)),
+        ]),
+      ],
+      // The cursor sits on the first session's edit, so the second one is undone.
+      "edit-1",
+    );
+
+    const posted = toDeckAgentHistory(stepped, "deck-a");
+
+    // Posted rather than filtered out: "put that back" is the question an undone edit
+    // answers, and a history that dropped them would leave the agent unable to see what
+    // the user had just reversed.
+    expect(posted.sessions[0].edits[0]).not.toHaveProperty("undone");
+    expect(posted.sessions[1].edits[0].undone).toBe(true);
+  });
+
+  it("marks nothing when the deck stands at the newest edit", () => {
+    const posted = toDeckAgentHistory(
+      storedHistory([
+        recordedSession(1, "user", [recordedChange("Sol Ring", null, placed(1))]),
+      ]),
+      "deck-a",
+    );
+
+    // The control. `undone` is omitted rather than sent as false, so the ordinary edit
+    // costs no bytes — and a mutant that marked every edit would pass a check that only
+    // looked for the flag on the undone one.
+    expect(posted.sessions[0].edits[0]).not.toHaveProperty("undone");
   });
 
   it("keeps the newest sessions inside the cap the backend accepts", () => {

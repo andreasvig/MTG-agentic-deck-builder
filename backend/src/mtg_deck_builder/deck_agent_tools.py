@@ -187,6 +187,10 @@ if _MISSING_FROM_DETAIL_ORDER:
 # as somebody else's.
 _ACTOR_LABELS = {"user": "You", "agent": "Me"}
 
+# What marks an edit the user has stepped back past. Spelled out rather than a symbol,
+# because it is the one fact in this record that contradicts the deck.
+_UNDONE_MARKER = "(undone)"
+
 # A minus sign, not a hyphen: it is the character that pairs with `+` down the left of a
 # diff, and a hyphen reads as punctuation there. Spelled as an escape and used through
 # these names because ruff flags the literal glyph as ambiguous everywhere it appears.
@@ -852,6 +856,22 @@ class DeckAgentToolbox:
             )
         )
         lines = ["## History", f"{subject} — {counted}"]
+        # Said once, at the top, rather than beside every marked line. Only when there is
+        # something marked: an explanation of a marker that does not appear is a sentence
+        # the model has to work out is irrelevant.
+        undone = sum(
+            1 for session in shown for edit in session.edits if edit.undone
+        )
+        if undone:
+            lines.append(
+                f"{undone} {'edit is' if undone == 1 else 'edits are'} marked "
+                f"{_UNDONE_MARKER}: the user stepped back past "
+                f"{'it' if undone == 1 else 'them'}, so "
+                f"{'it happened' if undone == 1 else 'they happened'} and the deck does "
+                f"not have {'it' if undone == 1 else 'them'} now. Stepping forward again "
+                f"is the user's to do, not yours — but you may put a card back with "
+                f"{EDIT_DECK} if they ask for it."
+            )
         # Every session's clock time is printed as the browser sent it. A date is added
         # only when a session did not happen on the same day as the newest one, so a
         # bare `14:02` never silently means last Tuesday.
@@ -1879,7 +1899,11 @@ def _session_lines(session: DeckAgentDeckSession, *, newest_day: date) -> list[s
             rendered = "no card changes recorded"
         if edit.reason is not None and len(reasons) > 1:
             rendered += f" — {_quoted(edit.reason)}"
-        lines.append(f"  {rendered}")
+        # Marked on the line rather than left to the reader to work out from the deck. An
+        # undone edit is the one thing in this record that is *not* true of the deck now,
+        # and reading it as applied is how an answer comes to describe a card as being in a
+        # deck the user took it out of.
+        lines.append(f"  {_UNDONE_MARKER} {rendered}" if edit.undone else f"  {rendered}")
     return lines
 
 

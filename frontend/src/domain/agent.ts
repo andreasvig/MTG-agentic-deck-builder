@@ -2,7 +2,11 @@ import type { CardSearchResult } from "./card";
 import type { DeckCardEntry, DeckSection } from "./deck";
 import { isDeckSection } from "./deck";
 import type { DeckCardPlacement, DeckDiff, DeckHistory } from "./history";
-import { createDeckHistory, parseDeckHistory } from "./history";
+import {
+  createDeckHistory,
+  parseDeckHistory,
+  undoneEdits,
+} from "./history";
 
 export type DeckAgentRole = "user" | "assistant";
 
@@ -656,6 +660,15 @@ export interface DeckAgentDeckHistoryEdit {
   /** Only an agent edit has one: a card dragged across the board states no intent. */
   reason?: string;
   cards: DeckAgentDeckHistoryChange[];
+  /**
+   * Present only when true: the user stepped back past this edit, so it is recorded and the
+   * deck does not have it.
+   *
+   * Posted rather than filtered out, because "put that back" is exactly the question an
+   * undone edit answers, and a history that dropped them would leave the agent unable to see
+   * what the user had just reversed. Omitted when false so the ordinary edit costs no bytes.
+   */
+  undone?: boolean;
 }
 
 export interface DeckAgentDeckSession {
@@ -770,6 +783,10 @@ export function toDeckAgentHistory(
     createDeckHistory(deckId),
   );
 
+  // Which entries the deck does not have. Read from the log's own cursor rather than
+  // recomputed, so the agent's reading of "undone" and the Forward button's cannot differ.
+  const undone = new Set(undoneEdits(log).map((edit) => edit.id));
+
   const sessions: DeckAgentDeckSession[] = [];
   let budget = MAX_POSTED_HISTORY_EDITS;
   for (const session of log.sessions.slice(-MAX_POSTED_HISTORY_SESSIONS).reverse()) {
@@ -790,6 +807,7 @@ export function toDeckAgentHistory(
       edits: edits.map((edit) => ({
         at: edit.at,
         ...(edit.reason ? { reason: shortLabel(edit.reason) } : {}),
+        ...(undone.has(edit.id) ? { undone: true } : {}),
         cards: edit.cards
           .filter(isPostableChange)
           .slice(0, MAX_POSTED_HISTORY_EDIT_CARDS)

@@ -571,16 +571,22 @@ when the round called a model, its cost.
 
 ### `components/DeckBoard.tsx`
 
-Visual/list rendering, custom/type grouping, sorting, drag-and-drop,
-keyboard-accessible movement, group creation, and deck-card actions.
-`App.tsx` initializes the board in derived Card types mode; selecting Custom
-enables editable placement and movement.
+Visual/list rendering, grouping by derived card type under a permanent Command
+zone heading, sorting, drag-and-drop, keyboard-accessible movement, and
+deck-card actions. Every group is a drop target carrying a `DeckSection`, so a
+drop is only ever a change of section (ADR 0037).
 
 ### `components/CardInspector.tsx`
 
 Centered card-detail dialog content, Tagger enrichment, related-card
-navigation, tag-to-search handoff, and custom-group movement controls. Movement
-controls are available only in Custom grouping.
+navigation, tag-to-search handoff, and the placement control. That control is
+unconditional: it is the keyboard path to the command zone.
+
+### `components/DeckHistoryPanel.tsx`
+
+The recorded history as a list of diffs, newest first, marking where the deck
+stands and jumping to any row (ADR 0038). Rendering only: `useDeck` plans the
+replay, refuses a jump it cannot make in full, and announces why.
 
 ### `App.tsx`
 
@@ -589,8 +595,8 @@ deck and search services.
 
 It also owns the two things only the browser can resolve about an agent edit (ADR 0036):
 translating the wire shape into `useDeck`'s `DeckEdit` — taking each cut or moved card's
-payload from the deck, and treating an absent `group` as *leave placement alone* rather
-than as "unfile it" — and reading the history log out of `localStorage` at the moment a
+payload from the deck, and treating an absent `section` as *leave placement alone* rather
+than as the mainboard — and reading the history log out of `localStorage` at the moment a
 turn is **sent**, because the log is written by an effect after the render that changed
 the deck, so a value captured in that render would be missing exactly the edit the
 question is about. A translation that cannot resolve a card refuses the whole edit and
