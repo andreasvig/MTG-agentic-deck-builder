@@ -1,6 +1,6 @@
 # ADR 0006: Agent Uses Typed, Confirmed Deck Patches
 
-- Status: Proposed
+- Status: Superseded by [ADR 0036](0036-auto-applied-agent-edits-on-a-derived-deck-history.md)
 - Date: 2026-07-23
 
 ## Context
