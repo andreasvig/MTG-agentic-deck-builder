@@ -336,6 +336,29 @@ deliver a different one.
 Every one of these was found by an audit during this build and deliberately left. They are
 recorded because an undocumented gap is rediscovered as a bug.
 
+The three that came out of auditing the hand-driven store, added after the ADR was first
+written:
+
+- **`summarizeDeckEditRecord` names at least one card only because no mutator records a
+  rename-only or groups-only edit through `applyEdit`.** `isEmptyDeckDiff` counts
+  `custom_groups` and `name`, while `deckEditMutation` only ever touches `cards`. A future
+  mutator that recorded one would produce a block with three empty name lists, which
+  `isRefusedDeckEdit` reads as a refusal — an applied edit rendering "Not applied". The
+  docstring states the assumption; nothing enforces it.
+- **The transcript's Undo is not gated on `canUndo` while the toolbar's is.** In the state
+  where they disagree — the newest entry recorded but its pooled payload pruned — the toolbar
+  button is disabled and the transcript still offers an Undo. Clicking it degrades correctly:
+  the deck is untouched and the deck's own "history holds no card details" message is shown.
+  Nothing durable becomes wrong; it is an affordance asymmetry.
+- **There is no lint configuration in the repository.** Several `useCallback`s declare `[]`
+  deps while closing over `dispatch`, which is correct only because `commit` is stable. A
+  dependency added to `commit` later would break them silently, and nothing would catch it.
+
+Two further findings from the same audit were **fixed rather than recorded**, and are noted
+here only so the reasoning is not lost: the render-time write to the deck ref was redundant
+and reintroduced the staleness the store exists to remove, and a `deck_edit` frame arriving
+after the user switched decks was prevented only by abort semantics in another module.
+
 - **A pure reorder of `cards` or `custom_groups` derives zero changes.** Position is not an
   edit axis, by the decision above. Unreachable today — no mutator reorders either list, and
   `DeckBoard` sorts a copy for display — but it is the one way two `Deck`s can differ that
