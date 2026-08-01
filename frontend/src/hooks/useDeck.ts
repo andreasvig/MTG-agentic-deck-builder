@@ -178,8 +178,18 @@ export function useDeck() {
    * Every change to the deck goes through this, so two agent edits, a drag and an agent
    * edit, and an undo and an agent edit all chain the same way.
    */
+  /**
+   * Seeded once and advanced only by `commit`, deliberately never during render.
+   *
+   * A render-time `latest.current = state` looks like a safety net and is the opposite of
+   * one. It is redundant while `commit` is the only writer — the ref is already current —
+   * and it reintroduces the very staleness this store exists to remove: a higher-priority
+   * render that skips a pending lower-priority update would assign an **older** state to
+   * the ref, and the next planner in the same turn would judge against it. So the
+   * invariant is that nothing calls `setState` outside `commit`, and a new caller that
+   * wants to must go through it rather than be papered over here.
+   */
   const latest = useRef(state);
-  latest.current = state;
 
   const commit = useCallback((next: DeckState) => {
     latest.current = next;

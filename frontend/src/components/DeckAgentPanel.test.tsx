@@ -834,6 +834,47 @@ function appliedSwap(editId = "edit-1"): DeckAgentAppliedEdit {
   };
 }
 
+it("drops an edit that arrives after the user has switched decks", async () => {
+  const stream = drivenStream();
+  const onDeckEdit = vi.fn().mockReturnValue(appliedSwap());
+  const { rerender } = render(
+    <DeckAgentPanel
+      deckId="deck-a"
+      client={client(stream.chat)}
+      onDeckEdit={onDeckEdit}
+      onUndoDeckEdit={vi.fn()}
+      undoableEditId="edit-1"
+    />,
+  );
+
+  await userEvent.type(
+    screen.getByLabelText("Message the deck agent"),
+    "Fix my ramp",
+  );
+  await userEvent.click(screen.getByLabelText("Send message"));
+
+  // The user moves to another deck while the turn is still open. Switching aborts the
+  // request, and a spec-compliant fetch then errors the body, so in the real client this
+  // frame never arrives — but the panel must not depend on that. What it would cost is an
+  // agent edit applied to the deck the user is now looking at and written into that deck's
+  // history as though they had asked for it.
+  rerender(
+    <DeckAgentPanel
+      deckId="deck-b"
+      client={client(stream.chat)}
+      onDeckEdit={onDeckEdit}
+      onUndoDeckEdit={vi.fn()}
+      undoableEditId="edit-1"
+    />,
+  );
+
+  await stream.deckEdit(deckEdit());
+
+  expect(onDeckEdit).not.toHaveBeenCalled();
+  expect(screen.queryByText(/^Applied:/)).not.toBeInTheDocument();
+  expect(screen.queryByText("Not applied")).not.toBeInTheDocument();
+});
+
 it("hands a streamed deck edit to the deck and says what it applied", async () => {
   const stream = drivenStream();
   const onDeckEdit = vi.fn().mockReturnValue(appliedSwap());

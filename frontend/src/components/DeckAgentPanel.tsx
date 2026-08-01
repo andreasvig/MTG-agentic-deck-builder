@@ -117,6 +117,15 @@ export function DeckAgentPanel({
   const [live, setLive] = useState<LiveTurn>(NO_LIVE_TURN);
   const [error, setError] = useState<string | null>(null);
   const pendingRequest = useRef<AbortController | null>(null);
+  /**
+   * Which deck is open *now*, rather than which one a turn in flight was asked about.
+   *
+   * `deckId` inside `send` is the value that turn captured, so comparing it with itself
+   * proves nothing. Written from the deck-switch effect, whose cleanup is also what aborts
+   * the request, so by the time any later frame of an abandoned turn could arrive this is
+   * already the deck the user moved to.
+   */
+  const openDeckId = useRef(deckId);
   const transcript = useRef<HTMLDivElement>(null);
   const entries = chat.entries;
   // The unsent question belongs to the deck it is about, so it waits in that
@@ -127,6 +136,7 @@ export function DeckAgentPanel({
   // into a deck the user has left. The question itself stays in the transcript it
   // was asked in, so going back and sending again retries it.
   useEffect(() => {
+    openDeckId.current = deckId;
     setPending(false);
     setLive(NO_LIVE_TURN);
     setError(null);
@@ -205,6 +215,16 @@ export function DeckAgentPanel({
             }));
           },
           onDeckEdit: (edit) => {
+            // A frame that outlived its turn is dropped rather than applied. Switching
+            // decks aborts the request and a spec-compliant fetch then errors the body,
+            // so this should be unreachable — but "should be" here rests on abort
+            // semantics in another module, and what it would cost is an agent edit landing
+            // on a deck the user is now looking at, recorded in that deck's history as
+            // though they had asked for it. Cheap to make structural rather than
+            // circumstantial.
+            if (turnDeckId !== openDeckId.current) {
+              return;
+            }
             // Handed outward first and written down second, from the answer. The deck is
             // the authority on what an edit does, and a transcript that described the
             // change before the deck had been offered it would be describing an intention.
