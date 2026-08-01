@@ -21,7 +21,7 @@ tradeoffs; they are not task lists.
 | [0003](0003-layered-observable-search.md) | Superseded | Former layered search |
 | [0004](0004-browser-local-deck-library.md) | Accepted (transitional) | Current deck persistence |
 | [0005](0005-editor-grouping-and-inspection.md) | Accepted | Editor information architecture |
-| [0006](0006-agent-uses-typed-deck-patches.md) | Proposed | Future agent mutation safety |
+| [0006](0006-agent-uses-typed-deck-patches.md) | Superseded | Former proposed confirmed-patch agent mutation |
 | [0007](0007-single-fuzzy-title-search.md) | Accepted | One fuzzy title-search path |
 | [0008](0008-local-catalog-serves-search.md) | Accepted | Local catalog search reads and pagination |
 | [0009](0009-progressive-one-tool-agentic-search.md) | Accepted | Progressive one-tool agentic search |
@@ -51,6 +51,7 @@ tradeoffs; they are not task lists.
 | [0033](0033-braced-card-names-resolved-to-openable-cards.md) | Accepted | Agent braces card names; backend resolves them into openable cards |
 | [0034](0034-card-symbols-drawn-from-a-synced-local-set.md) | Accepted | Card text draws its symbols, from artwork synced into the repository |
 | [0035](0035-the-deck-agent-searches-the-catalog-itself.md) | Accepted | The deck agent searches the catalog itself, owning every filter |
+| [0036](0036-auto-applied-agent-edits-on-a-derived-deck-history.md) | Accepted | Agent edits auto-apply; undo replays a diff history derived in the reducer |
 
 ## Updating Decisions
 

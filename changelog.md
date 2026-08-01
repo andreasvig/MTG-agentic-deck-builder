@@ -6,6 +6,33 @@ All notable changes to this project are documented here.
 
 ### Added
 
+- **The deck agent can now edit the deck, and its edits apply themselves.** `edit_deck`
+  takes one declarative change per card — the copy count you want *afterwards*, so add is
+  `1`, cut is `0`, a move is the same count with a new group — plus one reason per call
+  that history keeps. The change lands as a single undo step and the transcript shows an
+  applied-edit block in the past tense, `Applied: +2 / −1` over the names, with an
+  **Undo** rather than a confirm. There is no proposed diff and no confirmation step: the
+  durable history log is the safety net, and an applied edit shows up in the next turn's
+  deck snapshot so the agent can verify its own work instead of asking (ADR 0036).
+  Stating a target count rather than an operation is what makes the call idempotent, so a
+  retry cannot double-add.
+- Added a durable per-deck **edit history** under `manabase.deck-history.v1`, and rebuilt
+  undo on top of it. Undo now survives a reload, which the thirty-step in-memory snapshot
+  stack it replaces could not — that was the one real weakness of letting an agent edit
+  apply itself. Every entry carries a time, an actor and a summary, and an agent edit
+  carries the model's own reason; edits group into sessions by actor and a three-minute
+  gap, so an agent's stretch of editing never merges into the user's. A deleted deck's
+  history is archived with the deck and restored with it (ADR 0036).
+- Gave the deck agent `read_history`, so it can read what has already been done to the
+  deck — the last sessions newest first, the actor as **You** and **Me**, and each agent
+  session's stated reason. "What did we change earlier?" is now a question it can answer
+  from the record rather than from the transcript (ADR 0036).
+- Made `read_deck` report a quantity-weighted **mana curve** and a **total EUR price**
+  without being asked. Both adopt the on-screen statistics' conventions exactly — price
+  over every card including the command zone, average mana value over neither the command
+  zone nor anything with `Land` in its type line — so the tool and the interface cannot
+  give two different correct answers. A card with no EUR estimate is excluded and counted
+  in words rather than silently read as free, which is what the sidebar total does.
 - Gave the deck agent a third read-only tool, `search_cards`, so it can find cards
   that are neither in the deck nor named in the conversation. It reuses the search
   agent's `LocalCardSearchTool` unchanged and writes every filter itself, including a
@@ -297,6 +324,13 @@ All notable changes to this project are documented here.
 
 ### Changed
 
+- Replaced the deck editor's thirty-step in-memory undo stack with the durable diff log.
+  Undo now inverts the last recorded entry and applies it instead of restoring a whole
+  deck snapshot, which is why it survives a reload. The trade is honest and worth knowing:
+  depth is now bounded by the pooled card payloads rather than by a step count, so an entry
+  can be readable in history and no longer replayable — announced when it happens, never
+  silent (ADR 0036).
+
 - Moved debug mode out of the card-search drawer and into interface-wide
   **Settings** in the editor toolbar, since it now governs both the search trace
   and the deck agent's running cost. The `manabase.search-debug` storage key is
@@ -375,6 +409,12 @@ All notable changes to this project are documented here.
   deck assistant.
 
 ### Fixed
+
+- Fixed a crash that took the whole deck board down for a deck holding a card with no
+  cached details. `getCardPrice` dereferenced `card.prices` with no guard, and the
+  statistics memo passed the entry through an `as` cast that laundered `undefined` past the
+  type checker, so the price total threw inside a `useMemo`. Reachable with no agent and no
+  edit involved: a deck persisted by an older build hydrates into exactly that state.
 
 - Fixed EDHREC slugs for card names containing an apostrophe. `edhrec_slug`
   mapped the apostrophe to a separator, producing `thassa-s-oracle`, while EDHREC

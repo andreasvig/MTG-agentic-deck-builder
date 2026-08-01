@@ -35,18 +35,22 @@ the documentation in the same change when drift is found.
 - `config.yaml` owns the six-card page size, 75% preview boundary, local
   semantic model/index values, agent model, one-tool prompt, and continuation
   values. A separate top-level `agent:` block owns the deck chat agent, including
-  its system prompt and both tool descriptions — those are prompt text, so they
-  belong in config rather than in code.
+  its system prompt and every tool description under `agent.tools` — those are prompt
+  text, so they belong in config rather than in code. A description that advertises a
+  number must be compared against the setting that produces it, or changing the setting
+  leaves the prompt lying with a green suite.
 - Mana and ability symbol artwork is committed, under
   `frontend/public/card-symbols/` with a generated manifest beside the module that
   reads it. `npm run symbols:sync` writes both; neither is edited by hand (ADR 0034).
 - Deck libraries are currently browser-local and persisted in `localStorage`.
 - There is no deck CRUD API or SQLite persistence yet.
 - Progressive card-search agent execution is shipped. The deck chat agent is
-  shipped with three **read-only** tools — `read_deck`, `see_cards` (ADR 0029) and
-  `search_cards` (ADR 0035) — and still has no mutation or patch path: it cannot add,
-  remove or move a card. The backend holds no deck, so the browser posts a deck
-  snapshot with each turn.
+  shipped with five tools: `read_deck`, `see_cards` (ADR 0029), `search_cards`
+  (ADR 0035), `read_history` and `edit_deck` (ADR 0036). The first four are
+  read-only. The backend holds no deck, so the browser posts a deck snapshot and a
+  bounded history log with each turn, and `edit_deck` cannot mutate anything: it
+  resolves a change against the posted snapshot and emits a `deck_edit` stream
+  event the browser applies.
 - `search_cards` reuses the search agent's `LocalCardSearchTool` unchanged. Its two
   prompts describe one engine — the field reference in
   `agent.tools.search_cards_description`, the craft under `# Searching for cards` in
@@ -90,8 +94,22 @@ Do not change these without an explicit product decision and ADR update:
 - Command-zone cards have quantity one; a second requires a recognized legal
   co-commander pairing and a third is never accepted.
 - Color-identity warnings must appear before and after an illegal addition.
-- Agent edits must eventually use the same typed operations as manual edits,
-  show a proposed diff, require confirmation, and remain undoable.
+- Agent edits go through the same typed operations as manual edits, **apply
+  themselves**, and remain undoable. There is no proposed diff and no
+  confirmation step; the durable history log is the safety net, and auto-apply
+  without it would be a regression (ADR 0036). One agent edit is one reducer
+  action, one history entry and one undo step: never half-applied, because
+  history would then record an intent that did not happen.
+- The transcript must report what the deck **did** with an edit, not what the
+  agent proposed. `applyEdit` answers with the outcome and the panel writes the
+  block from that answer — the reducer can refuse an edit the backend was happy
+  to emit, so a block built from the event would claim an edit that never
+  happened. A refusal carries the deck's own sentence and has no Undo.
+- The diff is derived centrally in `useDeck`'s reducer from the before/after
+  pair it already holds. Do not make a mutator declare its own diff, and do not
+  add a `Deck` field without adding it to `domain/history.ts` and extending the
+  round-trip property table — a field the diff does not model is a field undo
+  silently stops undoing.
 
 ## Architecture Boundaries
 
@@ -126,7 +144,10 @@ provider HTTP calls in routes. Keep public Pydantic models strict.
 
 - Shared card and deck contracts live in `frontend/src/domain/`.
 - API validation and transport live in `frontend/src/lib/api.ts`.
-- Deck mutations and undo history live in `frontend/src/hooks/useDeck.ts`.
+- Deck mutations live in `frontend/src/hooks/useDeck.ts`. The diff derivation,
+  inversion, session rule, payload pool and pruning live in
+  `frontend/src/domain/history.ts` as pure functions with no React and no storage;
+  `useDeck` is the only caller and the only place that decides an actor.
 - Search orchestration lives in `frontend/src/components/SearchDrawer.tsx`.
 - Debug trace presentation lives in
   `frontend/src/components/SearchTracePanel.tsx`.
@@ -255,6 +276,17 @@ When the `CardSearchPage` contract changes, update all of:
 - Deck agent conversations use `manabase.deck-agent-chats.v1`, keyed by deck id.
   Anything written there must stay inside the serializer's character budget: the deck
   library shares this quota, and losing a deck edit is worse than losing a transcript.
+- Deck edit history uses `manabase.deck-history.v1`, keyed by deck id, and shares the
+  same quota (ADR 0036). Card payloads are pooled one per printing under `cards`, only
+  for a card entering or leaving the deck, and orphans are collected on write — do not
+  pool one per change. Two caps bound it and mean different things:
+  `DECK_HISTORY_PAYLOAD_CAP` is undo depth, `DECK_HISTORY_SESSION_CAP` is read depth.
+  Neither is the cap on what the browser *posts*: those are separate constants in
+  `domain/agent.ts` keyed to the backend's `MAX_HISTORY_SESSIONS` / `MAX_HISTORY_EDITS`,
+  because exceeding a posted bound is a 422 that fails the whole chat turn. Do not
+  collapse the storage and posted caps into one symbol.
+- A deleted deck's history is archived with the deck and restored with it, the same
+  discipline `DeletedDeckSnapshot` already applies to the deck itself.
 - Custom-group placement stores one primary group ID in `categories[0]`.
 - Command-zone placement uses `section="command_zone"` and the fixed
   `command_zone` group ID.

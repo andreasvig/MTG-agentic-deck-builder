@@ -2,9 +2,10 @@
 
 A private, local-first Commander deck builder with a React frontend and a
 FastAPI card-discovery backend. The shipped product is a fast manual deck
-editor with progressive agentic card search. A later deck assistant may inspect
-decks, explain suggestions, and propose confirmed, undoable edits through the
-same domain operations as the UI.
+editor with progressive agentic card search, beside a deck assistant that
+inspects the deck, explains suggestions, searches the catalog, and edits the deck
+through the same domain operations as the UI. Its edits apply themselves and are
+undoable from a durable per-deck history.
 
 ## Project Status
 
@@ -14,7 +15,8 @@ The first manual editing slice is usable and tested.
 | --- | --- |
 | Card search and filters | Shipped |
 | Fuzzy title scores and traces | Shipped |
-| Browser-local deck library and undo | Shipped |
+| Browser-local deck library | Shipped |
+| Durable per-deck edit history, and undo replayed from it | Shipped |
 | Custom groups and derived card types | Shipped |
 | Color-identity and singleton warnings | Partial validation |
 | Backend deck persistence | Not implemented |
@@ -24,8 +26,9 @@ The first manual editing slice is usable and tested.
 | Import/export and analytics | Not implemented |
 | Progressive one-tool agentic card search | Shipped |
 | Deck agent chat | Shipped, desktop only, streamed, one saved conversation per deck |
-| Deck agent read-only tools | Shipped: `read_deck`, `see_cards`, `search_cards` |
-| Deck agent deck mutations and confirmed patches | Not implemented |
+| Deck agent read-only tools | Shipped: `read_deck`, `see_cards`, `search_cards`, `read_history` |
+| Deck agent deck editing | Shipped: `edit_deck`, auto-applied, one undo step per edit |
+| Backend-enforced deck mutation and confirmed patches | Not implemented, and not the direction — see ADR 0036 |
 
 Read [`docs/implementation-status.md`](docs/implementation-status.md) before
 starting feature work. It is the canonical boundary between shipped, partial,
@@ -56,7 +59,10 @@ The application currently supports:
   functional groups or drag/drop are needed.
 - Switch between visual stacks and a dense list.
 - Sort by name, mana value, or price.
-- Edit quantities, remove cards, and undo the last 30 current-session changes.
+- Edit quantities, remove cards, and undo — including after a reload, because undo
+  replays a durable per-deck history rather than an in-memory stack.
+- Ask the agent to make the change instead. It applies straight to the board, as one
+  undo step, and the transcript keeps an **Undo** beside what it did.
 - See singleton and commander color-identity warnings.
 - Keep the command zone to one copy of one commander unless a second card forms
   a legal Partner, Partner with, Friends forever, Choose a Background, or
@@ -149,7 +155,8 @@ reload-enabled development processes on `Ctrl+C`.
 
 ```text
 React browser application
-  |- deck library, mutations, undo, localStorage
+  |- deck library, mutations, derived edit history and undo, localStorage
+  |- applies the agent's resolved deck edits; the backend never mutates a deck
   |- editor, search drawer, trace viewer, responsive shell
   |
   | HTTP JSON
@@ -176,7 +183,8 @@ On-demand EDHREC commander/theme pages
 
 Current ownership is important:
 
-- The frontend owns decks in `localStorage`.
+- The frontend owns decks and their edit history in `localStorage`, and is the only
+  thing that applies an edit — the agent's included.
 - FastAPI owns card discovery only.
 - Scryfall is the authoritative source for catalog refreshes and card images.
 - The derived SQLite card catalog owns canonical search reads; optional EDHREC
@@ -291,6 +299,12 @@ model sent, and the exact text the tool returned. Only a turn asked with debug
 mode on carries them, so lines from earlier turns stay plain rather than opening
 onto nothing.
 
+An edit is reported the same way, in the past tense, because by the time it renders the
+board already looks different: `Applied: +2 / −1` over the card names, with an **Undo**
+rather than a confirm. The block says what the deck *did*, not what the agent asked for —
+the editor can refuse an edit the agent was allowed to send, such as an illegal second
+commander, and then the block carries the deck's own reason and no Undo.
+
 The backend also appends one complete JSON object per line:
 
 ```text
@@ -361,7 +375,7 @@ backend/
     search.py          Fuzzy title matching
     search_debug.py    JSONL trace construction
     deck_agent.py      Conversational deck agent and its tool loop
-    deck_agent_tools.py  read_deck, see_cards and search_cards, all read-only
+    deck_agent_tools.py  read_deck, see_cards, search_cards, read_history, edit_deck
     semantic_index.py  Local embedding index and cosine sorting
   tests/               Backend contract and behavior tests
 frontend/
@@ -395,6 +409,11 @@ changelog.md           Notable delivered changes
   The store keeps the twelve most recently used decks inside a fixed character
   budget, dropping tool payloads before turns, so it can never crowd the deck
   library out of browser storage.
+- Deck edit history uses `manabase.deck-history.v1`, one log per deck id, sharing that
+  same storage quota. Card payloads are pooled one per printing rather than one per
+  change, which is why undo can restore a removed card's price and validation inputs
+  without storing kilobytes per edit. Two caps mean two different things: undo reaches as
+  far as the pooled payloads, and reading reaches every retained session.
 - Command zone and Not assigned are permanent placement concepts.
 - Unknown legacy and former maybeboard placement migrates to Not assigned.
 
@@ -413,12 +432,15 @@ recorded in
 - No deck analytics.
 - The deck agent streams its turns, but not its reasoning: at `xhigh` effort most of
   a turn is thinking, so the panel reports that it is thinking rather than narrating it.
-- The deck agent can read the open deck (`read_deck`), look cards up
-  (`see_cards`) and search the whole catalog under filters it writes itself
-  (`search_cards`), but it cannot change anything: there is no add, remove, move, or
-  patch-and-confirm workflow, and no card search of its own. Its prompt says as
-  much, so it points at the card search rather than pretending. The panel is
-  desktop-only.
+- The deck agent's panel is desktop-only. It can read the open deck (`read_deck`), look
+  cards up (`see_cards`), search the whole catalog under filters it writes itself
+  (`search_cards`), read what has already been done (`read_history`) and change the deck
+  (`edit_deck`) — but not everything an edit could be. It can place a card in a group the
+  deck already has and cannot create one, it does not reorder anything, and Partner and
+  background command zones are unhandled here as they are in the other tools.
+- Deck history is browser-local and per deck, so it does not survive a browser wipe and
+  is not readable across devices. The user cannot see it either: the agent reads history,
+  and the interface exposes only the Undo button. There is no redo.
 - Search returns one representative printing per gameplay card: the cheapest one
   that is not a full-art, promo, foil-only or Secret Lair version. There is no
   way to ask for a specific printing.

@@ -1,6 +1,6 @@
 # Implementation Status
 
-Last verified: 2026-07-30
+Last verified: 2026-08-01
 
 This is the canonical feature ledger. It describes the repository as it exists,
 not the intended end state.
@@ -151,16 +151,23 @@ not the intended end state.
 - Running conversation cost in the header while debug mode is on, marked `+` when
   a turn's price was not reported.
 - Its own top-level `agent:` configuration block: model, reasoning effort,
-  temperature, timeout, memory window, the whole system prompt, and both tool
-  descriptions under `agent.tools`.
+  temperature, timeout, memory window, the whole system prompt, and every tool
+  description under `agent.tools`.
 - `POST /api/v1/agent/chat` and `POST /api/v1/agent/chat/stream`, separating an
   unusable reply (`502`) from an unreachable or unconfigured agent (`503`). The
   streaming route reports availability before it starts; a later failure arrives as an
   `error` event with the same code and wording. The interface uses the streaming route
   only — the JSON one remains the plain API contract.
-- Three read-only tools (ADRs 0029 and 0035):
+- Five tools, four of them read-only (ADRs 0029, 0035 and 0036):
   - `read_deck()` — the open deck grouped under each card's primary type, with
-    names, short ids and on-screen custom groups, and no card text.
+    names, short ids and on-screen custom groups, and no card text. It also reports a
+    quantity-weighted mana curve and a total EUR price without being asked, adopting the
+    statistics memo's own conventions exactly — price over every card including the
+    command zone, average mana value over neither the command zone nor anything with
+    `Land` in its type line — so the tool and the interface cannot give two different
+    correct answers. Where they part company is a card with no EUR estimate: the
+    interface reads it as `0` and under-reports silently, while the tool excludes it and
+    counts it in words, because a card with no price is not a free card.
   - `see_cards(cards, details)` — named or short-id cards at the requested depth:
     rules, prices, Tagger tags, EDHREC similar cards, EDHREC inclusion for this
     deck's commander, Commander legality. Defaults to rules.
@@ -189,8 +196,37 @@ not the intended end state.
     cards, and a *missing* EDHREC lookup. What the model itself sent is not echoed back.
     Every refusal — an EDHREC ordering with no evidence, no criteria at all, an
     unknown commander or theme — comes back as text the model adapts to.
+  - `edit_deck(changes, reason)` — the one tool that changes the deck (ADR 0036). Each
+    change states the copy count wanted **afterwards** rather than an operation: add is
+    `quantity: 1`, cut is `quantity: 0`, a move is the same quantity with a new `group`,
+    a swap is two changes. So there is no discriminator, no conditional field, and the
+    call is idempotent — a change the deck already satisfies is dropped before the edit
+    is emitted, which is what makes a retry safe. The backend mutates nothing: it
+    resolves the change against the posted snapshot and emits a `deck_edit` stream event
+    the browser applies. The result is accurate rather than proposed — what the deck held
+    before, which changes were no-ops, the resulting card count, and any warning — and
+    echoes none of the caller's own arguments. Only an unresolvable card and a quantity
+    outside `0..99` fail the call, and either fails all of it; colour identity, the
+    singleton rule and the hundred-card bound are warnings, because the board treats them
+    that way.
+  - `read_history(limit)` — the deck's recorded past, newest session first, with the
+    actor rendered as `You` and `Me` and an agent session carrying the model's own
+    one-line reason. A client that posted no history reads differently from a deck with
+    no recorded edits, because the two lead somewhere different. `read_deck`'s footer
+    points at it only when history is present.
 - The browser posts a deck snapshot with each turn, carrying identity and placement
-  only; names, types, rules and prices are resolved from the local catalog.
+  only; names, types, rules and prices are resolved from the local catalog. It posts the
+  deck's history log alongside it, pruned newest-first to the backend's three bounds —
+  50 sessions, 500 edits, 250 cards per edit — because a request over any of them is
+  refused whole, which would fail the chat turn rather than the history.
+- An agent edit **auto-applies** (ADR 0036). It lands as one reducer action, one history
+  entry and one undo step, and the transcript shows an applied-edit block in the past
+  tense — `Applied: +2 / −1` over the names — with an **Undo** rather than a confirm.
+  There is no proposed diff and no confirmation step; the durable history log is the
+  safety net. The block reports what the deck **did**, not what the agent asked for: the
+  reducer can refuse an edit the backend was happy to emit — an illegal second commander,
+  an unknown group — and a refusal renders the deck's own sentence with no Undo. The Undo
+  sits on the newest edited turn only.
 - Every tool call is shown in the transcript as its own line above the answer,
   regardless of debug mode, with failed calls marked.
 - With debug mode on, a call opens onto two sub-boxes — the arguments the model sent
@@ -201,9 +237,12 @@ not the intended end state.
 
 Missing:
 
-- Any tool that changes the deck: it cannot add, remove, move or reorder a card,
-  and there is no patch, confirmation or undo path.
-- A catalog search of its own. It points the user at the card search instead.
+- Creating a custom group from an edit. `edit_deck` can place a card in a group the deck
+  already has; making a new one stays `addCustomGroup`'s job.
+- Reordering. Position is recorded so an undone removal lands where it was, but it is not
+  an edit axis, so a pure reorder derives no change at all (ADR 0036).
+- Partner and background command zones, in `edit_deck` as in `see_cards` and
+  `search_cards`.
 - Any mobile entry point.
 - Streamed reasoning: at `xhigh` it is most of the turn and none of the answer, so the
   panel says it is thinking instead of narrating.
@@ -218,7 +257,18 @@ Missing:
   that untouched placeholder.
 - Commander-art thumbnails in the deck rail.
 - Add, remove, and change printing quantity.
-- Thirty-step per-deck undo history for current-session mutations.
+- A durable per-deck edit history under `manabase.deck-history.v1`, derived centrally in
+  `useDeck`'s reducer from the before/after pair it already holds, so no mutation site
+  declares its own diff and a mutator added later is recorded with no extra wiring
+  (ADR 0036). Every entry carries a time, an actor, a summary and — for an agent edit —
+  the model's reason, and edits group into sessions by actor and a three-minute gap, so an
+  agent edit never joins a user's.
+- Undo replays the last recorded entry backwards and therefore **survives a reload**,
+  which the thirty-step in-memory snapshot stack it replaces could not. Undo depth is
+  bounded by the payload pool (50 printings) rather than by a step count; read depth is
+  every retained session (50). An entry whose payload has been pruned stays readable and
+  stops being replayable, and that refusal is announced rather than thrown.
+- A deleted deck's history is archived with the deck and restored with it.
 - Permanent Command zone and Not assigned groups.
 - User-created custom groups.
 - Drop-to-create a custom group and move the card in one undoable action.
@@ -247,6 +297,9 @@ Missing:
   ranking, configuration, traces, and deck models.
 - Frontend tests for API validation, deck migration, mutations, search, traces,
   and primary application workflows.
+- A round-trip property test over the diff derivation, in both directions, across a
+  twelve-case table covering every field a `Deck` can differ by. It is what stands between
+  a new `Deck` field and an undo that silently stops undoing it (ADR 0036).
 - Playwright workflows for desktop editing, search failure recovery, filters,
   color warnings, legal commander pairs, recoverable deck deletion, and mobile
   containment.
@@ -384,12 +437,14 @@ missing or stale sidecar is an explicit unavailable state fixed by
 - Full printing and finish selection.
 - Mana curve, color production, probability, and functional analytics.
 - Multi-select and bulk editing.
-- Named deck snapshots and persisted mutation history.
-- Typed agent tools for validate, search, propose patch, confirm, apply and undo.
-  Deck inspection is shipped as `read_deck` and `see_cards` (ADR 0029) and catalog
-  search as `search_cards` (ADR 0035); everything
-  that changes a deck is not.
-- Deck-agent transcript persistence and a mobile entry point.
+- Named deck snapshots, and server-side mutation history. The browser-local diff log
+  is shipped (ADR 0036); making it survive a browser wipe or read across devices needs
+  backend deck persistence first.
+- Redo. The log replays forward as easily as backward, so it is nearly free, and it needs
+  its own affordance (ADR 0036).
+- A history panel for the user. The agent reads history through `read_history`; the user
+  still sees only an Undo button.
+- A mobile entry point for the deck agent.
 - Any spend cap or budget: cost is reported, never enforced.
 
 ## Deferred
@@ -414,8 +469,14 @@ missing or stale sidecar is an explicit unavailable state fixed by
 - Card search, fuzzy tag lookup, canonical card lookup, card enrichment, and deck
   agent chat are the product APIs beyond health.
 - The deck agent reads the deck from a snapshot posted with each turn, not from
-  backend state, and resolves every card fact from the local catalog. Its tools are
-  read-only; nothing it does can change a deck.
+  backend state, and resolves every card fact from the local catalog. `edit_deck` does not
+  change that: the backend computes a resolved change and emits it, and the browser is the
+  only thing that applies one. Command-zone legality and group existence live in
+  `frontend/src/domain/deck.ts` and are deliberately not duplicated in the backend, so the
+  browser can and does refuse an edit the backend emitted.
+- Deck edit history is browser-local too, per deck, under `manabase.deck-history.v1`, in
+  the same storage quota as the deck library and the chat transcripts. It does not survive
+  a browser wipe and is not readable across devices.
 - Search always starts locally. Natural-language or weak-title queries can
   continue through OpenRouter and one bounded structured local tool call.
 - Scryfall images remain remote.
@@ -428,5 +489,5 @@ missing or stale sidecar is an explicit unavailable state fixed by
 2. Add browser-local library import and migration into that service.
 3. Implement complete Commander validation against shared domain models.
 4. Add plaintext import/export and full printing selection.
-5. Introduce agent patch schemas and confirmation flow before giving the shipped
-   deck-agent chat any tools.
+5. Move deck history behind that service so it survives a browser wipe, keeping the
+   browser-local log as importable legacy data.

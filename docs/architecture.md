@@ -9,9 +9,10 @@ recorded separately in `plan.md` and proposed ADRs.
 Browser
   |
   | React application (127.0.0.1:41737)
-  | - deck library and undo history
+  | - deck library, and a durable per-deck diff history that undo replays backwards
   | - localStorage persistence
   | - search, editor, dialogs, responsive shell
+  | - applies the agent's resolved deck edits; the backend never mutates a deck
   |
   | HTTP JSON
   v
@@ -36,13 +37,17 @@ FastAPI (127.0.0.1:43127/api/v1)
   | deck agent chat turn (POST /agent/chat/stream, or /agent/chat for plain JSON)
   +--> DeckAgentService
        |-- system prompt + the newest `agent.max_history_messages` transcript entries
-       |-- up to `agent.tools.max_iterations` rounds of read-only tool use
+       |-- up to `agent.tools.max_iterations` rounds of tool use
        |     `-- DeckAgentToolbox: read_deck (posted snapshot + catalog)
        |                           see_cards (catalog, Tagger sidecar, EDHREC)
        |                           search_cards (LocalCardSearchTool, all filters
        |                                         written by the model itself)
+       |                           read_history (posted history log, newest first)
+       |                           edit_deck (resolves a change against the posted
+       |                                      snapshot; mutates nothing)
        |-- one final completion advertising no tools, so a turn always answers
-       |-- streamed: `tool` as each call runs, `text` as the answer is written
+       |-- streamed: `tool` as each call runs, `text` as the answer is written,
+       |             `deck_edit` the moment edit_deck succeeds
        `--> reply, the calls it made, and the cost summed over every completion
              `-- on a debug turn, each call's arguments and its exact result
   |
@@ -74,7 +79,9 @@ Scryfall Oracle-tag bulk + Tagger relationship edges
 ```
 
 The backend does not currently persist decks. The frontend does not call a
-deck API.
+deck API. `edit_deck` does not change that: it computes a resolved change against
+the snapshot posted with the turn and emits it as a `deck_edit` event, and the
+browser is the only thing that applies one (ADR 0036).
 
 ## Process Lifecycle
 
@@ -139,9 +146,19 @@ progressive HTTP contract.
 The reply also carries `card_links`: the card names the answer braced, resolved against
 the local catalog so the chat can open them (ADR 0033).
 
-Also the streamed turn's events — `text`, `tool`, `done`, `error` — where `done`
-carries the same reply the JSON route returns, so nothing stored depends on which
+Also the streamed turn's events — `text`, `tool`, `deck_edit`, `done`, `error` — where
+`done` carries the same reply the JSON route returns, so nothing stored depends on which
 route produced it (ADR 0031).
+
+`deck_edit` carries the resolved edit `edit_deck` computed: the changes it kept, the
+model's `reason`, and a full `CardSearchResult` for every card being **added**, because
+the browser cannot construct one and the deck's own validators read fields only the
+payload has (ADR 0036). `EditDeckArguments` and `DeckEditChange` state the copy count
+wanted *afterwards* rather than an operation, which is what makes the call idempotent and
+therefore safe to retry. `DeckAgentDeckHistory` is the browser's log, posted with the turn
+exactly as the deck snapshot is and bounded by `MAX_HISTORY_SESSIONS`,
+`MAX_HISTORY_EDITS` and `MAX_HISTORY_EDIT_CARDS` — exceeding any of them is a 422 that
+fails the whole turn, so the client prunes newest-first before sending.
 
 Strict contracts for the deck agent's chat turn: an alternating transcript whose
 newest message must be the user's, and a reply carrying the assistant message, the
@@ -329,11 +346,13 @@ back — a reasoning model can answer HTTP 200 with empty content beside a popul
 every completion in the turn cost, counting any that reported no figure. On a turn
 that asked for `debug`, each reported call also carries the arguments the model sent
 and the exact text the tool returned, taken from the call that ran rather than
-re-rendered, and truncated with a visible marker rather than silently cut (ADR 0030).
+re-rendered, and truncated with a visible marker rather than silently cut (ADR 0030). It
+emits a `deck_edit` event the moment `edit_deck` succeeds, and threads the posted history
+log from the request into the toolbox so `read_history` can answer from it (ADR 0036).
 
 ### `deck_agent_tools.py`
 
-The agent's three read-only tools (ADRs 0029 and 0035). `read_deck` is answered entirely from the
+The agent's five tools (ADRs 0029, 0035 and 0036), four of them read-only. `read_deck` is answered entirely from the
 deck snapshot the browser posted with the turn, resolved against the local catalog so
 names and types come from the catalog rather than the client; it returns the deck
 grouped by primary type with short ids and no card text. `see_cards` resolves names,
@@ -363,6 +382,22 @@ back, since they are still in the model's own tool call. A commander's EDHREC de
 are a `see_cards` detail rather than a header line, because a popular commander advertises
 seventy of them (ADR 0035). Nothing in `agentic_card_search.py`
 changed for it.
+
+`edit_deck` and `read_history` are the two tools from ADR 0036. `edit_deck` resolves each
+`DeckEditChange` against the posted snapshot and reports what the deck held **before**,
+which changes were therefore no-ops, the resulting card count, and any warning the edit
+introduced — accurate rather than proposed, because the snapshot is in the request, and
+carrying none of the caller's own arguments. It drops a change the deck already satisfies
+before emitting the edit, so a retried call cannot double-add. Only an unresolvable card
+and an out-of-range quantity fail the call, and either fails all of it: colour identity,
+the singleton rule and the hundred-card bound are **warnings**, because the board treats
+them that way and an agent held to a stricter rule than the drag target is inconsistent
+invisibly. Command-zone legality and group existence stay in the frontend's
+`domain/deck.ts`, unduplicated, so the browser can and does refuse an emitted edit.
+`read_history` renders the posted log newest session first with the actor as `You` and
+`Me`, and a client that posted no history reads differently from a deck with no recorded
+edits, because the two lead somewhere different. `read_deck`'s footer points at it only
+when history is present.
 
 ### `agentic_search_debug.py`
 
@@ -405,6 +440,40 @@ manabase.deck-library.v2
 manabase.active-deck.v1   # legacy migration only
 ```
 
+### `domain/history.ts`
+
+The deck edit log, as pure functions with no React and no storage (ADR 0036):
+`deriveDeckDiff` takes a before/after pair of `Deck`s and returns the diff plus the card
+payloads it needs, `invertDeckDiff` swaps every change's `before` and `after`,
+`applyDeckDiff` replays a diff in either direction against a deck and a payload pool,
+`appendToHistory` places an edit in a session, `pruneHistory` enforces both caps, and
+`parseDeckHistory` validates what came back out of storage.
+
+The design exists so that no mutation site declares its own diff. `useDeck`'s reducer
+already holds the deck before and after every mutation, so the record is complete by
+construction and inversion is free. It only holds if the diff models every field a `Deck`
+can differ by, which is what the round-trip property table over the real mutators keeps
+honest.
+
+`DeckCardPlacement` carries an `index` so undoing a removal puts the card back where it
+was, and that index is deliberately excluded from change detection: cutting one card from
+a hundred shifts fifty-nine positions, and counting those would make every summary wrong.
+Position is a restoration hint, not an edit axis.
+
+`cards` is the payload pool — one `CardSearchResult` per printing rather than one per
+change, populated only for a card entering or leaving the deck, with orphans collected on
+write. That gives two different depths: undo reaches as far as pooled payloads
+(`DECK_HISTORY_PAYLOAD_CAP`), reading reaches every retained session
+(`DECK_HISTORY_SESSION_CAP`). Replaying an entry whose payload is gone returns a typed
+refusal rather than a detail-less entry, so the reducer can announce it instead of being
+stranded by a throw.
+
+Persistence key:
+
+```text
+manabase.deck-history.v1
+```
+
 ### `domain/cardSymbols.ts`
 
 Splits card text into words and symbols, against Scryfall's symbol table rather than
@@ -428,8 +497,18 @@ The current deck application service. It owns:
 - Confirmed deletion, safe last-deck replacement, and current-session restore.
 - All deck mutations.
 - Shared command-zone guards for adds, moves, and quantity changes.
-- Per-deck current-session undo history.
-- `localStorage` persistence.
+- Deriving a diff for every mutation from the before/after pair the reducer holds, and
+  appending it to the deck's durable history log with an actor (ADR 0036).
+- `applyEdit(edit, actor)`, the one mutator that takes an actor and the one the agent's
+  edits arrive through. The whole edit is one reducer action, one history entry and one
+  undo step, and it is refused whole rather than applied in part. It answers with the
+  outcome, because the reducer can refuse an edit and a caller that assumed otherwise
+  would describe an intention.
+- `undo`, which inverts the last recorded entry and applies it, so it survives a reload.
+  It pops the entry rather than recording its inverse. `canUndo` is established by
+  planning the undo through the real applier, not by counting entries.
+- Archiving a deleted deck's history with the deck and restoring it with the deck.
+- `localStorage` persistence, for the library and the history log.
 - User-facing live-region announcements.
 
 Components receive named operations rather than writing storage directly.
@@ -456,6 +535,17 @@ itself belongs to the deck rather than to the panel (ADR 0030). With debug mode 
 tool call that carries payloads renders as a disclosure over its **Call** and
 **Result** sub-boxes; one that does not stays a plain line, because an expander onto
 an empty box would claim the payload was empty rather than absent.
+
+A `deck_edit` event renders as its own applied-edit block — `Applied: +2 / −1` over the
+names, in the past tense because it has been, with an **Undo** rather than a confirm
+(ADR 0036). The block is stored as a summary rather than as the event, so a restored turn
+reads without spending the chat's storage budget on card payloads. The panel writes it
+from what `onDeckEdit` **answered**, never from the event: the reducer can refuse an edit
+the backend was happy to emit, and a block built from the event would claim an edit that
+never happened. A refusal renders the deck's own sentence and carries no Undo. The Undo
+sits on the newest edited turn only, because `undo` reverses the deck's last recorded
+change and an older block's Undo would promise that block's reversal and deliver a
+different one.
 
 ### `hooks/useDeckAgentChats.ts`
 
@@ -496,6 +586,16 @@ controls are available only in Custom grouping.
 
 Page shell, navigation rail, mobile toolbar, dialogs, menus, and composition of
 deck and search services.
+
+It also owns the two things only the browser can resolve about an agent edit (ADR 0036):
+translating the wire shape into `useDeck`'s `DeckEdit` — taking each cut or moved card's
+payload from the deck, and treating an absent `group` as *leave placement alone* rather
+than as "unfile it" — and reading the history log out of `localStorage` at the moment a
+turn is **sent**, because the log is written by an effect after the render that changed
+the deck, so a value captured in that render would be missing exactly the edit the
+question is about. A translation that cannot resolve a card refuses the whole edit and
+reports that refusal itself, since it is the only place that knows the edit got no
+further.
 
 ## Card Identity
 
@@ -582,7 +682,8 @@ deck counts to the drawer.
 Current:
 
 ```text
-Browser localStorage owns decks
+Browser localStorage owns decks and their edit history, and is the only thing that
+  applies an edit
 FastAPI owns card discovery
 Local SQLite owns canonical search reads and cached enrichment
 Scryfall owns authoritative bulk data and remote images
