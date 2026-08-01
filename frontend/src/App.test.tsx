@@ -379,6 +379,12 @@ describe("deck workspace", () => {
             ],
             references: [],
             referenced_by: [],
+            upgrades: [],
+            downgrades: [],
+            variants: [],
+            creature_versions: [],
+            spell_versions: [],
+            related_cards: [],
           }),
         );
       }
@@ -390,6 +396,12 @@ describe("deck workspace", () => {
             similar_cards: [],
             references: [],
             referenced_by: [],
+            upgrades: [],
+            downgrades: [],
+            variants: [],
+            creature_versions: [],
+            spell_versions: [],
+            related_cards: [],
           }),
         );
       }
@@ -516,5 +528,27 @@ describe("deck workspace", () => {
         "R is outside this deck's G commander color identity.",
       ),
     ).toBeInTheDocument();
+  });
+
+  it("owns debug mode in the interface settings and shares it with the workspace", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    // Debug mode is an interface setting now, so it must be reachable without
+    // opening card search first.
+    await user.click(screen.getByRole("button", { name: "Settings" }));
+    const toggle = screen.getByRole("switch", { name: "Debug mode" });
+    expect(toggle).not.toBeChecked();
+
+    await user.click(toggle);
+
+    expect(toggle).toBeChecked();
+    expect(window.localStorage.getItem("manabase.search-debug")).toBe("true");
+    // The deck agent's running cost appears only while debug mode is on.
+    expect(screen.getByText("$0.0000")).toBeInTheDocument();
+
+    await user.click(toggle);
+    expect(window.localStorage.getItem("manabase.search-debug")).toBe("false");
+    expect(screen.queryByText("$0.0000")).not.toBeInTheDocument();
   });
 });

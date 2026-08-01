@@ -1,10 +1,11 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { ApiError, type ApiClient } from "../lib/api";
 import {
   cardSearchPage,
+  emptyEnrichment,
   failedAgentSearchDebugSummary,
   ghalta,
   searchDebugSummary,
@@ -164,7 +165,10 @@ describe("card search dialog", () => {
     expect(input).toHaveFocus();
     expect(document.body.style.overflow).toBe("hidden");
 
-    screen.getByRole("button", { name: "Search settings" }).focus();
+    // Scoped to the dialog: the backdrop carries the same accessible name.
+    within(screen.getByRole("dialog"))
+      .getByRole("button", { name: "Close card search" })
+      .focus();
     await user.tab({ shift: true });
     expect(
       screen.getByRole("checkbox", {
@@ -238,23 +242,24 @@ describe("card search dialog", () => {
     );
   });
 
-  it("persists the search debug setting and requests a trace", async () => {
+  it("requests a trace when interface debug mode is on, and not otherwise", async () => {
     const searchCards = vi.fn<ApiClient["searchCards"]>().mockResolvedValue(
       cardSearchPage(),
     );
     const user = userEvent.setup();
-    render(
+    // Debug mode is owned by the workspace shell and arrives as a prop; the drawer
+    // no longer carries a settings control of its own.
+    const { unmount } = render(
       <SearchDrawer
         entries={[]}
         client={{ getHealth: vi.fn(), searchCards }}
+        debugEnabled
         onAdd={vi.fn()}
         onSetQuantity={vi.fn()}
         onClose={vi.fn()}
       />,
     );
 
-    await user.click(screen.getByRole("button", { name: "Search settings" }));
-    await user.click(screen.getByRole("switch", { name: "Search debug log" }));
     await user.type(
       screen.getByRole("textbox", { name: "Search cards" }),
       "red card draw",
@@ -270,7 +275,35 @@ describe("card search dialog", () => {
         true,
       ),
     );
-    expect(window.localStorage.getItem("manabase.search-debug")).toBe("true");
+    expect(
+      screen.queryByRole("button", { name: "Search settings" }),
+    ).not.toBeInTheDocument();
+    unmount();
+
+    render(
+      <SearchDrawer
+        entries={[]}
+        client={{ getHealth: vi.fn(), searchCards }}
+        onAdd={vi.fn()}
+        onSetQuantity={vi.fn()}
+        onClose={vi.fn()}
+      />,
+    );
+    await user.type(
+      screen.getByRole("textbox", { name: "Search cards" }),
+      "red card draw",
+    );
+    await user.click(screen.getByRole("button", { name: /^Search$/ }));
+
+    await waitFor(() =>
+      expect(searchCards).toHaveBeenLastCalledWith(
+        "red card draw",
+        1,
+        expect.any(AbortSignal),
+        expect.any(Object),
+        false,
+      ),
+    );
   });
 
   it("shows the persisted layer trace when backend debug mode is enabled", async () => {
@@ -374,6 +407,7 @@ describe("card search dialog", () => {
           getHealth: vi.fn(),
           searchCards: vi.fn().mockResolvedValue(page),
         }}
+        debugEnabled
         onAdd={vi.fn()}
         onSetQuantity={vi.fn()}
         onClose={vi.fn()}
@@ -543,6 +577,12 @@ describe("card search dialog", () => {
         referenced_by: [
           { oracle_id: "oracle-reference", name: "Sol Ring Replica" },
         ],
+        upgrades: [],
+        downgrades: [],
+        variants: [],
+        creature_versions: [],
+        spell_versions: [],
+        related_cards: [],
       });
     const getCard = vi
       .fn<NonNullable<ApiClient["getCard"]>>()
@@ -582,6 +622,120 @@ describe("card search dialog", () => {
       solRing.oracle_id,
       expect.any(AbortSignal),
     );
+  });
+
+  it("shows strictness, body and variant relationships from either direction", async () => {
+    const getCardEnrichment = vi
+      .fn<NonNullable<ApiClient["getCardEnrichment"]>>()
+      .mockResolvedValue(
+        emptyEnrichment({
+          upgrades: [{ oracle_id: "oracle-mana-crypt", name: "Mana Crypt" }],
+          downgrades: [{ oracle_id: "oracle-mind-stone", name: "Mind Stone" }],
+          variants: [{ oracle_id: "oracle-shifted", name: "Colorshifted Ring" }],
+          creature_versions: [{ oracle_id: "oracle-myr", name: "Alloy Myr" }],
+          spell_versions: [{ oracle_id: "oracle-manalith", name: "Manalith" }],
+          related_cards: [{ oracle_id: "oracle-kin", name: "Ring Kin" }],
+        }),
+      );
+
+    render(
+      <SearchDrawer
+        initialQuery="sol ring"
+        entries={[]}
+        client={{
+          getHealth: vi.fn(),
+          getCardEnrichment,
+          getCard: vi.fn(),
+          searchCards: vi.fn().mockResolvedValue(cardSearchPage()),
+        }}
+        onOpenCard={vi.fn()}
+        onAdd={vi.fn()}
+        onSetQuantity={vi.fn()}
+        onClose={vi.fn()}
+      />,
+    );
+
+    expect(
+      await screen.findByRole("heading", { name: "Upgrades" }),
+    ).toBeInTheDocument();
+    expect(screen.getByText("Mana Crypt")).toBeInTheDocument();
+    // The list a card outclasses is labelled from the reader's side, not Tagger's.
+    expect(
+      screen.getByRole("heading", { name: "Outclasses" }),
+    ).toBeInTheDocument();
+    expect(screen.getByText("Mind Stone")).toBeInTheDocument();
+    expect(screen.getByText("Alloy Myr")).toBeInTheDocument();
+    expect(screen.getByText("Manalith")).toBeInTheDocument();
+    expect(screen.getByText("Colorshifted Ring")).toBeInTheDocument();
+    expect(screen.getByText("Ring Kin")).toBeInTheDocument();
+  });
+
+  it("lists EDHREC similar cards and omits names with no local card", async () => {
+    const getCardEdhrecSimilar = vi
+      .fn<NonNullable<ApiClient["getCardEdhrecSimilar"]>>()
+      .mockResolvedValue({
+        status: "applied",
+        source: "cache",
+        oracle_id: solRing.oracle_id,
+        cards: [
+          { rank: 1, name: "Mana Vault", oracle_id: "oracle-mana-vault" },
+          { rank: 2, name: "Unknown Reprint", oracle_id: null },
+        ],
+        message: null,
+      });
+
+    render(
+      <SearchDrawer
+        initialQuery="sol ring"
+        entries={[]}
+        client={{
+          getHealth: vi.fn(),
+          getCardEnrichment: vi.fn().mockResolvedValue(emptyEnrichment()),
+          getCardEdhrecSimilar,
+          getCard: vi.fn(),
+          searchCards: vi.fn().mockResolvedValue(cardSearchPage()),
+        }}
+        onOpenCard={vi.fn()}
+        onAdd={vi.fn()}
+        onSetQuantity={vi.fn()}
+        onClose={vi.fn()}
+      />,
+    );
+
+    expect(
+      await screen.findByRole("heading", { name: "Similar on EDHREC" }),
+    ).toBeInTheDocument();
+    expect(screen.getByText("Mana Vault")).toBeInTheDocument();
+    // An unresolvable name cannot be opened, so it must not render as a control.
+    expect(screen.queryByText("Unknown Reprint")).not.toBeInTheDocument();
+  });
+
+  it("stays quiet when EDHREC similar cards are unavailable", async () => {
+    render(
+      <SearchDrawer
+        initialQuery="sol ring"
+        entries={[]}
+        client={{
+          getHealth: vi.fn(),
+          getCardEnrichment: vi.fn().mockResolvedValue(emptyEnrichment()),
+          getCardEdhrecSimilar: vi.fn().mockRejectedValue(new Error("offline")),
+          getCard: vi.fn(),
+          searchCards: vi.fn().mockResolvedValue(cardSearchPage()),
+        }}
+        onOpenCard={vi.fn()}
+        onAdd={vi.fn()}
+        onSetQuantity={vi.fn()}
+        onClose={vi.fn()}
+      />,
+    );
+
+    expect(
+      await screen.findByRole("button", { name: "Add Sol Ring to deck" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("heading", { name: "Similar on EDHREC" }),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByText("offline")).not.toBeInTheDocument();
   });
 
   it("passes default safety filters and current commander identity to search", async () => {

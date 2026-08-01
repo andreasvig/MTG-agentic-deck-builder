@@ -22,7 +22,7 @@ from mtg_deck_builder.providers.edhrec import (
 )
 
 _LOGGER = logging.getLogger(__name__)
-_SCHEMA_VERSION = 2
+_SCHEMA_VERSION = 3
 
 
 class EdhrecCatalogUnavailable(RuntimeError):
@@ -60,6 +60,24 @@ class EdhrecCommanderContext:
     commander_oracle_id: UUID
     commander_name: str
     themes: tuple[EdhrecDeckTheme, ...]
+    source: Literal["cache", "network"]
+
+
+@dataclass(frozen=True)
+class EdhrecSimilarSuggestion:
+    """One EDHREC similar-card name after local Oracle resolution was attempted."""
+
+    rank: int
+    name: str
+    oracle_id: UUID | None
+
+
+@dataclass(frozen=True)
+class EdhrecSimilarCardList:
+    """EDHREC's ranked similar-card names for one card, plus where they came from."""
+
+    oracle_id: UUID
+    suggestions: tuple[EdhrecSimilarSuggestion, ...]
     source: Literal["cache", "network"]
 
 
@@ -367,6 +385,103 @@ class SQLiteEdhrecCatalog:
                 ],
             )
 
+    def load_similar_fresh(
+        self,
+        oracle_id: UUID,
+        *,
+        refresh_after_days: int,
+        now: datetime,
+    ) -> EdhrecSimilarCardList | None:
+        """Return one cached similar-card list while its snapshot is fresh."""
+
+        self._ensure_schema()
+        cutoff = now - timedelta(days=refresh_after_days)
+        with sqlite3.connect(self.path) as connection:
+            row = connection.execute(
+                "SELECT fetched_at FROM card_similar_snapshots WHERE oracle_id = ?",
+                (str(oracle_id),),
+            ).fetchone()
+            if row is None or not _is_fresh_timestamp(row[0], cutoff):
+                return None
+            suggestions = tuple(
+                EdhrecSimilarSuggestion(
+                    rank=similar_rank,
+                    name=similar_name,
+                    oracle_id=UUID(similar_oracle_id) if similar_oracle_id else None,
+                )
+                for similar_rank, similar_name, similar_oracle_id in connection.execute(
+                    """
+                    SELECT similar_rank, similar_name, similar_oracle_id
+                    FROM card_similar_cards
+                    WHERE oracle_id = ?
+                    ORDER BY similar_rank
+                    """,
+                    (str(oracle_id),),
+                )
+            )
+        # A fresh snapshot with no rows is a card EDHREC had no suggestions for, which
+        # is an answer worth honouring rather than a reason to fetch the page again.
+        return EdhrecSimilarCardList(
+            oracle_id=oracle_id,
+            suggestions=suggestions,
+            source="cache",
+        )
+
+    def save_similar(
+        self,
+        *,
+        oracle_id: UUID,
+        card_name: str,
+        card_slug: str,
+        fetched_at: datetime,
+        raw_json: str,
+        suggestions: tuple[EdhrecSimilarSuggestion, ...],
+    ) -> None:
+        """Transactionally replace one card's similar-card snapshot."""
+
+        self._ensure_schema()
+        with sqlite3.connect(self.path) as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            connection.execute(
+                """
+                INSERT INTO card_similar_snapshots (
+                    oracle_id, card_name, card_slug, fetched_at, raw_json
+                ) VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(oracle_id) DO UPDATE SET
+                    card_name = excluded.card_name,
+                    card_slug = excluded.card_slug,
+                    fetched_at = excluded.fetched_at,
+                    raw_json = excluded.raw_json
+                """,
+                (
+                    str(oracle_id),
+                    card_name,
+                    card_slug,
+                    fetched_at.astimezone(UTC).isoformat(),
+                    raw_json,
+                ),
+            )
+            connection.execute(
+                "DELETE FROM card_similar_cards WHERE oracle_id = ?",
+                (str(oracle_id),),
+            )
+            connection.executemany(
+                """
+                INSERT INTO card_similar_cards (
+                    oracle_id, similar_rank, similar_name, similar_oracle_id
+                ) VALUES (?, ?, ?, ?)
+                """,
+                [
+                    (
+                        str(oracle_id),
+                        suggestion.rank,
+                        suggestion.name,
+                        str(suggestion.oracle_id) if suggestion.oracle_id else None,
+                    )
+                    for suggestion in suggestions
+                ],
+            )
+
     def _ensure_schema(self) -> None:
         if self._schema_ready:
             return
@@ -446,12 +561,33 @@ class SQLiteEdhrecCatalog:
                         num_decks DESC,
                         potential_decks DESC
                     );
+
+                    CREATE TABLE IF NOT EXISTS card_similar_snapshots (
+                        oracle_id TEXT PRIMARY KEY,
+                        card_name TEXT NOT NULL,
+                        card_slug TEXT NOT NULL,
+                        fetched_at TEXT NOT NULL,
+                        raw_json TEXT NOT NULL
+                    ) WITHOUT ROWID;
+
+                    CREATE TABLE IF NOT EXISTS card_similar_cards (
+                        oracle_id TEXT NOT NULL,
+                        similar_rank INTEGER NOT NULL,
+                        similar_name TEXT NOT NULL,
+                        similar_oracle_id TEXT,
+                        PRIMARY KEY (oracle_id, similar_rank),
+                        FOREIGN KEY (oracle_id)
+                            REFERENCES card_similar_snapshots(oracle_id)
+                            ON DELETE CASCADE
+                    ) WITHOUT ROWID;
                     """
                 )
                 existing = connection.execute(
                     "SELECT value FROM metadata WHERE key = 'schema_version'"
                 ).fetchone()
-                if existing is not None and int(existing[0]) not in {1, _SCHEMA_VERSION}:
+                # Every version so far only ever added tables, so an older sidecar is
+                # upgraded in place by the statements above rather than discarded.
+                if existing is not None and int(existing[0]) not in {1, 2, _SCHEMA_VERSION}:
                     raise EdhrecCatalogUnavailable("Unsupported EDHREC cache schema")
                 connection.execute(
                     """
@@ -473,12 +609,17 @@ class EdhrecCommanderService:
         card_catalog: SQLiteCardCatalog,
         client: EdhrecJsonClient,
         refresh_after_days: int,
+        similar_refresh_after_days: int | None = None,
     ) -> None:
         self._cache = cache
         self._card_catalog = card_catalog
         self._client = client
         self._refresh_after_days = refresh_after_days
+        # Similar-card lists outlive commander pages by a wide margin; falling back to
+        # the commander window keeps existing callers working without a behaviour jump.
+        self._similar_refresh_after_days = similar_refresh_after_days or refresh_after_days
         self._locks: dict[tuple[UUID, str | None], asyncio.Lock] = {}
+        self._similar_locks: dict[UUID, asyncio.Lock] = {}
 
     async def context_for(self, commander_oracle_id: UUID) -> EdhrecCommanderContext:
         """Return the selected commander and its available EDHREC themes."""
@@ -616,6 +757,101 @@ class EdhrecCommanderService:
             except (OSError, sqlite3.Error, EdhrecCatalogUnavailable) as exc:
                 raise EdhrecCatalogUnavailable("EDHREC cache could not be written") from exc
             return EdhrecCommanderRanking(associations=associations, source="network")
+
+    async def similar_cards_for(self, oracle_id: UUID) -> EdhrecSimilarCardList:
+        """Return EDHREC's similar-card list for one card, fetching at most once.
+
+        The names are cached for `similar_refresh_after_days`, which is long because
+        a similar-card list is functional and only moves when new cards are printed.
+        Their resolution to Oracle identities is **not** cached with them: it depends
+        on the local catalog, so it is re-derived on every read and a catalog sync
+        repairs a name that could not be resolved before.
+        """
+
+        card = await self._card_catalog.card_by_oracle_id(str(oracle_id))
+        if card is None:
+            raise EdhrecCatalogUnavailable("The selected card is not in the catalog")
+        slug = edhrec_slug(card.name)
+
+        lock = self._similar_locks.setdefault(oracle_id, asyncio.Lock())
+        async with lock:
+            now = datetime.now(UTC)
+            try:
+                cached = await asyncio.to_thread(
+                    self._cache.load_similar_fresh,
+                    oracle_id,
+                    refresh_after_days=self._similar_refresh_after_days,
+                    now=now,
+                )
+            except (OSError, sqlite3.Error, ValueError, EdhrecCatalogUnavailable) as exc:
+                raise EdhrecCatalogUnavailable("EDHREC cache could not be read") from exc
+            if cached is not None:
+                return await self._resolve_similar_names(
+                    oracle_id,
+                    [suggestion.name for suggestion in cached.suggestions],
+                    source="cache",
+                )
+
+            try:
+                page = await asyncio.to_thread(self._client.fetch_card, slug)
+            except EdhrecUnavailable as exc:
+                _LOGGER.warning("EDHREC card fetch failed for %s: %s", card.name, exc)
+                raise EdhrecCatalogUnavailable("EDHREC similar cards could not be fetched") from exc
+
+            try:
+                resolved = await self._resolve_similar_names(
+                    oracle_id,
+                    list(page.similar_names),
+                    source="network",
+                )
+            except Exception as exc:
+                _LOGGER.warning("EDHREC card normalization failed for %s: %s", card.name, exc)
+                raise EdhrecCatalogUnavailable(
+                    "EDHREC similar cards could not be normalized"
+                ) from exc
+
+            try:
+                await asyncio.to_thread(
+                    self._cache.save_similar,
+                    oracle_id=oracle_id,
+                    card_name=card.name,
+                    card_slug=slug,
+                    fetched_at=now,
+                    raw_json=page.raw_json,
+                    suggestions=resolved.suggestions,
+                )
+            except (OSError, sqlite3.Error, EdhrecCatalogUnavailable) as exc:
+                raise EdhrecCatalogUnavailable("EDHREC cache could not be written") from exc
+            return resolved
+
+    async def _resolve_similar_names(
+        self,
+        oracle_id: UUID,
+        names: list[str],
+        *,
+        source: Literal["cache", "network"],
+    ) -> EdhrecSimilarCardList:
+        """Attach local Oracle identities to EDHREC's ranked, identifier-free names."""
+
+        resolved = await self._card_catalog.oracle_ids_by_names(names)
+        return EdhrecSimilarCardList(
+            oracle_id=oracle_id,
+            suggestions=tuple(
+                EdhrecSimilarSuggestion(
+                    rank=rank,
+                    name=name,
+                    # A page occasionally lists the card it belongs to; pointing a card
+                    # at itself is never a useful suggestion, so it stays unresolved.
+                    oracle_id=(
+                        None
+                        if resolved.get(name.casefold()) == oracle_id
+                        else resolved.get(name.casefold())
+                    ),
+                )
+                for rank, name in enumerate(names, start=1)
+            ),
+            source=source,
+        )
 
 
 def _is_fresh_timestamp(value: str, cutoff: datetime) -> bool:

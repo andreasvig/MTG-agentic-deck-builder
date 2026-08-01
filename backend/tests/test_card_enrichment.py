@@ -115,6 +115,12 @@ def test_card_enrichment_endpoint_returns_grouped_local_tagger_data() -> None:
         ],
         "references": [],
         "referenced_by": [],
+        "upgrades": [],
+        "downgrades": [],
+        "variants": [],
+        "creature_versions": [],
+        "spell_versions": [],
+        "related_cards": [],
     }
 
 

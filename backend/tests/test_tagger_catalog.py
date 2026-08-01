@@ -66,14 +66,18 @@ def relationship_edge(
     related_id: str,
     related_name: str,
     classifier: str = "SIMILAR_TO",
+    classifier_inverse: str | None = None,
     foreign_key: str = "oracleId",
 ) -> TaggerEdge:
+    # Tagger publishes a genuine inverse for its asymmetric classifiers, so the
+    # default is only correct for the symmetric ones such as `SIMILAR_TO`; pass
+    # `classifier_inverse` explicitly for anything directional.
     return TaggerEdge.model_validate(
         {
             "id": edge_id,
             "type": "RELATIONSHIP",
             "classifier": classifier,
-            "classifierInverse": classifier,
+            "classifierInverse": classifier_inverse or classifier,
             "namespace": "card" if foreign_key == "oracleId" else "artwork",
             "subjectId": subject_id,
             "subjectName": subject_name,
@@ -337,6 +341,136 @@ def test_reader_groups_tags_similar_cards_and_reference_directions(
     assert catalog.oracle_ids_for_tags(["tag-rainbow", "tag-painland"]) == {
         UUID(city_id),
     }
+
+
+def test_reader_groups_strictness_variant_and_body_relationships(tmp_path: Path) -> None:
+    """Every classifier Tagger publishes reaches a group, read from either side."""
+
+    bolt_id = "4457ed35-7c10-48c8-9776-456485fdf070"
+    strike_id = "9d5ec2c2-1b2a-4d1e-9f4b-3c2f8f6de001"
+    entomb_id = "7a1f0f1a-7d6c-4a2e-9c3e-9de3a0dd4b02"
+    entomber_id = "2b1c9d24-53f4-4c07-8fa2-1c6d59f10a03"
+    shifted_id = "5e8c4a6b-2f10-4d38-8c19-7a2b6f4c9d04"
+    kin_id = "8f3d2e17-9b45-4c62-a0d8-4e5f1c7b8a05"
+    target = tmp_path / "tagger.sqlite3"
+    source = FakeTaggerSource(
+        {
+            ("RELATIONSHIP", 1): edge_page(
+                1,
+                1,
+                [
+                    # Stated from the stronger card, which is the highlighted one.
+                    relationship_edge(
+                        "relationship-better",
+                        subject_id=bolt_id,
+                        subject_name="Lightning Bolt",
+                        related_id=strike_id,
+                        related_name="Lightning Strike",
+                        classifier="BETTER_THAN",
+                        classifier_inverse="WORSE_THAN",
+                    ),
+                    # Stated from the creature, which here is the *other* card, so
+                    # this edge only groups correctly if it is read backwards.
+                    relationship_edge(
+                        "relationship-body",
+                        subject_id=entomber_id,
+                        subject_name="Vile Entomber",
+                        related_id=entomb_id,
+                        related_name="Entomb",
+                        classifier="WITH_BODY",
+                        classifier_inverse="WITHOUT_BODY",
+                    ),
+                    relationship_edge(
+                        "relationship-colorshifted",
+                        subject_id=shifted_id,
+                        subject_name="Mind Rot",
+                        related_id=bolt_id,
+                        related_name="Lightning Bolt",
+                        classifier="COLORSHIFTED",
+                    ),
+                    relationship_edge(
+                        "relationship-related",
+                        subject_id=bolt_id,
+                        subject_name="Lightning Bolt",
+                        related_id=kin_id,
+                        related_name="Bolt Kin",
+                        classifier="RELATED_TO",
+                    ),
+                ],
+            ),
+        },
+    )
+    TaggerCatalogSync(
+        target=target,
+        source=source,
+        concurrent_requests=1,
+        refresh_after_hours=24,
+    ).sync()
+    catalog = SQLiteTaggerCatalog(target)
+
+    bolt = catalog.card_enrichment(UUID(bolt_id))
+    entomb = catalog.card_enrichment(UUID(entomb_id))
+
+    assert [card.name for card in bolt.downgrades] == ["Lightning Strike"]
+    assert bolt.upgrades == []
+    assert [card.name for card in bolt.variants] == ["Mind Rot"]
+    assert [card.name for card in bolt.related_cards] == ["Bolt Kin"]
+    # Read from the other end, the same strictness edge has to flip groups.
+    assert [card.name for card in catalog.card_enrichment(UUID(strike_id)).upgrades] == [
+        "Lightning Bolt"
+    ]
+    assert [card.name for card in entomb.creature_versions] == ["Vile Entomber"]
+    assert entomb.spell_versions == []
+    assert [card.name for card in catalog.card_enrichment(UUID(entomber_id)).spell_versions] == [
+        "Entomb"
+    ]
+
+
+def test_reader_inverts_relationships_without_trusting_the_published_inverse(
+    tmp_path: Path,
+) -> None:
+    """Inversion comes from the local table, not from whatever Tagger published.
+
+    A missing inverse still has to work, and a wrong one must not be able to show a
+    card's upgrades as its downgrades.
+    """
+
+    better_id = "b1de2c33-5a6f-4e71-9c08-2d4a7f5e6b06"
+    worse_id = "c2ef3d44-6b70-4f82-8d19-3e5b8a6f7c07"
+    target = tmp_path / "tagger.sqlite3"
+    edge = relationship_edge(
+        "relationship-better-bad-inverse",
+        subject_id=better_id,
+        subject_name="Counterspell",
+        related_id=worse_id,
+        related_name="Nullify",
+        classifier="BETTER_THAN",
+        # Both wrong: absent, and then self-inverse the way the feed must not be read.
+        classifier_inverse="BETTER_THAN",
+    )
+    source = FakeTaggerSource(
+        {
+            ("RELATIONSHIP", 1): edge_page(
+                1,
+                1,
+                [edge, edge.model_copy(update={"classifier_inverse": None})],
+            ),
+        },
+    )
+    TaggerCatalogSync(
+        target=target,
+        source=source,
+        concurrent_requests=1,
+        refresh_after_hours=24,
+    ).sync()
+    catalog = SQLiteTaggerCatalog(target)
+
+    assert [card.name for card in catalog.card_enrichment(UUID(worse_id)).upgrades] == [
+        "Counterspell"
+    ]
+    assert [card.name for card in catalog.card_enrichment(UUID(better_id)).downgrades] == [
+        "Nullify"
+    ]
 
 
 def test_reader_reports_a_missing_sidecar() -> None:

@@ -6,12 +6,12 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from fastapi.concurrency import run_in_threadpool
-from pydantic import BaseModel, ConfigDict
 
 from mtg_deck_builder.agentic_card_search import (
     AgenticCardSearchService,
     AgenticCardSearchUnavailable,
 )
+from mtg_deck_builder.api.errors import PublicError, PublicErrorResponse
 from mtg_deck_builder.card_catalog import SQLiteCardCatalog
 from mtg_deck_builder.domain import (
     AgenticCardSearchRequest,
@@ -25,8 +25,9 @@ from mtg_deck_builder.domain import (
     ColorMatchMode,
     EdhrecCommanderContext,
     EdhrecDeckTheme,
+    EdhrecSimilarCard,
+    EdhrecSimilarCards,
     MagicColor,
-    SearchDebugSummary,
 )
 from mtg_deck_builder.edhrec_catalog import (
     EdhrecCatalogUnavailable,
@@ -45,24 +46,6 @@ from mtg_deck_builder.tagger_catalog import (
 )
 
 router = APIRouter(prefix="/cards", tags=["cards"])
-
-
-class PublicError(BaseModel):
-    """Stable public error information for card-search clients."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    code: str
-    message: str
-    debug: SearchDebugSummary | None = None
-
-
-class PublicErrorResponse(BaseModel):
-    """FastAPI's standard error envelope with a typed detail object."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    detail: PublicError
 
 
 def get_card_search_provider(request: Request) -> CardSearchProvider:
@@ -429,8 +412,7 @@ async def get_commander_edhrec_context(
             status="unavailable",
             commander_oracle_id=oracle_id,
             message=(
-                "EDHREC commander themes could not be fetched. "
-                "Local card search still works."
+                "EDHREC commander themes could not be fetched. Local card search still works."
             ),
         )
     return EdhrecCommanderContext(
@@ -445,6 +427,42 @@ async def get_commander_edhrec_context(
                 deck_count=theme.deck_count,
             )
             for theme in context.themes
+        ],
+    )
+
+
+@router.get("/{oracle_id}/edhrec/similar", response_model=EdhrecSimilarCards)
+async def get_card_edhrec_similar(
+    oracle_id: UUID,
+    service: Annotated[EdhrecCommanderService | None, Depends(get_edhrec_service)],
+) -> EdhrecSimilarCards:
+    """Return EDHREC's similar-card list without making card display depend on it."""
+
+    if service is None:
+        return EdhrecSimilarCards(
+            status="unavailable",
+            oracle_id=oracle_id,
+            message="EDHREC enhancement is disabled. Local card search still works.",
+        )
+    try:
+        similar = await service.similar_cards_for(oracle_id)
+    except EdhrecCatalogUnavailable:
+        return EdhrecSimilarCards(
+            status="unavailable",
+            oracle_id=oracle_id,
+            message="EDHREC similar cards could not be fetched.",
+        )
+    return EdhrecSimilarCards(
+        status="applied",
+        source=similar.source,
+        oracle_id=oracle_id,
+        cards=[
+            EdhrecSimilarCard(
+                rank=suggestion.rank,
+                name=suggestion.name,
+                oracle_id=suggestion.oracle_id,
+            )
+            for suggestion in similar.suggestions
         ],
     )
 

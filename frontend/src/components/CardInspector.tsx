@@ -22,6 +22,7 @@ import {
 import { apiClient, type ApiClient } from "../lib/api";
 import { CardArt } from "./CardArt";
 import { CardEnrichmentPanel } from "./CardEnrichmentPanel";
+import { CardText } from "./CardText";
 
 interface CardInspectorProps {
   card: CardSearchResult | null;
@@ -151,7 +152,9 @@ export function CardInspector({
             <div className="card-inspector-title">
               <div>
                 <h2>{card.name}</h2>
-                <span className="mana-line">{card.mana_cost}</span>
+                <span className="mana-line">
+                  <CardText text={card.mana_cost} />
+                </span>
               </div>
               <a
                 className="icon-button icon-button--compact"
@@ -166,12 +169,16 @@ export function CardInspector({
             </div>
             <p className="type-line">{card.type_line}</p>
             <p className="oracle-text">
-              {card.oracle_text ??
-                card.card_faces
-                  .map((face) =>
-                    [face.name, face.oracle_text].filter(Boolean).join("\n"),
-                  )
-                  .join("\n\n")}
+              <CardText
+                text={
+                  card.oracle_text ??
+                  card.card_faces
+                    .map((face) =>
+                      [face.name, face.oracle_text].filter(Boolean).join("\n"),
+                    )
+                    .join("\n\n")
+                }
+              />
             </p>
             <CardEnrichmentPanel
               key={card.oracle_id}

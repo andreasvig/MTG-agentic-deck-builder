@@ -389,3 +389,68 @@ def test_failed_import_preserves_the_installed_database(tmp_path: Path) -> None:
 
     assert target.read_bytes() == installed
     assert SQLiteCardCatalog(target).metadata()["source_updated_at"] == "first"
+
+
+def test_name_resolution_ignores_case_and_matches_a_front_face(tmp_path: Path) -> None:
+    """EDHREC publishes names, not identifiers, and does not match Scryfall's casing."""
+
+    target = tmp_path / "cards.sqlite3"
+    importer(target).import_stream(
+        io.BytesIO(
+            json.dumps(
+                [
+                    card_payload("Kodama's Reach"),
+                    card_payload("Aang, Swift Savior // Aang and La, Ocean's Fury"),
+                    card_payload("Forest"),
+                ]
+            ).encode()
+        ),
+        source_updated_at="2026-07-31T00:00:00+00:00",
+        source_uri="https://data.scryfall.test/default.json",
+    )
+    catalog = SQLiteCardCatalog(target)
+
+    resolved = asyncio.run(
+        catalog.oracle_ids_by_names(
+            [
+                "kodama's reach",
+                # Only the front face, which is how another source would name it.
+                "Aang, Swift Savior",
+                "Nissa's Pilgrimage",
+                "  ",
+            ]
+        )
+    )
+
+    assert set(resolved) == {"kodama's reach", "aang, swift savior"}
+    assert resolved["kodama's reach"] == UUID(str(uuid5(_NAMESPACE, "oracle:Kodama's Reach")))
+    assert resolved["aang, swift savior"] == UUID(
+        str(uuid5(_NAMESPACE, "oracle:Aang, Swift Savior // Aang and La, Ocean's Fury"))
+    )
+    assert asyncio.run(catalog.oracle_ids_by_names([])) == {}
+
+
+def test_name_resolution_treats_wildcards_as_literal_characters(tmp_path: Path) -> None:
+    """A `%` in a lookup must not match a card through the front-face `LIKE`.
+
+    The catalog has to contain a double-faced card for this to bite: unescaped, the
+    fallback becomes `LIKE '% // %'`, which matches every split name there is.
+    """
+
+    target = tmp_path / "cards.sqlite3"
+    importer(target).import_stream(
+        io.BytesIO(
+            json.dumps(
+                [
+                    card_payload("Forest"),
+                    card_payload("Aang, Swift Savior // Aang and La, Ocean's Fury"),
+                ]
+            ).encode()
+        ),
+        source_updated_at="2026-07-31T00:00:00+00:00",
+        source_uri="https://data.scryfall.test/default.json",
+    )
+    catalog = SQLiteCardCatalog(target)
+
+    assert asyncio.run(catalog.oracle_ids_by_names(["%"])) == {}
+    assert asyncio.run(catalog.oracle_ids_by_names(["_ang, Swift Savior"])) == {}

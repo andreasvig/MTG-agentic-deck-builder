@@ -45,6 +45,7 @@ import {
   UNASSIGNED_GROUP_ID,
 } from "../domain/deck";
 import { CardArt } from "./CardArt";
+import { CardText } from "./CardText";
 
 export type ViewMode = "visual" | "list";
 export type GroupMode = "custom" | "type";
@@ -651,7 +652,9 @@ function ListRow({
       </button>
       <span className="list-type">{card.type_line}</span>
       <span>{groupName(groupIdForEntry(entry, customGroups), customGroups)}</span>
-      <span className="mana-line">{card.mana_cost || "—"}</span>
+      <span className="mana-line">
+        <CardText text={card.mana_cost} fallback="—" />
+      </span>
       <span>{formatEuro(getCardPrice(card) * entry.quantity, "—")}</span>
       <div className="list-actions">
         {dragEnabled ? (

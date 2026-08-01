@@ -147,6 +147,20 @@ class SQLiteCardCatalog:
         except (OSError, sqlite3.Error, ValueError) as exc:
             raise CardSearchUnavailable from exc
 
+    async def oracle_ids_by_names(self, names: list[str]) -> dict[str, UUID]:
+        """Resolve exact printed card names to stable Oracle identities.
+
+        Returned keys are case-folded, because the caller is matching names from a
+        source that does not agree with Scryfall on capitalization.
+        """
+
+        if not names:
+            return {}
+        try:
+            return await asyncio.to_thread(self._read_oracle_ids_by_names, names)
+        except (OSError, sqlite3.Error, ValueError) as exc:
+            raise CardSearchUnavailable from exc
+
     def metadata(self) -> dict[str, str]:
         """Read catalog metadata without loading card payloads."""
 
@@ -176,6 +190,43 @@ class SQLiteCardCatalog:
                 for card_json, aliases_json in rows
             )
 
+    def _read_oracle_ids_by_names(self, names: list[str]) -> dict[str, UUID]:
+        wanted = {name.casefold(): name.strip() for name in names if name.strip()}
+        if not wanted:
+            return {}
+        resolved: dict[str, UUID] = {}
+        keys = list(wanted)
+        with _read_only_connection(self.path) as connection:
+            for start in range(0, len(keys), 500):
+                chunk = keys[start : start + 500]
+                placeholders = ",".join("?" for _ in chunk)
+                rows = connection.execute(
+                    f"""
+                    SELECT name, oracle_id
+                    FROM cards
+                    WHERE name COLLATE NOCASE IN ({placeholders})
+                    """,
+                    chunk,
+                )
+                for name, oracle_id in rows:
+                    resolved.setdefault(name.casefold(), UUID(oracle_id))
+            # A double-faced card is catalogued under its full `front // back` name,
+            # so a source naming only the front face is matched on that prefix.
+            for key in [key for key in keys if key not in resolved]:
+                row = connection.execute(
+                    """
+                    SELECT oracle_id
+                    FROM cards
+                    WHERE name LIKE ? ESCAPE '\\'
+                    ORDER BY name COLLATE NOCASE
+                    LIMIT 1
+                    """,
+                    (f"{_escape_like(wanted[key])} // %",),
+                ).fetchone()
+                if row is not None:
+                    resolved[key] = UUID(row[0])
+        return resolved
+
     def _read_oracle_ids_by_scryfall_ids(
         self,
         scryfall_ids: list[UUID],
@@ -195,10 +246,7 @@ class SQLiteCardCatalog:
                     [str(scryfall_id) for scryfall_id in chunk],
                 )
                 resolved.update(
-                    {
-                        UUID(scryfall_id): UUID(oracle_id)
-                        for scryfall_id, oracle_id in rows
-                    }
+                    {UUID(scryfall_id): UUID(oracle_id) for scryfall_id, oracle_id in rows}
                 )
         return resolved
 
@@ -345,6 +393,12 @@ def normalize_card_title(value: str) -> str:
     import re
 
     return re.sub(r"[^a-z0-9]+", " ", value.casefold()).strip()
+
+
+def _escape_like(value: str) -> str:
+    """Neutralize SQL `LIKE` wildcards so a card name matches only itself."""
+
+    return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
 
 def _is_line_delimited(source_uri: str) -> bool:

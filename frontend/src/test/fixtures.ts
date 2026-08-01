@@ -1,8 +1,33 @@
 import type {
+  CardEnrichment,
   CardSearchPage,
   CardSearchResult,
   SearchDebugSummary,
 } from "../domain/card";
+
+/**
+ * A complete but empty enrichment payload. Build partial fixtures by spreading
+ * this, so adding a relationship group to the contract cannot leave a test stub
+ * missing a list the component reads.
+ */
+export function emptyEnrichment(
+  overrides: Partial<CardEnrichment> = {},
+): CardEnrichment {
+  return {
+    oracle_id: "oracle-sol-ring",
+    tags: [],
+    similar_cards: [],
+    references: [],
+    referenced_by: [],
+    upgrades: [],
+    downgrades: [],
+    variants: [],
+    creature_versions: [],
+    spell_versions: [],
+    related_cards: [],
+    ...overrides,
+  };
+}
 
 export const solRing: CardSearchResult = {
   oracle_id: "oracle-sol-ring",
@@ -132,6 +157,7 @@ export function searchDebugSummary(): SearchDebugSummary {
     log_path: "local-data/search-debug.jsonl",
     log_written: true,
     total_duration_ms: 83.2,
+    total_cost_usd: null,
     stages: [
       {
         name: "Local fuzzy title ranking",
@@ -249,6 +275,7 @@ export function failedAgentSearchDebugSummary(): SearchDebugSummary {
     log_path: "local-data/search-debug.jsonl",
     log_written: true,
     total_duration_ms: 870.3,
+    total_cost_usd: 0.0031,
     stages,
     trace: {
       schema_version: 2,

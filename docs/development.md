@@ -45,6 +45,7 @@ The runner requires both default ports to be free.
 | `npm run setup` | Install backend and frontend dependencies |
 | `npm run catalog:sync` | Refresh the local Scryfall card catalog |
 | `npm run tagger:sync` | Refresh the optional local Tagger details/filter sidecar |
+| `npm run symbols:sync` | Refresh the committed mana and ability symbol artwork |
 | `npm run dev` | Start Vite and reload-enabled Uvicorn |
 | `npm test` | Backend tests, frontend tests, and process smoke test |
 | `npm run build` | Type-check and build the frontend |

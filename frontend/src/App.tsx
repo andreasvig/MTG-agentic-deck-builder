@@ -1,6 +1,7 @@
 import {
   AlertTriangle,
   Boxes,
+  Bug,
   Columns3,
   Command,
   LayoutGrid,
@@ -9,14 +10,16 @@ import {
   MoreHorizontal,
   Pencil,
   Plus,
+  Settings2,
   Trash2,
   Undo2,
   WandSparkles,
   X,
 } from "lucide-react";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { CardInspector } from "./components/CardInspector";
+import { DeckAgentPanel } from "./components/DeckAgentPanel";
 import {
   DeckBoard,
   type GroupMode,
@@ -27,10 +30,14 @@ import { DeleteDeckDialog } from "./components/DeleteDeckDialog";
 import { SearchDrawer } from "./components/SearchDrawer";
 import type { CardSearchResult, CardTagFilter } from "./domain/card";
 import { formatEuro, getCardImage } from "./domain/card";
+import { toDeckSnapshot } from "./domain/agent";
 import {
+  UNASSIGNED_GROUP_ID,
   groupIdForEntry,
+  groupName,
 } from "./domain/deck";
 import { useBackendHealth } from "./hooks/useBackendHealth";
+import { useDebugMode } from "./hooks/useDebugMode";
 import { useDeck } from "./hooks/useDeck";
 import { useMediaQuery } from "./hooks/useMediaQuery";
 
@@ -67,6 +74,7 @@ function App() {
     undo,
   } = useDeck();
   const { health } = useBackendHealth();
+  const [debugEnabled, setDebugEnabled] = useDebugMode();
   const isMobile = useMediaQuery("(max-width: 860px)");
   const [view, setView] = useState<ViewMode>("visual");
   const [group, setGroup] = useState<GroupMode>("type");
@@ -76,6 +84,20 @@ function App() {
   const [selectedCard, setSelectedCard] = useState<CardSearchResult | null>(null);
   const [renamingDeck, setRenamingDeck] = useState(false);
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  // What the deck agent's tools read. Rebuilt from the deck rather than held
+  // separately, so a card added mid-conversation is visible on the next question.
+  const deckSnapshot = useMemo(
+    () =>
+      toDeckSnapshot(deck.name, deck.cards, (entry) => {
+        const groupId = groupIdForEntry(entry, deck.custom_groups);
+        return groupId === UNASSIGNED_GROUP_ID
+          ? undefined
+          : groupName(groupId, deck.custom_groups);
+      }),
+    [deck.cards, deck.custom_groups, deck.name],
+  );
+
   const [deckNameDraft, setDeckNameDraft] = useState(deck.name);
   const returnFocus = useRef<HTMLElement | null>(null);
   const nextSearchRequestId = useRef(1);
@@ -518,6 +540,38 @@ function App() {
           >
             <Undo2 aria-hidden="true" size={17} />
           </button>
+          <div className="interface-settings">
+            <button
+              className={`icon-button ${settingsOpen ? "is-active" : ""}`}
+              type="button"
+              aria-label="Settings"
+              aria-expanded={settingsOpen}
+              title="Settings"
+              onClick={() => setSettingsOpen((open) => !open)}
+            >
+              <Settings2 aria-hidden="true" size={17} />
+            </button>
+            {settingsOpen ? (
+              <div className="interface-settings__panel" aria-label="Settings">
+                <label>
+                  <span>
+                    <Bug aria-hidden="true" size={15} />
+                    Debug mode
+                  </span>
+                  <input
+                    type="checkbox"
+                    role="switch"
+                    aria-label="Debug mode"
+                    checked={debugEnabled}
+                    onChange={(event) => setDebugEnabled(event.target.checked)}
+                  />
+                </label>
+                <small>
+                  Shows the search trace and what each agent call costs.
+                </small>
+              </div>
+            ) : null}
+          </div>
         </div>
 
         <div className="workspace-body">
@@ -551,6 +605,12 @@ function App() {
               onRemove={removeCard}
             />
           </section>
+          <DeckAgentPanel
+            debugEnabled={debugEnabled}
+            deckId={deck.id}
+            deck={deckSnapshot}
+            onOpenCard={setSelectedCard}
+          />
         </div>
       </main>
 
@@ -630,6 +690,7 @@ function App() {
           targetLabel={searchRequest.targetLabel}
           entries={deck.cards}
           suspended={selectedCard !== null}
+          debugEnabled={debugEnabled}
           onAdd={addCard}
           onOpenCard={setSelectedCard}
           onSetQuantity={setQuantity}

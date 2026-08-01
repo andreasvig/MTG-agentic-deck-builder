@@ -8,6 +8,23 @@ import {
 } from "../test/fixtures";
 import { ApiError, createApiClient } from "./api";
 
+/** A server-sent-event response body, delivered in the chunks given. */
+function sseResponse(chunks: string[]): Response {
+  const encoder = new TextEncoder();
+  const body = new ReadableStream<Uint8Array>({
+    start(controller) {
+      for (const chunk of chunks) {
+        controller.enqueue(encoder.encode(chunk));
+      }
+      controller.close();
+    },
+  });
+  return new Response(body, {
+    status: 200,
+    headers: { "Content-Type": "text/event-stream" },
+  });
+}
+
 describe("API client", () => {
   it("requests and validates health from the configured API", async () => {
     const fetcher = vi.fn<typeof fetch>().mockResolvedValue(
@@ -50,6 +67,12 @@ describe("API client", () => {
         referenced_by: [
           { oracle_id: "oracle-joke", name: "City of Ass" },
         ],
+        upgrades: [],
+        downgrades: [],
+        variants: [],
+        creature_versions: [],
+        spell_versions: [],
+        related_cards: [],
       }),
     );
     const client = createApiClient("http://localhost:9999/api/v1/", fetcher);
@@ -410,6 +433,242 @@ describe("API client", () => {
       },
     });
   });
+
+
+
+
+  it("posts the open deck and reads back the tools the agent ran", async () => {
+    const deck = {
+      name: "Ghalta Stompy",
+      cards: [
+        {
+          scryfall_id: "aaaaaaaa-2222-4222-8222-222222222222",
+          quantity: 1,
+          section: "mainboard" as const,
+          group: "Ramp",
+        },
+      ],
+    };
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValue(
+      sseResponse([
+        `data: ${JSON.stringify({
+          type: "done",
+          reply: {
+            message: { role: "assistant", content: "You are light on ramp." },
+            model: "openai/gpt-5.6-luna",
+            replayed_message_count: 1,
+            cost_usd: 0.0009,
+            unpriced_call_count: 1,
+            tool_calls: [
+              { name: "read_deck", signature: "read_deck()", ok: true, detail: null },
+              {
+                name: "see_cards",
+                signature: "see_cards(Sol Ring · rules)",
+                ok: false,
+                detail: "catalog unavailable",
+              },
+            ],
+          },
+        })}\n\n`,
+      ]),
+    );
+
+    const reply = await createApiClient(
+      "http://localhost/api/v1",
+      fetcher,
+    ).streamDeckAgentChat?.(
+      [{ role: "user", content: "What am I missing?" }],
+      deck,
+      { onText: () => {}, onToolCall: () => {} },
+    );
+
+    // A turn taken with debug off reports no payloads, and absent is normalized to
+    // null rather than to an empty call or an empty result.
+    expect(reply?.tool_calls).toEqual([
+      {
+        name: "read_deck",
+        signature: "read_deck()",
+        ok: true,
+        detail: null,
+        arguments_json: null,
+        result: null,
+      },
+      {
+        name: "see_cards",
+        signature: "see_cards(Sol Ring · rules)",
+        ok: false,
+        detail: "catalog unavailable",
+        arguments_json: null,
+        result: null,
+      },
+    ]);
+    expect(reply?.unpriced_call_count).toBe(1);
+    // The backend holds no deck, so the snapshot has to be in the request body.
+    expect(fetcher).toHaveBeenCalledWith(
+      "http://localhost/api/v1/agent/chat/stream",
+      expect.objectContaining({
+        body: JSON.stringify({
+          messages: [{ role: "user", content: "What am I missing?" }],
+          deck,
+          debug: false,
+        }),
+      }),
+    );
+  });
+
+  it("rejects a finished turn that is not usable", async () => {
+    const unusable = [
+      // A tool call missing its signature: the chat would have nothing to show.
+      {
+        message: { role: "assistant", content: "Play Sol Ring." },
+        model: "openai/gpt-5.6-luna",
+        replayed_message_count: 1,
+        cost_usd: 0.000222,
+        tool_calls: [{ name: "read_deck" }],
+      },
+      // An empty answer is a successful response with nothing in it.
+      {
+        message: { role: "assistant", content: "" },
+        model: "openai/gpt-5.6-luna",
+        replayed_message_count: 1,
+        cost_usd: null,
+      },
+    ];
+
+    for (const invalid of unusable) {
+      const fetcher = vi
+        .fn<typeof fetch>()
+        .mockResolvedValue(
+          sseResponse([`data: ${JSON.stringify({ type: "done", reply: invalid })}\n\n`]),
+        );
+
+      await expect(
+        createApiClient("http://localhost/api/v1", fetcher).streamDeckAgentChat?.(
+          [{ role: "user", content: "Best ramp?" }],
+          null,
+          { onText: () => {}, onToolCall: () => {} },
+        ),
+      ).rejects.toEqual(new ApiError("The deck agent response was invalid.", 502));
+    }
+  });
+
+  it("streams a turn's progress and returns the reply it finished with", async () => {
+    const collected: string[] = [];
+    const tools: string[] = [];
+    // Deliberately split mid-frame: a chunk boundary is not an event boundary, and
+    // a reader that assumed it was would drop half a turn.
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValue(
+      sseResponse([
+        'data: {"type": "tool", "call": {"name": "read_deck", "signature": "read_deck()", "ok": true, "detail": null}}\n\n',
+        'data: {"type": "text", "content": "Sol "}\n\ndata: {"type": "te',
+        'xt", "content": "Ring."}\n\n',
+        `data: ${JSON.stringify({
+          type: "done",
+          reply: {
+            message: { role: "assistant", content: "Sol Ring." },
+            model: "openai/gpt-5.6-luna",
+            replayed_message_count: 1,
+            cost_usd: 0.0009,
+            unpriced_call_count: 0,
+            tool_calls: [
+              {
+                name: "read_deck",
+                signature: "read_deck()",
+                ok: true,
+                detail: null,
+                arguments_json: "{}",
+                result: "Deck listing",
+              },
+            ],
+          },
+        })}\n\n`,
+      ]),
+    );
+
+    const reply = await createApiClient(
+      "http://localhost/api/v1",
+      fetcher,
+    ).streamDeckAgentChat?.(
+      [{ role: "user", content: "What am I missing?" }],
+      null,
+      {
+        onText: (content) => collected.push(content),
+        onToolCall: (call) => tools.push(call.signature),
+      },
+      undefined,
+      true,
+    );
+
+    expect(collected).toEqual(["Sol ", "Ring."]);
+    expect(tools).toEqual(["read_deck()"]);
+    // The finished reply is the same shape the JSON route returns, payloads included.
+    expect(reply?.cost_usd).toBe(0.0009);
+    expect(reply?.tool_calls[0].result).toBe("Deck listing");
+    expect(fetcher).toHaveBeenCalledWith(
+      "http://localhost/api/v1/agent/chat/stream",
+      expect.objectContaining({
+        method: "POST",
+        headers: expect.objectContaining({ Accept: "text/event-stream" }),
+        body: JSON.stringify({
+          messages: [{ role: "user", content: "What am I missing?" }],
+          debug: true,
+        }),
+      }),
+    );
+  });
+
+  it("raises an error event as the failure it is", async () => {
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValue(
+      sseResponse([
+        'data: {"type": "text", "content": "Sol "}\n\n',
+        'data: {"type": "error", "code": "deck_agent_contract_error", "message": "The deck agent did not answer. Please try again."}\n\n',
+      ]),
+    );
+
+    // A 200 was already sent, so the failure arrives in-band — and must still reach
+    // the caller as a failure rather than as a turn that quietly produced nothing.
+    await expect(
+      createApiClient("http://localhost/api/v1", fetcher).streamDeckAgentChat?.(
+        [{ role: "user", content: "Best ramp?" }],
+        null,
+        { onText: () => {}, onToolCall: () => {} },
+      ),
+    ).rejects.toThrow("The deck agent did not answer. Please try again.");
+  });
+
+  it("rejects a stream that stopped before the turn was finished", async () => {
+    const fetcher = vi
+      .fn<typeof fetch>()
+      .mockResolvedValue(sseResponse(['data: {"type": "text", "content": "Sol "}\n\n']));
+
+    await expect(
+      createApiClient("http://localhost/api/v1", fetcher).streamDeckAgentChat?.(
+        [{ role: "user", content: "Best ramp?" }],
+        null,
+        { onText: () => {}, onToolCall: () => {} },
+      ),
+    ).rejects.toThrow("The deck agent did not finish answering.");
+  });
+
+  it("reports an unavailable streaming agent from its HTTP status", async () => {
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValue(
+      Response.json(
+        { detail: { code: "deck_agent_unavailable", message: "Agent switched off." } },
+        { status: 503 },
+      ),
+    );
+
+    await expect(
+      createApiClient("http://localhost/api/v1", fetcher).streamDeckAgentChat?.(
+        [{ role: "user", content: "Best ramp?" }],
+        null,
+        { onText: () => {}, onToolCall: () => {} },
+      ),
+    ).rejects.toThrow("Agent switched off.");
+  });
+
+
+
 
   it("rejects a healthy response from an unrelated service", async () => {
     const fetcher = vi.fn<typeof fetch>().mockResolvedValue(

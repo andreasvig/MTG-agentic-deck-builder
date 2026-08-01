@@ -6,6 +6,23 @@ All notable changes to this project are documented here.
 
 ### Added
 
+- Gave the deck agent a third read-only tool, `search_cards`, so it can find cards
+  that are neither in the deck nor named in the conversation. It reuses the search
+  agent's `LocalCardSearchTool` unchanged and writes every filter itself, including a
+  `commander` object that separates the colour-identity gate (a hard filter) from
+  EDHREC inclusion and synergy (which only sort) — so a question about a commander
+  other than the one in the command zone is a single tool call. Omitting the commander
+  means there is no commander rather than inheriting the open deck's. Results render
+  through the same card block `see_cards` uses — rules text and one EUR estimate —
+  under a two-line header carrying only what the model could not have known: how many
+  cards matched against how many are shown, a colour identity that removed cards, and a
+  missing EDHREC lookup (ADR 0035).
+- Added `themes` to `see_cards`: the deck themes EDHREC tracks for a card as a
+  commander, most played first with the deck count behind each, which are the slugs
+  `search_cards` takes as `commander.edhrec_theme`. Only a card that can legally be a
+  commander has an EDHREC page, so for anything else the detail says so explicitly
+  rather than reporting a bare absence (ADR 0035).
+
 - Built the local-first React, TypeScript, Vite, FastAPI, and Pydantic
   application on development ports `41737` and `43127`.
 - Added a browser-local Commander deck library with deck creation, switching,
@@ -119,7 +136,171 @@ All notable changes to this project are documented here.
   run has, and needs no commander evidence, so a commanderless search orders
   exactly as `semantic` did (ADR 0021).
 
+- Surfaced every card relationship Scryfall Tagger publishes. The reader
+  previously grouped only similar cards and reference directions and discarded
+  10,214 of 18,421 stored edges (55%), including all 8,985 strictness edges. Card
+  details now show Upgrades, Outclasses, Creature versions, Spell versions,
+  Variants and Related cards alongside the existing groups, with direction read
+  from a local inverse table rather than the feed's own `classifierInverse`
+  (ADR 0025). No re-sync or re-embed is needed.
+- Added EDHREC similar cards to card details, fetched per card on demand and
+  cached in the existing EDHREC sidecar (schema 3) under a dedicated
+  `edhrec.similar_refresh_after_days`, 180 days by default, because a functional
+  similar-card list only moves when new cards are printed. EDHREC publishes six
+  names with no identifiers, so names are resolved against the local catalog by
+  exact name with a front-face fallback. That resolution is re-derived on every
+  read rather than cached with the names, so `catalog:sync` repairs a suggestion
+  that could not previously be opened; unresolved names are kept in the stored
+  list but omitted from the interface links (ADR 0026).
+- Added the deck agent to the reserved right side of the workspace: a chat panel
+  with conversation memory and a **Reset chat** control in its header. The
+  transcript lives in the browser and is posted back on every turn, so the
+  backend keeps no chat session and `agent.max_history_messages` is the whole of
+  the agent's memory. Configured under a new top-level `agent:` block in
+  `config.yaml`, on `openai/gpt-5.6-luna` at `xhigh` reasoning effort with a
+  180-second timeout of its own (ADR 0027). Desktop only for now.
+- Gave the deck agent two read-only tools, and made every call it makes visible in
+  the chat as its own small line above the answer — `read_deck()`,
+  `see_cards(Sol Ring, Cultivate · inclusion, tags)` (ADR 0029).
+  - `read_deck()` lists the open deck grouped under each card's primary type, with
+    names, short ids and the custom group each card sits in on screen, and no card
+    text at all — a hundred-card deck with full Oracle text would be a large and
+    mostly irrelevant payload on every turn.
+  - `see_cards(cards, details)` takes names or those short ids and reports only the
+    detail asked for: rules text, daily prices, Scryfall Tagger gameplay tags,
+    EDHREC similar cards, EDHREC inclusion for this deck's commander, or Commander
+    legality. It defaults to rules, so an EDHREC lookup happens only on request.
+  - Both tools only read. The agent still cannot add, remove or move a card, and it
+    has no catalog search of its own.
+  - The backend holds no deck, so the browser now posts a deck snapshot alongside
+    the transcript, carrying identity and placement only. Names, types, rules and
+    prices are resolved from the local catalog rather than trusted from the client,
+    and a printing the catalog does not know is reported rather than dropped.
+  - A turn is up to `agent.tools.max_iterations` rounds of tool use followed by one
+    completion that advertises no tools, so a model that would keep calling them
+    still has to answer. A tool that cannot answer — missing catalog, sidecar or
+    EDHREC page — returns text the model adapts to and a marked line in the chat,
+    rather than failing the turn.
+  - Both tool descriptions live in `config.yaml` under `agent.tools` beside the
+    system prompt, because they are the only thing telling the model when a tool is
+    worth calling.
+- Gave every deck its own saved conversation. Switching decks switches chat, and
+  coming back to a deck comes back to what was already said about it, running spend
+  included; **Reset chat** now clears one deck's conversation and no other's. The
+  store is persisted under `manabase.deck-agent-chats.v1` beside the deck library, so
+  a reload no longer forgets the chat (ADR 0030).
+  - A reply still in flight when the deck changes is abandoned rather than answered
+    into the deck the user has left. Its question stays in the transcript it was asked
+    in, exactly as a failed turn does, so sending again retries it.
+  - The chat store spends a fixed character budget newest-chat-first and
+    newest-turn-first: tool payloads are dropped before turns, turns before the newest
+    conversation, and only the twelve most recently used decks are written at all. The
+    deck library shares the same browser-storage quota and holds every card's full
+    payload, so an unbounded chat store would eventually have stopped *decks* from
+    saving.
+  - The composer's unsent draft belongs to the deck as well: a half-written question
+    about one deck no longer follows the user to the next one, and it survives a reload
+    with the rest of the conversation.
+  - A deleted deck's conversation is deliberately kept, so the delete's **Undo**
+    restores a working chat.
+- Made every card the agent names an actual card. The agent now writes each name in
+  braces, the backend resolves them against the local catalog, and the chat renders
+  them as underlined names: hovering shows the card image, clicking opens the same
+  inspector the deck board uses (ADR 0033).
+  - Resolution is the backend's because braces already mean mana in Magic — the agent
+    quotes rules text, so `{T}` and `{C}{C}` appear in answers, and only the catalog
+    can say that no card is called `T`. It also corrects the agent's casing to the
+    printed name and matches a double-faced card by its front face.
+- Drew mana and ability symbols wherever card text appears instead of printing the
+  notation they are stored as: `{2}{G}{G}` in a deck row, `{T}: Add {G}.` in a rules
+  box, and both in the agent's answers (ADR 0034).
+  - One component renders all of it — deck list, deck board, search results and
+    preview, card inspector, search trace, agent chat — sized in `em`, so a cost reads
+    the same at 9px in a row and at body size in a sentence.
+  - A braced run is a symbol because Scryfall's symbol table lists it, which is what
+    tells `{T}` from `{Sol Ring}` in prose. Anything unlisted is left exactly as
+    written, braces and all, because the meaning of a cost lives in its braces.
+  - `npm run symbols:sync` brings the 84 symbol SVGs and their manifest into the
+    repository, both committed. Rules text is symbol-dense and the whole set is
+    ~360 KB, so it is served from this origin rather than hotlinked — the same
+    sync-once-then-read-offline shape the catalog and Tagger sidecar already use.
+  - A name the catalog does not recognise renders as plain words, never as stray
+    braces, and without the underline that promises a click will do something.
+  - Card links are stored with the transcript, so a restored conversation stays
+    clickable, and images are fetched on hover and cached per message.
+  - `**bold**` and `*italic*` now render instead of showing their asterisks, since
+    turning text into nodes for card names made it a few lines rather than a project.
+- Rewrote how `see_cards` presents a card, since its output is the prompt the model
+  reasons from (ADR 0032). Every field is now labelled and every free-text value
+  quoted — `Name: "Ghalta, Primal Hunger"`, `Types: "Legendary", "Creature"`,
+  `Rules: "Trample"` — instead of one run-on heading the model had to read
+  punctuation to parse, on a card whose own name contains a comma and a dash.
+  - `similar` now reports every related-card list the local data holds, grouped by how
+    the cards relate and labelled the way the card panel already labels them — Upgrades,
+    Similar cards, Creature versions, Spell versions, Outclasses, Variants, Related
+    cards, References. An upgrade is not a variant, so the grouping is the point; empty
+    groups print nothing.
+  - Each card is named once, under the group that says the most about it. Tagger's
+    similar cards and EDHREC's similar cards are merged into one deduplicated list, and
+    a card that is an upgrade, an outclassed card, a variant or another version of this
+    one is dropped from that list and read only under its own heading. Cross-references
+    are deliberately exempt: a card can be both similar and named in the rules text.
+  - The two sources are independent: EDHREC being switched off still leaves Tagger's
+    groups, a missing sidecar still leaves EDHREC's list, and the gap is named once.
+  - Details are reported in one fixed order — rules, legality, prices, tags,
+    inclusion, similar — whatever order they were asked in, so the card's own facts
+    come before the related-card list and a detail asked for twice is reported once.
+    The order is applied in one place, so the tool line in the chat and the body the
+    model reads cannot disagree, and it is checked against `CardDetail` at import
+    because a forgotten detail would silently never be reported.
+  - Only the card-type side of a type line is split into separate values: subtypes can
+    be two words, and a double-faced type line is reported as printed.
+- Streamed the deck agent's turns. Each tool call now appears in the chat the moment
+  it runs, and the answer appears as the model writes it, with a caret marking where
+  the next characters will land (ADR 0031). On a measured Ghalta turn the first tool
+  line went from invisible to 8.1s and the second to 10.2s, against a turn that
+  previously showed nothing at all until 11.4s.
+  - `POST /api/v1/agent/chat/stream` sends `tool`, `text`, `done` and `error` events.
+    Everything the interface keeps comes from `done`, which carries exactly the reply
+    the JSON route returns, so what a turn costs, stores and replays does not depend on
+    which route produced it.
+  - Text written before a tool call is preamble rather than the answer, so it is
+    superseded when the call appears. That keeps the streamed view converging on the
+    message that is actually committed instead of quietly changing at the end.
+  - One loop serves both routes; only the transport differs. Streaming stays inside the
+    existing OpenRouter boundary, reading the connection line by line in worker threads
+    rather than adding an HTTP dependency, and reassembles tool calls from the pieces a
+    stream sends them in. Cost needs `usage: {include: true}`, which was verified live
+    not to conflict with `provider.require_parameters`.
+  - The interface now uses the streaming route only. The frontend's plain-JSON client
+    method was removed rather than left as an untested fallback; `POST /agent/chat`
+    remains the plain API contract.
+  - Reasoning is deliberately not streamed: at `xhigh` effort it is most of the turn
+    and none of the answer.
+- Made a tool call openable while debug mode is on. The line becomes a disclosure over
+  two sub-boxes — the arguments the model sent, and the exact text the tool returned —
+  the same shape as the search trace's nested layers (ADR 0030). Both payloads travel
+  only for a turn whose request set `debug`: a `read_deck` result is kilobytes of text,
+  and posting it to a client with nowhere to show it is waste. Turns taken before debug
+  mode was switched on therefore stay plain lines, because an expander onto an empty
+  box would claim the payload was empty rather than absent. An oversized payload is
+  truncated with a marker naming how much is missing, and only the copy sent to the
+  browser is trimmed — the model read the whole thing.
+- Added what the agents cost, taken from the provider's own `usage.cost` rather
+  than from token arithmetic. The search trace shows the price of that round
+  beside its duration, including for a round that failed after paying for a call,
+  and the deck agent totals the current conversation in its header. A turn that
+  used tools paid for several completions, and the header totals all of them. A
+  cost the provider did not report is never shown as free: a local fuzzy search
+  shows no badge at all, and a chat total missing any unpriced model call is
+  marked `+` (ADR 0028, ADR 0029).
+
 ### Changed
+
+- Moved debug mode out of the card-search drawer and into interface-wide
+  **Settings** in the editor toolbar, since it now governs both the search trace
+  and the deck agent's running cost. The `manabase.search-debug` storage key is
+  unchanged, so an existing preference is preserved (ADR 0028).
 
 - Switched the search agent to `openai/gpt-5.6-luna` at `low` reasoning effort,
   and made both `reasoning_effort` and `temperature` configurable instead of
@@ -194,6 +375,13 @@ All notable changes to this project are documented here.
   deck assistant.
 
 ### Fixed
+
+- Fixed EDHREC slugs for card names containing an apostrophe. `edhrec_slug`
+  mapped the apostrophe to a separator, producing `thassa-s-oracle`, while EDHREC
+  closes the gap and serves `thassas-oracle`; the separated form answers HTTP 403.
+  This had been breaking EDHREC enrichment for 2,344 catalog cards and 189 legal
+  commanders, among them Yuriko, the Tiger's Shadow. A test that had pinned the
+  broken output now pins the reachable slug.
 
 - Fixed bulk catalog sync against Scryfall's current API, which replaced the
   JSON-array export with line-delimited JSON, dropped `download_uri`,

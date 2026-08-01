@@ -23,6 +23,7 @@ from pydantic_settings import (
 )
 
 from mtg_deck_builder import __version__
+from mtg_deck_builder.domain.agent_chat import CardDetail
 
 _http_url_adapter = TypeAdapter(AnyHttpUrl)
 _project_config_file = Path(__file__).resolve().parents[3] / "config.yaml"
@@ -275,6 +276,101 @@ class AgenticSearchSettings(BaseModel):
         return self
 
 
+ReasoningEffort = Literal["none", "minimal", "low", "medium", "high", "xhigh", "max"]
+
+
+class DeckAgentToolSettings(BaseModel):
+    """What the deck agent may read, and how hard it may work at reading it.
+
+    The three tool descriptions live here rather than in code because they are prompt
+    text: they are the only thing telling the model when each tool is worth calling,
+    and they have to stay editable next to the system prompt that frames them.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = True
+    # How many times the agent may call tools before it must answer. Each iteration
+    # is one more completion, so this is the turn's cost and latency ceiling.
+    max_iterations: Annotated[int, Field(ge=1, le=12)] = 4
+    # A cap on cards per `see_cards` call. Exceeding it truncates and says so in the
+    # tool result, rather than quietly returning less than was asked for.
+    see_cards_max_cards: Annotated[int, Field(ge=1, le=50)] = 12
+    # What `see_cards` reports when the model asks for no details in particular.
+    see_cards_default_details: Annotated[list[CardDetail], Field(min_length=1)] = Field(
+        default_factory=lambda: ["rules"]
+    )
+    # How many cards `search_cards` returns when the model names no count, and the
+    # ceiling it may raise that to. The default is well under the search agent's 24
+    # because a chat turn's context also carries the transcript and a deck listing,
+    # and every returned card comes with its full rules text. The hard maximum
+    # matches `search.agentic.local_tool.hard_max_results` so the advertised schema
+    # bound and the runtime bound cannot disagree.
+    search_cards_default_max_results: Annotated[int, Field(ge=1, le=60)] = 12
+    search_cards_hard_max_results: Annotated[int, Field(ge=1, le=60)] = 60
+    read_deck_description: str = "List the open deck by card type."
+    see_cards_description: str = "Look up details for named cards."
+    search_cards_description: str = "Search the local card catalog."
+
+    @field_validator(
+        "read_deck_description",
+        "see_cards_description",
+        "search_cards_description",
+    )
+    @classmethod
+    def description_must_not_be_blank(cls, value: str) -> str:
+        stripped = value.strip()
+        if not stripped:
+            raise ValueError("value must not be blank")
+        return stripped
+
+    @model_validator(mode="after")
+    def details_must_not_repeat(self) -> "DeckAgentToolSettings":
+        if len(set(self.see_cards_default_details)) != len(
+            self.see_cards_default_details
+        ):
+            raise ValueError("see_cards_default_details must not repeat a detail")
+        return self
+
+    @model_validator(mode="after")
+    def search_bounds_must_agree(self) -> "DeckAgentToolSettings":
+        if self.search_cards_default_max_results > self.search_cards_hard_max_results:
+            raise ValueError(
+                "search_cards_default_max_results must not exceed "
+                "search_cards_hard_max_results"
+            )
+        return self
+
+
+class DeckAgentSettings(BaseModel):
+    """Configuration for the conversational deck agent in the right workspace.
+
+    The agent has no server-side session, so everything it knows is the transcript
+    the browser posts back plus whatever its tools read during one turn.
+    `max_history_messages` is therefore the whole of its memory.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = True
+    provider: Literal["openrouter"] = "openrouter"
+    model: str = "openai/gpt-5.6-luna"
+    reasoning_effort: ReasoningEffort = "xhigh"
+    temperature: Annotated[float, Field(ge=0, le=2)] | None = None
+    timeout_seconds: Annotated[float, Field(gt=0, le=600)] = 180
+    max_history_messages: Annotated[int, Field(ge=2, le=500)] = 40
+    system_prompt: str = "You are a Magic: The Gathering Commander deck assistant."
+    tools: DeckAgentToolSettings = Field(default_factory=DeckAgentToolSettings)
+
+    @field_validator("model", "system_prompt")
+    @classmethod
+    def required_text_must_not_be_blank(cls, value: str) -> str:
+        stripped = value.strip()
+        if not stripped:
+            raise ValueError("value must not be blank")
+        return stripped
+
+
 class SearchSettings(BaseModel):
     """Search configuration loaded from the repository YAML file."""
 
@@ -333,6 +429,12 @@ class EdhrecSettings(BaseModel):
     database_path: Path = Path("local-data/card-edhrec.sqlite3")
     timeout_seconds: Annotated[float, Field(gt=0, le=300)] = 20
     refresh_after_days: Annotated[int, Field(ge=1, le=365)] = 30
+    # Similar-card lists get their own, far longer window than commander pages.
+    # A commander page carries deck counts and synergy that drift weekly, whereas a
+    # similar-card list is functional and only moves when new cards are printed.
+    # Name-to-Oracle resolution is not cached with this, so a catalog sync repairs
+    # unresolvable names without waiting for the window to lapse.
+    similar_refresh_after_days: Annotated[int, Field(ge=1, le=3650)] = 180
     user_agent: str = (
         f"MTG-Agentic-Deck-Builder/{__version__} "
         "(personal local testing; +https://github.com/andreasvig/MTG-agentic-deck-builder)"
@@ -448,6 +550,7 @@ class Settings(BaseSettings):
     )
     openrouter_base_url: str = "https://openrouter.ai/api/v1"
     search: SearchSettings = Field(default_factory=SearchSettings)
+    agent: DeckAgentSettings = Field(default_factory=DeckAgentSettings)
     tagger: TaggerSettings = Field(default_factory=TaggerSettings)
     edhrec: EdhrecSettings = Field(default_factory=EdhrecSettings)
     search_debug_enabled: bool = False

@@ -78,6 +78,16 @@ not the intended end state.
 - Local canonical-card lookup for opening similar cards and outgoing references
   in the regular card dialog at quantity zero without replacing search state.
   Inverse `referenced_by` relationships remain stored but are hidden.
+- Grouped every relationship classifier Tagger publishes — strictness
+  (`upgrades`/`downgrades`), body (`creature_versions`/`spell_versions`),
+  `variants`, `related_cards` — with direction normalized from a local inverse
+  table. Previously 55% of stored relationship edges were read and discarded
+  (ADR 0025).
+- On-demand EDHREC similar cards per card, names cached 180 days in the EDHREC
+  sidecar (schema 3) under their own `similar_refresh_after_days`. Name-to-Oracle
+  resolution is re-derived on every read rather than cached, so a catalog sync
+  repairs unresolvable names; unresolved names are retained but not linked
+  (ADR 0026).
 - Clickable tags that open a tag-only search, plus fuzzy tag lookup and
   removable multi-tag filter chips.
 - Explicit tag filters intersect local Oracle-card memberships before fuzzy or
@@ -88,7 +98,9 @@ not the intended end state.
 
 ### Search Diagnostics
 
-- Browser-persisted Search debug log toggle.
+- Browser-persisted interface-wide Debug mode toggle in editor-toolbar
+  **Settings**, governing both the search trace and the deck agent's running cost
+  (ADR 0028).
 - Environment-level debug default.
 - Debug-only coverage-aware title-confidence percentage beneath each returned
   result.
@@ -100,6 +112,103 @@ not the intended end state.
   each loaded-page card.
 - Failed agentic searches retain an auto-opened sanitized trace with the broken
   step marked as an error and all later steps marked skipped.
+- What each agent round cost, from the provider's reported `usage.cost` rather
+  than token arithmetic, on the trace summary line and on failed rounds that
+  already paid for a call. An unreported figure is shown as absent, never as zero.
+
+### Deck Agent Chat
+
+- Chat panel in the reserved right side of the workspace, desktop only.
+- Conversation memory: the browser holds the transcript and posts it back on every
+  turn, trimmed to the newest `agent.max_history_messages` entries (ADR 0027).
+- One conversation per deck, saved under `manabase.deck-agent-chats.v1` and restored
+  on return, running spend included. A reply still in flight when the deck changes is
+  abandoned rather than answered into the deck the user left; its question stays put
+  so sending again retries it (ADR 0030).
+- The chat store spends a fixed character budget newest-first, dropping tool payloads
+  before turns, so it can never crowd the deck library out of browser storage.
+- The composer's unsent draft is per deck too, saved with the conversation and held to
+  the composer's 8,000-character limit when restored.
+- **Reset chat** in the panel header forgets the open deck's conversation, its running
+  cost, its draft, and any in-flight request — and no other deck's.
+- Every card the agent names is an openable card. The agent writes each name in braces,
+  the backend resolves them against the local catalog, and the chat underlines them:
+  hover shows the card image, click opens the deck board's own inspector (ADR 0033).
+  Braces already mean mana in Magic, so the catalog is what tells `{Sol Ring}` from
+  `{T}`; a name it does not recognise renders as plain words with no underline.
+- `**bold**` and `*italic*` render in the answer instead of showing their asterisks.
+- Mana and ability symbols are drawn rather than spelled, in the answer and in every
+  card panel: deck list, deck board, search results and preview, card inspector, and
+  the search trace (ADR 0034). One `CardText` component owns it, and the artwork is
+  committed to the repository by `npm run symbols:sync` rather than fetched at render
+  time. A braced run the symbol table does not list stays exactly as written.
+- Turns are streamed over `POST /api/v1/agent/chat/stream`: each tool call appears the
+  moment it runs, and the answer appears as it is written. Only the finished turn is
+  stored, so what streams converges on what is kept (ADR 0031). A half-streamed answer
+  is discarded when the turn fails or the deck changes.
+- Enter sends, Shift+Enter breaks a line, and a failed turn keeps its question in
+  the transcript so sending again retries with the context intact.
+- Running conversation cost in the header while debug mode is on, marked `+` when
+  a turn's price was not reported.
+- Its own top-level `agent:` configuration block: model, reasoning effort,
+  temperature, timeout, memory window, the whole system prompt, and both tool
+  descriptions under `agent.tools`.
+- `POST /api/v1/agent/chat` and `POST /api/v1/agent/chat/stream`, separating an
+  unusable reply (`502`) from an unreachable or unconfigured agent (`503`). The
+  streaming route reports availability before it starts; a later failure arrives as an
+  `error` event with the same code and wording. The interface uses the streaming route
+  only — the JSON one remains the plain API contract.
+- Three read-only tools (ADRs 0029 and 0035):
+  - `read_deck()` — the open deck grouped under each card's primary type, with
+    names, short ids and on-screen custom groups, and no card text.
+  - `see_cards(cards, details)` — named or short-id cards at the requested depth:
+    rules, prices, Tagger tags, EDHREC similar cards, EDHREC inclusion for this
+    deck's commander, Commander legality. Defaults to rules.
+  - Each card renders as labelled, quoted fields, and the details always appear in
+    one fixed order with `similar` last, whatever order they were asked for. `similar`
+    groups Tagger's relationship lists under the labels the card panel uses, merges
+    EDHREC's similar cards into `Similar cards`, and names each card once under the
+    group that says the most about it (ADR 0032).
+  - `themes` — the deck themes EDHREC tracks for a card *as a commander*, most played
+    first with the deck count behind each, capped at twenty (ADR 0035). These are the
+    slugs `search_cards` takes as `commander.edhrec_theme`. Only a card that can legally
+    be a commander has a page, so for anything else the detail says which of the two is
+    true rather than reporting a bare absence.
+  - `search_cards(...)` — the whole local catalog, filtered and ordered by the model
+    rather than by an interface panel (ADR 0035). It is the search agent's own
+    `LocalCardSearchTool`, so every ordering and filter field is the same one, and
+    `SearchCardsArguments` subclasses `LocalCardSearchRequest` to keep them so. Added
+    on top: a `commander` object whose colour identity is a hard filter and whose
+    EDHREC inclusion and synergy only sort, `commander_legal_only`, and
+    `exclude_cards_in_deck`. Omitting the commander means there is no commander rather
+    than inheriting the open deck's, and naming any other card in the catalog is how a
+    question about a different commander is answered. Results use the same card block
+    `see_cards` renders — rules text and one EUR estimate — under a header carrying only
+    what the model could not have known: how many cards matched against how many are
+    shown (`search_cards_default_max_results`, 12), a colour identity that removed
+    cards, and a *missing* EDHREC lookup. What the model itself sent is not echoed back.
+    Every refusal — an EDHREC ordering with no evidence, no criteria at all, an
+    unknown commander or theme — comes back as text the model adapts to.
+- The browser posts a deck snapshot with each turn, carrying identity and placement
+  only; names, types, rules and prices are resolved from the local catalog.
+- Every tool call is shown in the transcript as its own line above the answer,
+  regardless of debug mode, with failed calls marked.
+- With debug mode on, a call opens onto two sub-boxes — the arguments the model sent
+  and the exact text the tool returned. Both travel only for a turn whose request set
+  `debug`, and an oversized payload is truncated with a visible marker (ADR 0030).
+- A bounded loop of `agent.tools.max_iterations` tool rounds followed by one
+  no-tools completion, so a turn always ends in an answer.
+
+Missing:
+
+- Any tool that changes the deck: it cannot add, remove, move or reorder a card,
+  and there is no patch, confirmation or undo path.
+- A catalog search of its own. It points the user at the card search instead.
+- Any mobile entry point.
+- Streamed reasoning: at `xhigh` it is most of the turn and none of the answer, so the
+  panel says it is thinking instead of narrating.
+- Payloads for turns taken before debug mode was switched on: they were never
+  requested, so those lines stay plain rather than opening onto nothing.
 
 ### Deck Editor
 
@@ -276,10 +385,12 @@ missing or stale sidecar is an explicit unavailable state fixed by
 - Mana curve, color production, probability, and functional analytics.
 - Multi-select and bulk editing.
 - Named deck snapshots and persisted mutation history.
-- Deck assistant beyond the shipped card-search agent.
-- Agent chat interface in the reserved right workspace.
-- Typed agent tools for inspect, validate, search, propose patch, confirm, apply,
-  and undo.
+- Typed agent tools for validate, search, propose patch, confirm, apply and undo.
+  Deck inspection is shipped as `read_deck` and `see_cards` (ADR 0029) and catalog
+  search as `search_cards` (ADR 0035); everything
+  that changes a deck is not.
+- Deck-agent transcript persistence and a mobile entry point.
+- Any spend cap or budget: cost is reported, never enforced.
 
 ## Deferred
 
@@ -300,8 +411,11 @@ missing or stale sidecar is an explicit unavailable state fixed by
 - The EDHREC sidecar is optional derived data populated one commander at a
   time. A 30-day cache miss may use the network; every failure keeps search at
   HTTP 200 with local ordering and a visible unavailable status.
-- Card search, fuzzy tag lookup, canonical card lookup, and card enrichment are
-  the product APIs beyond health.
+- Card search, fuzzy tag lookup, canonical card lookup, card enrichment, and deck
+  agent chat are the product APIs beyond health.
+- The deck agent reads the deck from a snapshot posted with each turn, not from
+  backend state, and resolves every card fact from the local catalog. Its tools are
+  read-only; nothing it does can change a deck.
 - Search always starts locally. Natural-language or weak-title queries can
   continue through OpenRouter and one bounded structured local tool call.
 - Scryfall images remain remote.
@@ -314,4 +428,5 @@ missing or stale sidecar is an explicit unavailable state fixed by
 2. Add browser-local library import and migration into that service.
 3. Implement complete Commander validation against shared domain models.
 4. Add plaintext import/export and full printing selection.
-5. Introduce agent patch schemas and confirmation flow before building chat.
+5. Introduce agent patch schemas and confirmation flow before giving the shipped
+   deck-agent chat any tools.

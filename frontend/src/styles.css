@@ -573,6 +573,57 @@ select {
   border-bottom: 1px solid var(--line);
 }
 
+.interface-settings {
+  position: relative;
+  display: inline-flex;
+}
+
+.interface-settings__panel {
+  position: absolute;
+  z-index: 30;
+  top: calc(100% + 8px);
+  right: 0;
+  width: 232px;
+  padding: 6px;
+  background: var(--surface);
+  border: 1px solid var(--line-strong);
+  border-radius: 6px;
+  box-shadow: var(--shadow-panel);
+}
+
+.interface-settings__panel label {
+  display: flex;
+  min-height: 36px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 0 7px;
+  color: var(--ink-soft);
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.interface-settings__panel label > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.interface-settings__panel input {
+  width: 30px;
+  height: 16px;
+  margin: 0;
+  accent-color: var(--accent-dark);
+}
+
+.interface-settings__panel small {
+  display: block;
+  padding: 0 7px 5px;
+  color: var(--muted);
+  font-size: 9px;
+  line-height: 1.45;
+}
+
 .search-form input::placeholder {
   color: #929a94;
 }
@@ -634,7 +685,8 @@ select {
 }
 
 .workspace-body {
-  display: block;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 328px;
   min-width: 0;
   min-height: 0;
   flex: 1;
@@ -644,6 +696,419 @@ select {
   min-width: 0;
   padding: 17px 16px 26px;
   overflow-x: hidden;
+}
+
+.deck-agent {
+  /* Sized to match the deck canvas exactly: its 17px/26px vertical padding around
+     a `100vh - 188px` board. Any taller and this column, not the board, decides
+     the page height, which puts a vertical scrollbar on an editor that never had
+     one. Keep the three numbers in step with `.visual-groups`. */
+  position: sticky;
+  top: 17px;
+  display: flex;
+  min-width: 0;
+  height: calc(100vh - 188px);
+  flex-direction: column;
+  align-self: start;
+  margin: 17px 16px 26px 0;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+}
+
+.deck-agent__header {
+  display: flex;
+  min-height: 40px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 0 8px 0 12px;
+  border-bottom: 1px solid var(--line);
+}
+
+.deck-agent__header h2 {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+  color: var(--ink);
+  font-size: 12px;
+  font-weight: 750;
+}
+
+.deck-agent__header h2 svg {
+  color: var(--accent);
+}
+
+.deck-agent__spend {
+  margin-left: auto;
+  padding: 3px 6px;
+  color: #355d40;
+  font-size: 9px;
+  font-weight: 750;
+  font-variant-numeric: tabular-nums;
+  background: #dce9df;
+  border-radius: 4px;
+}
+
+.deck-agent__reset {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 8px;
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 650;
+  background: transparent;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  cursor: pointer;
+}
+
+.deck-agent__reset:hover:not(:disabled) {
+  color: var(--ink);
+  background: var(--surface-subtle);
+  border-color: var(--line-strong);
+}
+
+.deck-agent__reset:disabled {
+  color: var(--muted-light);
+  cursor: default;
+  opacity: 0.6;
+}
+
+.deck-agent__transcript {
+  display: flex;
+  min-height: 0;
+  flex: 1;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px;
+  overflow-y: auto;
+  scrollbar-color: #bdc4be transparent;
+  scrollbar-width: thin;
+}
+
+.deck-agent__empty {
+  margin: 0;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.55;
+}
+
+.deck-agent__message {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.deck-agent__author {
+  color: var(--muted-light);
+  font-size: 8px;
+  font-weight: 820;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.deck-agent__message p {
+  margin: 0;
+  padding: 8px 10px;
+  overflow-wrap: anywhere;
+  font-size: 11.5px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  border-radius: 9px;
+}
+
+.deck-agent__message--user p {
+  color: var(--ink);
+  background: var(--surface-subtle);
+}
+
+.deck-agent__message--assistant p {
+  color: var(--ink-soft);
+  background: var(--accent-soft);
+}
+
+/*
+ * One line per tool the agent ran, above the answer it produced. Deliberately
+ * quieter than a message: it is a record of what was read, not something said.
+ */
+.deck-agent__tool {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  margin: 0 0 5px;
+  padding: 0 2px;
+  color: var(--muted);
+  font-size: 9.5px;
+}
+
+.deck-agent__tool-signature {
+  min-width: 0;
+  overflow: hidden;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 9.5px;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.deck-agent__tool--failed {
+  color: var(--danger);
+}
+
+/*
+ * The same line, expandable, once debug mode is on: it opens onto what the model
+ * asked for and the exact text it read back.
+ *
+ * Flex rather than a column list, because the "failed" marker is a conditional
+ * child — a `grid-template-columns` with one track per child wraps and clips the
+ * moment the child count changes, which is exactly how the search trace's price
+ * badge got clipped.
+ */
+.deck-agent__tool-call {
+  margin: 0 0 5px;
+  overflow: hidden;
+  background: var(--surface-subtle);
+  border: 1px solid var(--line);
+  border-radius: 7px;
+}
+
+.deck-agent__tool-call > summary {
+  display: flex;
+  min-height: 23px;
+  align-items: center;
+  gap: 5px;
+  padding: 0 6px;
+  color: var(--muted);
+  font-size: 9.5px;
+  list-style: none;
+  cursor: pointer;
+}
+
+.deck-agent__tool-call > summary::-webkit-details-marker {
+  display: none;
+}
+
+/* Only the signature absorbs the leftover width; the markers keep their size. */
+.deck-agent__tool-call > summary > .deck-agent__tool-signature {
+  flex: 1 1 auto;
+}
+
+.deck-agent__tool-call > summary > svg,
+.deck-agent__tool-call > summary > span {
+  flex: none;
+}
+
+.deck-agent__tool-call[open] > summary > svg:last-child {
+  transform: rotate(180deg);
+}
+
+.deck-agent__tool-call--failed > summary {
+  color: var(--danger);
+}
+
+.deck-agent__tool-body {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 0 5px 5px;
+}
+
+.deck-agent__tool-payload {
+  overflow: hidden;
+  background: var(--surface-raised);
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--accent);
+  border-radius: 5px;
+}
+
+.deck-agent__tool-payload > summary {
+  display: flex;
+  min-height: 21px;
+  align-items: center;
+  gap: 6px;
+  padding: 0 6px;
+  color: var(--muted);
+  font-size: 8px;
+  font-weight: 820;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  list-style: none;
+  cursor: pointer;
+}
+
+.deck-agent__tool-payload > summary::-webkit-details-marker {
+  display: none;
+}
+
+.deck-agent__tool-payload > summary span {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--muted-light);
+  font-weight: 500;
+  letter-spacing: 0;
+  text-transform: none;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.deck-agent__tool-payload > pre {
+  max-height: 220px;
+  margin: 0;
+  padding: 6px;
+  overflow: auto;
+  color: var(--ink-soft);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 8.5px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/*
+ * A card the answer named. It sits inside a sentence, so it is styled as emphasis
+ * rather than as a control: no padding, no background, and `display: inline` so it
+ * wraps mid-name at the end of a line the way the surrounding words do.
+ */
+.deck-agent__card {
+  display: inline;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  font-weight: 600;
+  text-decoration: underline;
+  text-decoration-style: dotted;
+  text-underline-offset: 2px;
+  cursor: pointer;
+}
+
+.deck-agent__card:hover,
+.deck-agent__card:focus-visible {
+  color: var(--accent);
+  text-decoration-style: solid;
+}
+
+/*
+ * Named as a card, but the catalog does not know it. It keeps the weight, because
+ * the agent did mean a card — and loses the underline, because the underline is the
+ * promise that clicking does something.
+ */
+.deck-agent__card--unknown {
+  cursor: default;
+  text-decoration: none;
+}
+
+/*
+ * The hover preview, portalled to the body so the scrolling transcript cannot clip
+ * it. Position is set inline from the trigger's rect.
+ */
+.deck-agent__card-preview {
+  position: fixed;
+  z-index: 60;
+  border-radius: 12px;
+  box-shadow: 0 18px 40px rgb(0 0 0 / 45%);
+  pointer-events: none;
+}
+
+.deck-agent__card-preview .card-art {
+  display: block;
+  width: 100%;
+  border-radius: 12px;
+}
+
+/* Where the next streamed character will land. */
+.deck-agent__caret {
+  display: inline-block;
+  width: 2px;
+  height: 11px;
+  margin-left: 2px;
+  vertical-align: text-bottom;
+  background: var(--accent);
+  animation: deck-agent-caret 1s steps(2, start) infinite;
+}
+
+@keyframes deck-agent-caret {
+  50% {
+    opacity: 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .deck-agent__caret {
+    animation: none;
+  }
+}
+
+.deck-agent__thinking,
+.deck-agent__error {
+  margin: 0;
+  font-size: 10.5px;
+  font-weight: 650;
+}
+
+.deck-agent__thinking {
+  color: var(--muted);
+}
+
+.deck-agent__error {
+  padding: 7px 9px;
+  color: var(--danger);
+  background: var(--danger-soft);
+  border-radius: 8px;
+}
+
+.deck-agent__composer {
+  display: flex;
+  align-items: end;
+  gap: 7px;
+  padding: 9px;
+  border-top: 1px solid var(--line);
+}
+
+.deck-agent__composer textarea {
+  min-width: 0;
+  flex: 1;
+  padding: 7px 9px;
+  color: var(--ink);
+  font-family: inherit;
+  font-size: 11.5px;
+  line-height: 1.5;
+  background: var(--surface-raised);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  resize: none;
+}
+
+.deck-agent__composer textarea:focus-visible {
+  border-color: var(--accent);
+  outline: 0;
+  box-shadow: 0 0 0 3px var(--focus);
+}
+
+.deck-agent__send {
+  display: inline-grid;
+  width: 32px;
+  height: 32px;
+  flex: 0 0 auto;
+  place-items: center;
+  color: #ffffff;
+  background: var(--accent);
+  border: 0;
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+.deck-agent__send:hover:not(:disabled) {
+  background: var(--accent-dark);
+}
+
+.deck-agent__send:disabled {
+  cursor: default;
+  opacity: 0.45;
 }
 
 .canvas-heading {
@@ -1513,6 +1978,41 @@ select {
   font-variant-numeric: tabular-nums;
 }
 
+/*
+ * A mana or ability symbol, from the artwork synced by `scripts/sync-card-symbols.mjs`.
+ *
+ * Sized in `em` so one rule covers every place card text appears: the same symbol is
+ * drawn at 9px in a deck row and at body size in an agent answer. The baseline shift
+ * centres a round symbol against the lowercase letters around it, and the sliver of
+ * margin keeps the circles of `{2}{G}{G}` — written with nothing between them — from
+ * touching.
+ */
+.card-symbol {
+  display: inline-block;
+  width: 1em;
+  height: 1em;
+  margin-right: 0.06em;
+  vertical-align: -0.145em;
+}
+
+/*
+ * A cost is nothing but symbols, so it can afford to draw them a little larger; a
+ * rules box is 10px type, where a symbol drawn at exactly the text's size reads as a
+ * smudge. Printed cards do the same thing — the symbol is always a touch taller than
+ * the letters beside it.
+ */
+.mana-line .card-symbol {
+  width: 1.2em;
+  height: 1.2em;
+  vertical-align: -0.25em;
+}
+
+.oracle-text .card-symbol {
+  width: 1.15em;
+  height: 1.15em;
+  vertical-align: -0.2em;
+}
+
 .type-line {
   line-height: 1.4;
 }
@@ -1775,44 +2275,6 @@ select {
 .search-drawer__header-actions > .icon-button.is-active {
   color: var(--accent-dark);
   background: var(--accent-soft);
-}
-
-.search-settings {
-  position: absolute;
-  z-index: 3;
-  top: calc(100% + 8px);
-  right: 0;
-  width: 210px;
-  padding: 6px;
-  background: var(--surface);
-  border: 1px solid var(--line-strong);
-  border-radius: 6px;
-  box-shadow: var(--shadow-panel);
-}
-
-.search-settings label {
-  display: flex;
-  min-height: 36px;
-  align-items: center;
-  justify-content: space-between;
-  gap: 14px;
-  padding: 0 7px;
-  color: var(--ink-soft);
-  font-size: 10px;
-  font-weight: 700;
-}
-
-.search-settings label > span {
-  display: inline-flex;
-  align-items: center;
-  gap: 7px;
-}
-
-.search-settings input {
-  width: 30px;
-  height: 16px;
-  margin: 0;
-  accent-color: var(--accent-dark);
 }
 
 .search-form {
@@ -2387,9 +2849,14 @@ select {
   border-radius: 4px;
 }
 
+/*
+ * Flex, not a fixed column list. This row is conditional — the price badge only
+ * exists for a search that actually called a model — and a `grid-template-columns`
+ * with one track per child wrapped the chevron onto a second row and clipped the
+ * price into the 14px chevron track the moment that sixth child appeared.
+ */
 .search-debug > summary {
-  display: grid;
-  grid-template-columns: 16px minmax(0, 1fr) auto auto 14px;
+  display: flex;
   min-height: 38px;
   align-items: center;
   gap: 8px;
@@ -2398,6 +2865,21 @@ select {
   font-size: 9px;
   cursor: pointer;
   list-style: none;
+}
+
+/* Only the label absorbs the leftover width; every badge keeps its own size. */
+.search-debug__label {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.search-debug > summary > svg,
+.search-debug > summary > strong,
+.search-debug__route {
+  flex: none;
 }
 
 .search-debug summary::-webkit-details-marker,
@@ -2422,6 +2904,11 @@ select {
   font-weight: 750;
   background: #dce9df;
   border-radius: 3px;
+}
+
+.search-debug__cost {
+  color: var(--ink-soft);
+  font-variant-numeric: tabular-nums;
 }
 
 .search-debug__chevron {
@@ -2813,10 +3300,11 @@ select {
 }
 
 @media (max-width: 620px) {
-  .search-debug > summary {
-    grid-template-columns: 16px minmax(0, 1fr) auto 14px;
-  }
-
+  /*
+   * The route badge is the first thing to go on a narrow screen; the price stays,
+   * since it is the number worth knowing. No column list to adjust here — the row
+   * is flex, so dropping a child just gives the label its width back.
+   */
   .search-debug__route {
     display: none;
   }
@@ -3868,6 +4356,10 @@ select {
     grid-template-columns: 180px minmax(0, 1fr);
   }
 
+  .workspace-body {
+    grid-template-columns: minmax(0, 1fr) 286px;
+  }
+
   .deck-metrics small {
     display: none;
   }
@@ -4015,6 +4507,12 @@ select {
 
   .workspace-body {
     display: block;
+  }
+
+  /* No mobile entry point for the agent yet: a 328px column beside the board does
+     not fit, and a full-width panel below it would push the deck off screen. */
+  .deck-agent {
+    display: none;
   }
 
   .deck-canvas {

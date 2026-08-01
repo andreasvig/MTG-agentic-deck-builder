@@ -33,6 +33,38 @@ from mtg_deck_builder.providers.tagger import (
 _SCHEMA_VERSION = 3
 _ORACLE_TAG_CLASSIFIER = "ORACLE_CARD_TAG"
 
+# Which `CardEnrichment` list a relationship belongs in, keyed by the classifier as
+# it reads *from the highlighted card towards the listed one*. Tagger states every
+# asymmetric relationship from its stronger or embodied side, so `BETTER_THAN` puts
+# the listed card among the highlighted card's downgrades, and `WITH_BODY` means the
+# listed card is the same effect without a creature attached. A classifier missing
+# from this mapping is ignored rather than guessed at.
+_INVERSE_CLASSIFIERS = {
+    "SIMILAR_TO": "SIMILAR_TO",
+    "REFERENCES_TO": "REFERENCED_BY",
+    "REFERENCED_BY": "REFERENCES_TO",
+    "BETTER_THAN": "WORSE_THAN",
+    "WORSE_THAN": "BETTER_THAN",
+    "MIRRORS": "MIRRORS",
+    "COLORSHIFTED": "COLORSHIFTED",
+    "WITH_BODY": "WITHOUT_BODY",
+    "WITHOUT_BODY": "WITH_BODY",
+    "RELATED_TO": "RELATED_TO",
+}
+
+_RELATED_CARD_GROUPS = {
+    "SIMILAR_TO": "similar_cards",
+    "REFERENCES_TO": "references",
+    "REFERENCED_BY": "referenced_by",
+    "WORSE_THAN": "upgrades",
+    "BETTER_THAN": "downgrades",
+    "MIRRORS": "variants",
+    "COLORSHIFTED": "variants",
+    "WITHOUT_BODY": "creature_versions",
+    "WITH_BODY": "spell_versions",
+    "RELATED_TO": "related_cards",
+}
+
 
 class TaggerCatalogUnavailable(RuntimeError):
     """Raised when the optional local Tagger sidecar cannot be read."""
@@ -104,9 +136,7 @@ class SQLiteTaggerCatalog:
             for tag_id, name, slug, description in tag_rows
         ]
         grouped: dict[str, dict[UUID, RelatedOracleCard]] = {
-            "similar_cards": {},
-            "references": {},
-            "referenced_by": {},
+            group: {} for group in dict.fromkeys(_RELATED_CARD_GROUPS.values())
         }
         for (
             subject_id,
@@ -127,35 +157,23 @@ class SQLiteTaggerCatalog:
             except ValueError:
                 continue
 
-            normalized_classifier = str(classifier).upper()
-            if normalized_classifier == "SIMILAR_TO":
-                group = "similar_cards"
-            elif normalized_classifier == "REFERENCES_TO":
-                group = "references" if is_subject else "referenced_by"
-            elif normalized_classifier == "REFERENCED_BY":
-                group = "referenced_by" if is_subject else "references"
-            else:
-                direction = (
-                    normalized_classifier
-                    if is_subject
-                    else str(
-                        classifier_inverse or _inverse_classifier(classifier),
-                    ).upper()
-                )
-                if direction == "REFERENCES_TO":
-                    group = "references"
-                elif direction == "REFERENCED_BY":
-                    group = "referenced_by"
-                else:
-                    continue
+            # Each edge is stored once, from its subject's side, so an edge reached
+            # through its related card has to be read backwards before it can be
+            # grouped.
+            direction = (
+                str(classifier).upper()
+                if is_subject
+                else _inverse_classifier(classifier, classifier_inverse)
+            )
+            group = _RELATED_CARD_GROUPS.get(direction)
+            if group is None:
+                continue
             grouped[group][related_card.oracle_id] = related_card
 
         return CardEnrichment(
             oracle_id=oracle_id,
             tags=tags,
-            similar_cards=_sorted_related_cards(grouped["similar_cards"]),
-            references=_sorted_related_cards(grouped["references"]),
-            referenced_by=_sorted_related_cards(grouped["referenced_by"]),
+            **{group: _sorted_related_cards(cards) for group, cards in grouped.items()},
         )
 
     def search_tags(self, query: str, *, limit: int = 12) -> list[CardTagMatch]:
@@ -496,11 +514,21 @@ def _normalize_semantic_concept(name: str, aliases: dict[str, str]) -> str:
     return " ".join(concept.split())
 
 
-def _inverse_classifier(classifier: str) -> str:
-    return {
-        "REFERENCES_TO": "REFERENCED_BY",
-        "REFERENCED_BY": "REFERENCES_TO",
-    }.get(str(classifier).upper(), str(classifier))
+def _inverse_classifier(classifier: str, published_inverse: str | None = None) -> str:
+    """Read a classifier from the other card's side.
+
+    The local table wins over the inverse Tagger publishes, because these pairings
+    were confirmed against the real sidecar and a wrong inverse in the feed would
+    otherwise silently invert a whole list — showing a card's upgrades as its
+    downgrades. The published value is only consulted for a classifier this table
+    does not know, which `_RELATED_CARD_GROUPS` then ignores anyway.
+    """
+
+    normalized = str(classifier).upper()
+    known = _INVERSE_CLASSIFIERS.get(normalized)
+    if known is not None:
+        return known
+    return str(published_inverse or normalized).upper()
 
 
 def _sorted_related_cards(

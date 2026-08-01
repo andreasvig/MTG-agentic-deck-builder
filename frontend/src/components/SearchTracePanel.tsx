@@ -1,9 +1,11 @@
 import { Bug, ChevronDown } from "lucide-react";
 
+import { formatModelCostUsd } from "../domain/agent";
 import type {
   SearchDebugSummary,
   SearchDebugTraceStage,
 } from "../domain/card";
+import { CardText } from "./CardText";
 
 interface SearchTracePanelProps {
   debug: SearchDebugSummary;
@@ -110,12 +112,17 @@ export function SearchTracePanel({ debug }: SearchTracePanelProps) {
     <details className="search-debug" open={hasFailed ? true : undefined}>
       <summary>
         <Bug aria-hidden="true" size={14} />
-        <span>
+        <span className="search-debug__label">
           Search trace
           {isAgentic && roundNumber ? ` · Round ${roundNumber}` : ""}
         </span>
         <span className="search-debug__route">{strategy}</span>
         <strong>{formatDuration(debug.total_duration_ms)}</strong>
+        {typeof debug.total_cost_usd === "number" ? (
+          <strong className="search-debug__cost" title="What this search cost">
+            {formatModelCostUsd(debug.total_cost_usd)}
+          </strong>
+        ) : null}
         <ChevronDown
           className="search-debug__chevron"
           aria-hidden="true"
@@ -813,9 +820,13 @@ function CardCandidateList({
               <span>
                 <strong>{textValue(card.name) ?? "Unknown card"}</strong>
                 <small>
-                  {[textValue(card.mana_cost), textValue(card.type_line)]
-                    .filter(Boolean)
-                    .join(" · ")}
+                  <CardText text={textValue(card.mana_cost)} />
+                  {[textValue(card.mana_cost), textValue(card.type_line)].filter(
+                    Boolean,
+                  ).length === 2
+                    ? " · "
+                    : ""}
+                  {textValue(card.type_line)}
                   {alreadyShown ? " · already shown" : ""}
                 </small>
               </span>

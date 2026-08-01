@@ -1,4 +1,4 @@
-"""Small client for EDHREC's public commander-page JSON payloads."""
+"""Small client for EDHREC's public commander-page and card-page JSON payloads."""
 
 from __future__ import annotations
 
@@ -17,6 +17,10 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 _MAX_RESPONSE_BYTES = 5 * 1024 * 1024
+# Scryfall writes the ASCII apostrophe; the curly forms (U+2019, U+02BC) are covered
+# so the deletion keeps working if this ever runs before the ASCII fold that would
+# otherwise drop them.
+_APOSTROPHES = re.compile("['\u2019\u02bc]")
 
 
 class EdhrecUnavailable(RuntimeError):
@@ -70,8 +74,21 @@ class EdhrecCommanderPage:
     themes: tuple[EdhrecDeckTheme, ...] = ()
 
 
+@dataclass(frozen=True)
+class EdhrecCardPage:
+    """The similar-card names one card page advertises, in EDHREC's own order.
+
+    EDHREC publishes these as bare names with no Scryfall id and no score, so the
+    list order is the only ranking signal and resolving each name to a local Oracle
+    identity is the caller's job.
+    """
+
+    similar_names: tuple[str, ...]
+    raw_json: str
+
+
 class EdhrecJsonClient:
-    """Fetch one EDHREC commander page without adding a runtime dependency."""
+    """Fetch one EDHREC commander or card page without adding a runtime dependency."""
 
     def __init__(
         self,
@@ -99,30 +116,11 @@ class EdhrecJsonClient:
             if re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+)*", theme_slug) is None:
                 raise EdhrecUnavailable("EDHREC theme slug was invalid")
             page_path = f"{page_path}/{quote(theme_slug, safe='-')}"
-        url = f"{self._base_url}/pages/commanders/{page_path}.json"
-        request = Request(
-            url,
-            headers={
-                "Accept": "application/json",
-                "Accept-Encoding": "gzip",
-                "User-Agent": self._user_agent,
-            },
-        )
+        raw_json = self._read_page("commanders", page_path, subject="commander page")
         try:
-            with self._open_url(request, timeout=self._timeout_seconds) as response:
-                body = response.read(_MAX_RESPONSE_BYTES + 1)
-                if len(body) > _MAX_RESPONSE_BYTES:
-                    raise EdhrecUnavailable("EDHREC response exceeded the safety limit")
-                if "gzip" in (response.headers.get("Content-Encoding") or "").casefold():
-                    body = gzip.decompress(body)
-        except (HTTPError, URLError, OSError, TimeoutError) as exc:
-            raise EdhrecUnavailable("EDHREC commander page could not be fetched") from exc
-
-        try:
-            raw_json = body.decode("utf-8")
             payload = json.loads(raw_json)
             cardlists = payload["container"]["json_dict"]["cardlists"]
-        except (UnicodeDecodeError, json.JSONDecodeError, KeyError, TypeError) as exc:
+        except (json.JSONDecodeError, KeyError, TypeError) as exc:
             raise EdhrecUnavailable("EDHREC returned an invalid commander page") from exc
         if not isinstance(cardlists, list):
             raise EdhrecUnavailable("EDHREC returned an invalid card list")
@@ -177,10 +175,67 @@ class EdhrecJsonClient:
             themes=tuple(themes),
         )
 
+    def fetch_card(self, slug: str) -> EdhrecCardPage:
+        """Fetch the similar-card names EDHREC publishes on a single card's page."""
+
+        raw_json = self._read_page("cards", quote(slug, safe="-"), subject="card page")
+        try:
+            payload = json.loads(raw_json)
+        except json.JSONDecodeError as exc:
+            raise EdhrecUnavailable("EDHREC returned an invalid card page") from exc
+        if not isinstance(payload, dict):
+            raise EdhrecUnavailable("EDHREC returned an invalid card page")
+
+        # An absent key means the page is not the shape this code was written for; an
+        # empty list is a legitimate answer and gets cached like any other, so a card
+        # EDHREC has nothing to say about is not re-fetched on every view.
+        raw_similar = payload.get("similar")
+        if not isinstance(raw_similar, list):
+            raise EdhrecUnavailable("EDHREC card page carried no similar-card list")
+        similar_names = tuple(
+            dict.fromkeys(
+                name.strip() for name in raw_similar if isinstance(name, str) and name.strip()
+            )
+        )
+        return EdhrecCardPage(similar_names=similar_names, raw_json=raw_json)
+
+    def _read_page(self, section: str, page_path: str, *, subject: str) -> str:
+        """Fetch one JSON page as text, without interpreting its contents."""
+
+        request = Request(
+            f"{self._base_url}/pages/{section}/{page_path}.json",
+            headers={
+                "Accept": "application/json",
+                "Accept-Encoding": "gzip",
+                "User-Agent": self._user_agent,
+            },
+        )
+        try:
+            with self._open_url(request, timeout=self._timeout_seconds) as response:
+                body = response.read(_MAX_RESPONSE_BYTES + 1)
+                if len(body) > _MAX_RESPONSE_BYTES:
+                    raise EdhrecUnavailable("EDHREC response exceeded the safety limit")
+                if "gzip" in (response.headers.get("Content-Encoding") or "").casefold():
+                    body = gzip.decompress(body)
+        except (HTTPError, URLError, OSError, TimeoutError) as exc:
+            raise EdhrecUnavailable(f"EDHREC {subject} could not be fetched") from exc
+        try:
+            return body.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise EdhrecUnavailable(f"EDHREC returned an invalid {subject}") from exc
+
 
 def edhrec_slug(card_name: str) -> str:
-    """Convert a local card name to the slug form used by EDHREC pages."""
+    """Convert a local card name to the slug form used by EDHREC pages.
+
+    Apostrophes are deleted rather than replaced, because EDHREC closes the gap
+    they leave: `Thassa's Oracle` is served at `thassas-oracle`, and asking for
+    `thassa-s-oracle` is answered with an HTTP 403. Scryfall writes the plain
+    ASCII apostrophe, which survives the ASCII fold below and would otherwise
+    become a separator like any other punctuation.
+    """
 
     first_face = card_name.split(" // ", 1)[0]
-    ascii_name = unicodedata.normalize("NFKD", first_face).encode("ascii", "ignore").decode()
+    unpunctuated = _APOSTROPHES.sub("", first_face)
+    ascii_name = unicodedata.normalize("NFKD", unpunctuated).encode("ascii", "ignore").decode()
     return re.sub(r"[^a-z0-9]+", "-", ascii_name.casefold()).strip("-")

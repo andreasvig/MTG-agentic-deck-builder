@@ -15,6 +15,7 @@ import {
   searchDebugSummary,
   searchPage,
   solRing,
+  emptyEnrichment,
   solRingEnrichment,
   thrasios,
   tymna,
@@ -23,6 +24,7 @@ import {
 const SEARCH_ROUTE = "**/api/v1/cards/search**";
 const SUBTYPE_ROUTE = "**/api/v1/cards/subtypes/search**";
 const ENRICHMENT_ROUTE = "**/api/v1/cards/*/enrichment";
+const EDHREC_SIMILAR_ROUTE = "**/api/v1/cards/*/edhrec/similar";
 
 async function clearDeck(page: Page) {
   await page.addInitScript(() => {
@@ -49,6 +51,25 @@ async function fulfillJson(
   });
 }
 
+/**
+ * Answer a streamed agent turn with server-sent events.
+ *
+ * Playwright fulfils a route with one whole body, so this proves the wire format
+ * and the parsing end to end rather than the timing. Incremental rendering is
+ * covered where it can be driven event by event: the panel's own tests.
+ */
+async function fulfillSse(route: Route, events: unknown[]) {
+  await route.fulfill({
+    status: 200,
+    contentType: "text/event-stream",
+    headers: {
+      "Access-Control-Allow-Origin": "http://127.0.0.1:41737",
+      "Cache-Control": "no-store",
+    },
+    body: events.map((event) => `data: ${JSON.stringify(event)}\n\n`).join(""),
+  });
+}
+
 async function openSearch(page: Page) {
   const trigger = page.getByRole("button", { name: "Add cards" });
   await expect(trigger).toBeVisible();
@@ -56,6 +77,80 @@ async function openSearch(page: Page) {
   await expect(
     page.getByRole("dialog", { name: "Find cards" }),
   ).toBeVisible();
+}
+
+/**
+ * Turn on debug mode from the interface settings.
+ *
+ * It lives in the editor toolbar, which is inert while the search drawer is open,
+ * so this has to happen before any dialog is opened.
+ */
+async function enableDebugMode(page: Page) {
+  const settings = page.getByRole("button", { name: "Settings" });
+  await expect(settings).toBeVisible();
+  await settings.click();
+  const debugSwitch = page.getByRole("switch", { name: "Debug mode" });
+  await expect(debugSwitch).not.toBeChecked();
+  await debugSwitch.click();
+  await expect(debugSwitch).toBeChecked();
+  await settings.click();
+  await expect(debugSwitch).toBeHidden();
+}
+
+/**
+ * Assert the trace summary is still one row, and that a price shows every digit.
+ *
+ * The badges in that row are conditional — only a search that called a model
+ * reports a price — and a layout with one fixed column per child wrapped the
+ * chevron onto a second row and clipped the price into the chevron's 14px track.
+ * jsdom computes no layout, so this can only be caught in a real browser.
+ */
+async function expectTraceSummaryOnOneRow(page: Page) {
+  const summary = page.locator(".search-debug > summary").first();
+  await expect(summary).toBeVisible();
+  const layout = await summary.evaluate((element) => {
+    const cost = element.querySelector(".search-debug__cost");
+    return {
+      tops: Array.from(element.children).map((child) =>
+        Math.round(child.getBoundingClientRect().top),
+      ),
+      cost: cost
+        ? { clientWidth: cost.clientWidth, scrollWidth: cost.scrollWidth }
+        : null,
+    };
+  });
+  expect(Math.max(...layout.tops) - Math.min(...layout.tops)).toBeLessThanOrEqual(
+    8,
+  );
+  if (layout.cost) {
+    expect(layout.cost.scrollWidth).toBeLessThanOrEqual(layout.cost.clientWidth);
+  }
+}
+
+/**
+ * Assert an expandable tool call is one row, with its signature readable.
+ *
+ * Same failure mode as the trace summary above: the "failed" marker is a
+ * conditional child, so the row has to survive a changing child count without
+ * wrapping or squeezing the signature into nothing. Only the leftover width may
+ * be taken from the signature — never all of it.
+ */
+async function expectToolSummaryOnOneRow(page: Page) {
+  const summary = page.locator(".deck-agent__tool-call > summary").first();
+  await expect(summary).toBeVisible();
+  const layout = await summary.evaluate((element) => {
+    const signature = element.querySelector(".deck-agent__tool-signature");
+    return {
+      tops: Array.from(element.children).map((child) =>
+        Math.round(child.getBoundingClientRect().top),
+      ),
+      signatureWidth: signature ? signature.getBoundingClientRect().width : 0,
+    };
+  });
+  expect(Math.max(...layout.tops) - Math.min(...layout.tops)).toBeLessThanOrEqual(
+    8,
+  );
+  expect(layout.signatureWidth).toBeGreaterThan(40);
 }
 
 async function waitForCardArt(page: Page, cardName: string) {
@@ -97,6 +192,20 @@ async function dragTo(page: Page, source: Locator, target: Locator) {
 
 test.beforeEach(async ({ page }) => {
   await clearDeck(page);
+  // EDHREC similar cards are fetched from a live community host for whichever card
+  // the interface highlights. Left unstubbed, these tests would depend on that
+  // service and on whatever the local sidecar happens to have cached, which is how
+  // a real Sol Ring response once made "Mana Vault" ambiguous in the panel.
+  await page.route(EDHREC_SIMILAR_ROUTE, async (route) => {
+    const oracleId = new URL(route.request().url()).pathname.split("/").at(-3);
+    await fulfillJson(route, {
+      status: "not_requested",
+      source: null,
+      oracle_id: oracleId,
+      cards: [],
+      message: null,
+    });
+  });
 });
 
 test("desktop deck-building flow remains fast and reversible", async ({
@@ -123,13 +232,7 @@ test("desktop deck-building flow remains fast and reversible", async ({
       route,
       oracleId === solRing.oracle_id
         ? solRingEnrichment
-        : {
-            oracle_id: oracleId,
-            tags: [],
-            similar_cards: [],
-            references: [],
-            referenced_by: [],
-          },
+        : emptyEnrichment(oracleId ?? ""),
     );
   });
   await page.route(
@@ -191,7 +294,7 @@ test("desktop deck-building flow remains fast and reversible", async ({
   ).toBeVisible();
   await expect(solRingResult.getByText("MSC #211 · uncommon")).toBeVisible();
   await expect(
-    page.getByRole("region", { name: "Scryfall Tagger details" }),
+    page.getByRole("region", { name: "Card tags and related cards" }),
   ).toBeVisible();
   await expect(page.getByText("mana rock", { exact: true })).toBeVisible();
   await expect(
@@ -314,7 +417,7 @@ test("desktop deck-building flow remains fast and reversible", async ({
   });
   await expect(customGroupSelect).toHaveValue(/group-/);
   await expect(
-    cardDialog.getByRole("region", { name: "Scryfall Tagger details" }),
+    cardDialog.getByRole("region", { name: "Card tags and related cards" }),
   ).toBeVisible();
   await cardDialog.getByRole("button", { name: "mana rock" }).click();
   const tagSearchDialog = page.getByRole("dialog", { name: "Find cards" });
@@ -594,10 +697,249 @@ test("failed agentic search keeps the trace open at the broken step", async ({
   await expect(
     page.getByText("Tool call", { exact: true }),
   ).toBeVisible();
+  // A run that failed late still paid for the calls it made, so the price is on
+  // screen here — and it has to be readable, not clipped to its first character.
+  await expect(page.locator(".search-debug__cost")).toHaveText("$0.0031");
+  await expectTraceSummaryOnOneRow(page);
   await page.screenshot({
     path: testInfo.outputPath("desktop-failed-agent-trace.png"),
     fullPage: true,
   });
+});
+
+test("deck agent chat accumulates its spend and forgets on reset", async ({
+  page,
+}, testInfo) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+
+  // Both prices are real measured turn costs, chosen so the running total does not
+  // land on a rounding boundary: 0.000233 + 0.000889 = 0.001122.
+  const replies = [
+    {
+      content: "Tell me your commander and I will suggest a direction.",
+      cost: 0.000233,
+      tool_calls: [
+        { name: "read_deck", signature: "read_deck()", ok: true, detail: null },
+      ],
+    },
+    {
+      content: "For Ghalta, ramp first and keep the curve low.",
+      cost: 0.000889,
+      // The second turn used no tools, so no line may carry over from the first.
+      tool_calls: [],
+    },
+  ];
+  let turn = 0;
+  let sentMessageCount = 0;
+  let sentDeck: unknown = "never sent";
+  await page.route("**/api/v1/agent/chat/stream", async (route) => {
+    const body = JSON.parse(route.request().postData() ?? "{}") as {
+      messages: Array<{ role: string; content: string }>;
+      deck?: unknown;
+    };
+    // The whole transcript is posted every turn — that is where the memory lives.
+    sentMessageCount = body.messages.length;
+    sentDeck = body.deck;
+    const reply = replies[Math.min(turn, replies.length - 1)];
+    turn += 1;
+    await fulfillSse(route, [
+      ...reply.tool_calls.map((call) => ({ type: "tool", call })),
+      { type: "text", content: reply.content },
+      {
+        type: "done",
+        reply: {
+          message: { role: "assistant", content: reply.content },
+          model: "openai/gpt-5.6-luna",
+          replayed_message_count: body.messages.length,
+          cost_usd: reply.cost,
+          unpriced_call_count: 0,
+          tool_calls: reply.tool_calls,
+        },
+      },
+    ]);
+  });
+
+  await page.goto("/");
+  const panel = page.getByRole("region", { name: "Deck agent" });
+  await expect(panel).toBeVisible();
+  const spend = panel.locator(".deck-agent__spend");
+  await expect(spend).toHaveCount(0);
+
+  await enableDebugMode(page);
+  await expect(spend).toHaveText("$0.0000");
+
+  const composer = panel.getByRole("textbox", {
+    name: "Message the deck agent",
+  });
+  await composer.fill("What should I build?");
+  await panel.getByRole("button", { name: "Send message" }).click();
+  await expect(panel.getByText(replies[0].content)).toBeVisible();
+  expect(sentMessageCount).toBe(1);
+  await expect(spend).toHaveText("$0.0002");
+
+  // The tool the agent ran is shown as its own small line above the answer.
+  await expect(panel.locator(".deck-agent__tool code")).toHaveText("read_deck()");
+  // The backend holds no deck, so the open one has to travel with the turn.
+  expect(sentDeck).toMatchObject({ name: "Untitled Commander", cards: [] });
+
+  await composer.fill("Ghalta, Primal Hunger.");
+  await composer.press("Enter");
+  await expect(panel.getByText(replies[1].content)).toBeVisible();
+  // Still exactly one: a tool line belongs to the turn that ran it.
+  await expect(panel.locator(".deck-agent__tool")).toHaveCount(1);
+  // Turn two replays turn one's question and answer alongside the new question.
+  expect(sentMessageCount).toBe(3);
+  await expect(spend).toHaveText("$0.0011");
+
+  const layout = await panel
+    .locator(".deck-agent__header")
+    .evaluate((element) => {
+      const badge = element.querySelector(".deck-agent__spend") as HTMLElement;
+      return {
+        tops: Array.from(element.children).map((child) =>
+          Math.round(child.getBoundingClientRect().top),
+        ),
+        clientWidth: badge.clientWidth,
+        scrollWidth: badge.scrollWidth,
+      };
+    });
+  expect(Math.max(...layout.tops) - Math.min(...layout.tops)).toBeLessThanOrEqual(
+    8,
+  );
+  expect(layout.scrollWidth).toBeLessThanOrEqual(layout.clientWidth);
+
+  await page.screenshot({
+    path: testInfo.outputPath("desktop-deck-agent-chat.png"),
+    fullPage: false,
+  });
+
+  await panel.getByRole("button", { name: "Reset chat" }).click();
+  await expect(panel.getByText(replies[1].content)).toBeHidden();
+  await expect(panel.locator(".deck-agent__tool")).toHaveCount(0);
+  await expect(spend).toHaveText("$0.0000");
+});
+
+test("deck agent keeps a chat per deck and opens its tool calls", async ({
+  page,
+}, testInfo) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+
+  const deckListing =
+    'Deck "Ramp Lab" — 1 card, 1 distinct.\n\n' +
+    "Commander (0) — the command zone is empty.\n\n" +
+    "Artifact (1)\n  Sol Ring [6ad8011d]  [group: Ramp]";
+  const sent: Array<{ messageCount: number; debug: boolean }> = [];
+  await page.route("**/api/v1/agent/chat/stream", async (route) => {
+    const body = JSON.parse(route.request().postData() ?? "{}") as {
+      messages: Array<{ role: string; content: string }>;
+      debug?: boolean;
+    };
+    sent.push({ messageCount: body.messages.length, debug: body.debug === true });
+    const content = `Answer for "${body.messages.at(-1)?.content}"`;
+    const call = {
+      name: "read_deck",
+      signature: "read_deck()",
+      ok: true,
+      detail: null,
+      // Only a debug turn carries these, which is what makes the line open.
+      arguments_json: body.debug === true ? "{}" : null,
+      result: body.debug === true ? deckListing : null,
+    };
+    await fulfillSse(route, [
+      { type: "tool", call },
+      { type: "text", content },
+      {
+        type: "done",
+        reply: {
+          message: { role: "assistant", content },
+          model: "openai/gpt-5.6-luna",
+          replayed_message_count: body.messages.length,
+          cost_usd: 0.000233,
+          unpriced_call_count: 0,
+          tool_calls: [call],
+        },
+      },
+    ]);
+  });
+
+  await page.goto("/");
+  const panel = page.getByRole("region", { name: "Deck agent" });
+  await expect(panel).toBeVisible();
+  await enableDebugMode(page);
+
+  await page.locator(".deck-identity strong").dblclick();
+  const deckName = page.getByRole("textbox", { name: "Deck name" });
+  await deckName.fill("Ramp Lab");
+  await deckName.press("Enter");
+  await expect(page.getByRole("heading", { name: "Ramp Lab" })).toBeVisible();
+
+  const composer = panel.getByRole("textbox", {
+    name: "Message the deck agent",
+  });
+  await composer.fill("What is in this deck?");
+  await composer.press("Enter");
+  await expect(
+    panel.getByText('Answer for "What is in this deck?"'),
+  ).toBeVisible();
+  expect(sent[0]).toEqual({ messageCount: 1, debug: true });
+
+  // Debug mode is on and the turn carried payloads, so the line opens rather than
+  // sitting there as text.
+  const toolCall = panel.locator(".deck-agent__tool-call");
+  await expect(toolCall).toHaveCount(1);
+  await expectToolSummaryOnOneRow(page);
+  await expect(panel.getByText("30x Forest")).toHaveCount(0);
+  await toolCall.locator("summary").first().click();
+  // Two sub-boxes: what the model asked for, and what it read back. jsdom cannot
+  // tell these apart from hidden ones, which is why this assertion lives here.
+  await expect(toolCall.getByText("Call", { exact: true })).toBeVisible();
+  await expect(toolCall.getByText("Result", { exact: true })).toBeVisible();
+  await expect(toolCall.getByText(/Sol Ring \[6ad8011d\]/)).toBeVisible();
+  await page.screenshot({
+    path: testInfo.outputPath("desktop-deck-agent-tool-call.png"),
+    fullPage: false,
+  });
+
+  // Typed and left unsent: it belongs to this deck, not to the composer.
+  await composer.fill("Should I cut a land?");
+
+  // A second deck starts its own conversation rather than inheriting this one.
+  await page.getByRole("button", { name: "Create new deck" }).click();
+  await expect(
+    page.getByRole("heading", { name: "Untitled Commander" }),
+  ).toBeVisible();
+  await expect(panel.getByText(/Ask about the deck you are building/)).toBeVisible();
+  await expect(panel.locator(".deck-agent__spend")).toHaveText("$0.0000");
+  await expect(composer).toHaveValue("");
+
+  await composer.fill("And this empty one?");
+  await composer.press("Enter");
+  await expect(panel.getByText('Answer for "And this empty one?"')).toBeVisible();
+  // Its own transcript: the first deck's turns are not replayed into it.
+  expect(sent[1]).toEqual({ messageCount: 1, debug: true });
+
+  await page.getByRole("button", { name: /Ramp Lab/ }).click();
+  await expect(page.getByRole("heading", { name: "Ramp Lab" })).toBeVisible();
+  await expect(
+    panel.getByText('Answer for "What is in this deck?"'),
+  ).toBeVisible();
+  await expect(
+    panel.getByText('Answer for "And this empty one?"'),
+  ).toHaveCount(0);
+  await expect(panel.locator(".deck-agent__spend")).toHaveText("$0.0002");
+  await expect(composer).toHaveValue("Should I cut a land?");
+
+  // Saved beside the decks themselves, so a reload comes back to the conversation
+  // — payloads included, which is what keeps the line expandable.
+  await page.reload();
+  await expect(page.getByRole("heading", { name: "Ramp Lab" })).toBeVisible();
+  await expect(
+    panel.getByText('Answer for "What is in this deck?"'),
+  ).toBeVisible();
+  await expect(panel.locator(".deck-agent__spend")).toHaveText("$0.0002");
+  await expect(composer).toHaveValue("Should I cut a land?");
+  await panel.locator(".deck-agent__tool-call summary").first().click();
+  await expect(panel.getByText(/Sol Ring \[6ad8011d\]/)).toBeVisible();
 });
 
 test("search filters shape requests without crowding the results", async ({
@@ -629,15 +971,8 @@ test("search filters shape requests without crowding the results", async ({
   });
 
   await page.goto("/");
+  await enableDebugMode(page);
   await openSearch(page);
-  await page.getByRole("button", { name: "Search settings" }).click();
-  const debugSwitch = page.getByRole("switch", {
-    name: "Search debug log",
-  });
-  await expect(debugSwitch).not.toBeChecked();
-  await debugSwitch.click();
-  await expect(debugSwitch).toBeChecked();
-  await page.getByRole("button", { name: "Search settings" }).click();
   await page.getByRole("radio", { name: "Exact" }).click();
   await page.getByRole("checkbox", { name: "Blue" }).click();
   await page.getByRole("checkbox", { name: "Colorless" }).click();
@@ -682,6 +1017,10 @@ test("search filters shape requests without crowding the results", async ({
   expect(requestedUrl?.searchParams.get("price_max")).toBe("12");
   expect(requestedUrl?.searchParams.get("debug")).toBe("true");
   await expect(page.getByText("Search trace")).toBeVisible();
+  // Control for the priced row above: a local search called no model, so there is
+  // no price badge at all — and the row still has to hold together without one.
+  await expect(page.locator(".search-debug__cost")).toHaveCount(0);
+  await expectTraceSummaryOnOneRow(page);
   await page.getByText("Search trace").click();
   const fuzzyStage = page.getByText("Local fuzzy title ranking", {
     exact: true,
@@ -981,14 +1320,12 @@ test("mobile keeps primary deck actions reachable and contained", async ({
     ).toBeVisible();
   }
 
+  await enableDebugMode(page);
   await mobileToolbar
     .getByRole("button", { name: "Add cards", exact: true })
     .click();
   const searchDialog = page.getByRole("dialog", { name: "Find cards" });
   await expect(searchDialog).toBeVisible();
-  await page.getByRole("button", { name: "Search settings" }).click();
-  await page.getByRole("switch", { name: "Search debug log" }).click();
-  await page.getByRole("button", { name: "Search settings" }).click();
   const searchInput = page.getByRole("textbox", {
     name: "Search cards",
   });
@@ -1137,6 +1474,179 @@ test("mobile keeps primary deck actions reachable and contained", async ({
   await waitForCardArt(page, "Llanowar Elves");
   await page.screenshot({
     path: testInfo.outputPath("mobile-populated-inspector.png"),
+    fullPage: false,
+  });
+});
+
+test("card text is drawn with its symbols in every panel that shows it", async ({
+  page,
+}, testInfo) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+
+  await page.route(SEARCH_ROUTE, async (route) => {
+    const query = new URL(route.request().url()).searchParams.get("q") ?? "";
+    await fulfillJson(route, searchPage(query, [llanowarElves, ghalta]));
+  });
+  await page.route(ENRICHMENT_ROUTE, async (route) => {
+    const oracleId = new URL(route.request().url()).pathname.split("/").at(-2);
+    await fulfillJson(route, emptyEnrichment(oracleId ?? ""));
+  });
+
+  await page.goto("/");
+  await openSearch(page);
+  await page.getByRole("textbox", { name: "Search cards" }).fill("elves");
+
+  // A result row's cost. `{10}{G}{G}` is the case a font-sized `em` rule has to
+  // survive: three symbols in a column laid out for a few characters of text.
+  const ghaltaResult = page.getByRole("article").filter({ hasText: "Ghalta" });
+  await expect(ghaltaResult.getByAltText("ten generic mana")).toBeVisible();
+  await expect(ghaltaResult.getByAltText("one green mana")).toHaveCount(2);
+  await expect(ghaltaResult.locator(".mana-line")).not.toContainText("{");
+
+  // The preview aside's rules text, where symbols sit inside a sentence.
+  const elvesResult = page.getByRole("article").filter({ hasText: "Llanowar Elves" });
+  await elvesResult.getByRole("button", { name: "Llanowar Elves" }).first().click();
+  const preview = page.getByRole("complementary", { name: "Search card preview" });
+  await expect(preview.getByAltText("tap this permanent")).toBeVisible();
+  await expect(preview.locator(".oracle-text")).toHaveText(": Add .");
+  await page.screenshot({
+    path: testInfo.outputPath("symbols-search.png"),
+    fullPage: false,
+  });
+
+  await elvesResult.getByRole("button", { name: "Add Llanowar Elves to deck" }).click();
+  await expect(elvesResult.getByLabel("1 in deck")).toBeVisible();
+  await page.getByRole("textbox", { name: "Search cards" }).press("Escape");
+
+  // The deck list is a grid sized for text, so a symbol that renders at its own
+  // intrinsic size rather than the row's would push the columns apart. jsdom
+  // computes no layout, so the row height is only checkable here.
+  await page.getByRole("button", { name: "List" }).click();
+  const row = page.locator(".deck-list__row").filter({ hasText: "Llanowar Elves" });
+  const symbol = row.getByAltText("one green mana");
+  await expect(symbol).toBeVisible();
+  const symbolBox = await symbol.boundingBox();
+  const rowBox = await row.boundingBox();
+  expect(symbolBox).not.toBeNull();
+  expect(rowBox).not.toBeNull();
+  expect(symbolBox!.height).toBeLessThan(rowBox!.height);
+  expect(symbolBox!.height).toBeGreaterThan(6);
+  await page.screenshot({
+    path: testInfo.outputPath("symbols-deck-list.png"),
+    fullPage: false,
+  });
+
+  // The inspector's rules box, the last of the three shapes card text takes.
+  await page.getByRole("button", { name: "Inspect Llanowar Elves" }).click();
+  const inspector = page.getByRole("dialog", { name: "Card details" });
+  await expect(inspector.getByAltText("tap this permanent")).toBeVisible();
+  await expect(inspector.locator(".oracle-text")).not.toContainText("{");
+  await page.screenshot({
+    path: testInfo.outputPath("symbols-inspector.png"),
+    fullPage: false,
+  });
+});
+
+test("deck agent names cards, previews them on hover and opens them on click", async ({
+  page,
+}, testInfo) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+
+  // The agent braces every card name; the backend resolves the ones the catalog
+  // knows. `{C}` and `{Sol Rong}` are here to prove the two ways a brace does not
+  // become a link: a mana symbol, which is drawn instead, and a name nothing
+  // resolves to, which stays as words.
+  const answer =
+    "Play **{Sol Ring}** on turn one — it adds {C}{C} — then {Mana Vault}. " +
+    "Skip {Sol Rong}, and **never** cut lands.";
+  await page.route("**/api/v1/agent/chat/stream", async (route) => {
+    await fulfillSse(route, [
+      { type: "text", content: answer },
+      {
+        type: "done",
+        reply: {
+          message: { role: "assistant", content: answer },
+          model: "openai/gpt-5.6-luna",
+          replayed_message_count: 1,
+          cost_usd: 0.0004,
+          unpriced_call_count: 0,
+          tool_calls: [],
+          card_links: [
+            { name: "Sol Ring", oracle_id: solRing.oracle_id },
+            { name: "Mana Vault", oracle_id: manaVault.oracle_id },
+          ],
+        },
+      },
+    ]);
+  });
+  await page.route(`**/api/v1/cards/${solRing.oracle_id}`, async (route) => {
+    await fulfillJson(route, solRing);
+  });
+
+  await page.goto("/");
+  const panel = page.getByRole("region", { name: "Deck agent" });
+  await panel
+    .getByRole("textbox", { name: "Message the deck agent" })
+    .fill("What ramp?");
+  await panel.getByRole("button", { name: "Send message" }).click();
+
+  // Bolded, because that is how the agent writes the card it recommends — and a flat
+  // parse rendered exactly that case as literal braces.
+  const solRingName = panel.getByRole("button", { name: "Sol Ring", exact: true });
+  await expect(solRingName).toBeVisible();
+  await expect(solRingName.locator("xpath=ancestor::strong")).toHaveCount(1);
+  await expect(panel.getByRole("button", { name: "Mana Vault" })).toBeVisible();
+  // Neither of the two non-cards became a control, and no brace reached the reader.
+  await expect(panel.getByRole("button", { name: "Sol Rong" })).toHaveCount(0);
+  // The two `{C}` became artwork, and the reader is left with no brace anywhere.
+  const message = panel.locator(".deck-agent__message--assistant");
+  await expect(message.getByAltText("one colorless mana")).toHaveCount(2);
+  await expect(message).toContainText("it adds");
+  await expect(message).not.toContainText("{");
+  // Drawn at the size of the sentence rather than at the SVG's own size, which is
+  // the only place that can be checked: jsdom computes no layout.
+  const symbolBox = await message.getByAltText("one colorless mana").first().boundingBox();
+  expect(symbolBox).not.toBeNull();
+  expect(symbolBox!.width).toBeGreaterThan(6);
+  expect(symbolBox!.width).toBeLessThan(24);
+  expect(Math.abs(symbolBox!.width - symbolBox!.height)).toBeLessThan(1.5);
+  // Two bolds: the card the agent recommended, and an ordinary emphasised word. The
+  // first is the nesting case — a card inside bold is still a card.
+  await expect(panel.locator(".deck-agent__message--assistant strong")).toHaveText([
+    "Sol Ring",
+    "never",
+  ]);
+
+  await solRingName.hover();
+  const preview = page.getByRole("tooltip");
+  await expect(preview).toBeVisible();
+  // jsdom computes no layout, so this is the only place the preview's geometry is
+  // real: it must be on screen, and it must not cover the name it describes.
+  const box = await preview.boundingBox();
+  const nameBox = await solRingName.boundingBox();
+  expect(box).not.toBeNull();
+  expect(nameBox).not.toBeNull();
+  expect(box!.x).toBeGreaterThanOrEqual(0);
+  expect(box!.y).toBeGreaterThanOrEqual(0);
+  expect(box!.x + box!.width).toBeLessThanOrEqual(1440);
+  expect(box!.y + box!.height).toBeLessThanOrEqual(900);
+  expect(box!.x + box!.width).toBeLessThanOrEqual(nameBox!.x + 1);
+
+  await page.screenshot({
+    path: testInfo.outputPath("agent-card-hover.png"),
+    fullPage: false,
+  });
+
+  await solRingName.click();
+  // The same inspector the board opens, so a card named in chat behaves like a card.
+  const inspector = page.getByRole("dialog", { name: "Card details" });
+  await expect(inspector).toBeVisible();
+  await expect(inspector.getByRole("heading", { name: "Sol Ring" })).toBeVisible();
+  // The preview is gone once the real thing is open.
+  await expect(page.getByRole("tooltip")).toHaveCount(0);
+
+  await page.screenshot({
+    path: testInfo.outputPath("agent-card-opened.png"),
     fullPage: false,
   });
 });

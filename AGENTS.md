@@ -34,11 +34,24 @@ the documentation in the same change when drift is found.
 - RapidFuzz `WRatio` handles exact titles, typos, words, and partial segments.
 - `config.yaml` owns the six-card page size, 75% preview boundary, local
   semantic model/index values, agent model, one-tool prompt, and continuation
-  values.
+  values. A separate top-level `agent:` block owns the deck chat agent, including
+  its system prompt and both tool descriptions — those are prompt text, so they
+  belong in config rather than in code.
+- Mana and ability symbol artwork is committed, under
+  `frontend/public/card-symbols/` with a generated manifest beside the module that
+  reads it. `npm run symbols:sync` writes both; neither is edited by hand (ADR 0034).
 - Deck libraries are currently browser-local and persisted in `localStorage`.
 - There is no deck CRUD API or SQLite persistence yet.
-- Progressive card-search agent execution is shipped. The separate deck chat
-  and mutation agent does not exist yet.
+- Progressive card-search agent execution is shipped. The deck chat agent is
+  shipped with three **read-only** tools — `read_deck`, `see_cards` (ADR 0029) and
+  `search_cards` (ADR 0035) — and still has no mutation or patch path: it cannot add,
+  remove or move a card. The backend holds no deck, so the browser posts a deck
+  snapshot with each turn.
+- `search_cards` reuses the search agent's `LocalCardSearchTool` unchanged. Its two
+  prompts describe one engine — the field reference in
+  `agent.tools.search_cards_description`, the craft under `# Searching for cards` in
+  `agent.system_prompt` — so tune both or neither, and keep them in step with
+  `search.agentic.system_prompt`'s `# Tools` section.
 - Development uses uncommon loopback ports:
   - Frontend: `127.0.0.1:41737`
   - Backend: `127.0.0.1:43127`
@@ -57,7 +70,19 @@ Do not change these without an explicit product decision and ADR update:
 - Cards may be moved only in Custom grouping. Card-type grouping is derived.
 - There is no standalone maybeboard in the active editor model.
 - Card details open in a centered dialog, not a permanent right inspector.
-- The right side of the workspace is reserved for a later deck agent.
+- The right side of the workspace belongs to the deck agent. It is a chat panel on
+  desktop and is hidden below 860px; do not put anything else there.
+- The deck agent's transcript is client-held and posted back per turn. Do not add a
+  server-side chat session; `--reload` would drop it on every backend edit.
+- One conversation per deck. The transcript belongs to the deck, not to the panel, so
+  switching decks switches chat and **Reset chat** clears exactly one of them.
+- A turn is streamed, and only the finished turn is stored. Anything shown while it
+  streams must converge on what `done` commits — never add a live element that survives
+  into the transcript, or a stored one that the stream cannot produce.
+- Debug mode is one interface-wide preference in the editor toolbar, shared by the
+  search trace and the deck agent cost. Do not reintroduce a per-surface toggle.
+- Model cost is read from the provider's reported `usage.cost`, never computed from
+  token counts, and an unreported cost is `None`, never `0.0`.
 - Deck names are edited inline through double-click or the edit control.
 - Deck deletion requires confirmation and remains restorable during the
   current session.
@@ -81,6 +106,13 @@ Do not change these without an explicit product decision and ADR update:
   `backend/src/mtg_deck_builder/search_debug.py`.
 - Agent orchestration, local tool execution, sessions, and continuation live in
   `backend/src/mtg_deck_builder/agentic_card_search.py`.
+- The conversational deck agent lives in
+  `backend/src/mtg_deck_builder/deck_agent.py`, with contracts in
+  `domain/agent_chat.py` and its routes in `api/agent.py`. The shared public error
+  envelope lives in `api/errors.py`.
+- One loop answers both agent routes: `_run` takes optional emitters, and only the
+  transport differs. Do not fork it — a second loop is how the streamed and JSON paths
+  would start disagreeing about what a turn cost or which tools ran.
 - Complete agent traces live in
   `backend/src/mtg_deck_builder/agentic_search_debug.py`.
 - Runtime dependency construction lives in
@@ -98,6 +130,9 @@ provider HTTP calls in routes. Keep public Pydantic models strict.
 - Search orchestration lives in `frontend/src/components/SearchDrawer.tsx`.
 - Debug trace presentation lives in
   `frontend/src/components/SearchTracePanel.tsx`.
+- The deck agent panel lives in `frontend/src/components/DeckAgentPanel.tsx`, its
+  per-deck conversations in `frontend/src/hooks/useDeckAgentChats.ts`, and the shared
+  debug preference in `frontend/src/hooks/useDebugMode.ts`.
 - Board grouping, sorting, card movement, and display modes live in
   `frontend/src/components/DeckBoard.tsx`.
 - Page composition and responsive shell behavior live in `frontend/src/App.tsx`.
@@ -215,7 +250,11 @@ When the `CardSearchPage` contract changes, update all of:
   versioned input to semantic document v2 when installed.
 - The current deck library key is `manabase.deck-library.v2`.
 - `manabase.active-deck.v1` is a legacy migration source, not the active format.
-- Search debug preference uses `manabase.search-debug`.
+- Debug mode uses `manabase.search-debug`. The name predates its wider scope and
+  stays as it is; renaming it would silently reset the preference.
+- Deck agent conversations use `manabase.deck-agent-chats.v1`, keyed by deck id.
+  Anything written there must stay inside the serializer's character budget: the deck
+  library shares this quota, and losing a deck edit is worse than losing a transcript.
 - Custom-group placement stores one primary group ID in `categories[0]`.
 - Command-zone placement uses `section="command_zone"` and the fixed
   `command_zone` group ID.
@@ -232,6 +271,7 @@ Run from the repository root:
 npm run setup
 npm run catalog:sync
 npm run tagger:sync
+npm run symbols:sync
 npm run dev
 npm test
 npm run build

@@ -132,13 +132,24 @@ class RelatedOracleCard(CardModel):
 
 
 class CardEnrichment(CardModel):
-    """Optional local Tagger context loaded only for a highlighted card."""
+    """Optional local Tagger context loaded only for a highlighted card.
+
+    Every list holds the *other* card, described from the highlighted card's point
+    of view: `upgrades` are the cards Tagger considers strictly better than this
+    one, and `downgrades` are the ones this card outclasses.
+    """
 
     oracle_id: UUID
     tags: list[CardTag] = Field(default_factory=list)
     similar_cards: list[RelatedOracleCard] = Field(default_factory=list)
     references: list[RelatedOracleCard] = Field(default_factory=list)
     referenced_by: list[RelatedOracleCard] = Field(default_factory=list)
+    upgrades: list[RelatedOracleCard] = Field(default_factory=list)
+    downgrades: list[RelatedOracleCard] = Field(default_factory=list)
+    variants: list[RelatedOracleCard] = Field(default_factory=list)
+    creature_versions: list[RelatedOracleCard] = Field(default_factory=list)
+    spell_versions: list[RelatedOracleCard] = Field(default_factory=list)
+    related_cards: list[RelatedOracleCard] = Field(default_factory=list)
 
 
 class CardSearchFilters(CardModel):
@@ -272,6 +283,9 @@ class SearchDebugSummary(CardModel):
     log_path: NonEmptyString
     log_written: bool
     total_duration_ms: Annotated[float, Field(ge=0)]
+    # What the model calls in this run cost, in USD, as the provider accounted for
+    # it. `None` means no figure was reported, which a local fuzzy search never has.
+    total_cost_usd: Annotated[float, Field(ge=0)] | None = None
     stages: list[SearchDebugStage]
     trace: dict[str, Any]
 
@@ -300,6 +314,29 @@ class EdhrecCommanderContext(CardModel):
     commander_oracle_id: UUID
     commander_name: str | None = None
     themes: list[EdhrecDeckTheme] = Field(default_factory=list)
+    message: str | None = None
+
+
+class EdhrecSimilarCard(CardModel):
+    """One EDHREC similar-card suggestion, kept in the order EDHREC published it.
+
+    `oracle_id` is absent when the published name matches nothing in the local
+    catalog, which keeps an unresolvable suggestion visible instead of dropping it
+    silently. Only a resolved suggestion can be opened as a card.
+    """
+
+    rank: Annotated[int, Field(ge=1)]
+    name: NonEmptyString
+    oracle_id: UUID | None = None
+
+
+class EdhrecSimilarCards(CardModel):
+    """Public load state and EDHREC's similar-card list for one highlighted card."""
+
+    status: EdhrecEnhancementStatus
+    source: EdhrecEnhancementSource | None = None
+    oracle_id: UUID
+    cards: list[EdhrecSimilarCard] = Field(default_factory=list)
     message: str | None = None
 
 

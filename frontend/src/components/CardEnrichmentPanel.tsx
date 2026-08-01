@@ -6,6 +6,7 @@ import type {
   CardSearchResult,
   CardTag,
   CardTagFilter,
+  EdhrecSimilarCard,
   RelatedOracleCard,
 } from "../domain/card";
 import { apiClient, type ApiClient } from "../lib/api";
@@ -35,6 +36,7 @@ export function CardEnrichmentPanel({
   });
   const [openingCardId, setOpeningCardId] = useState<string | null>(null);
   const [navigationError, setNavigationError] = useState<string | null>(null);
+  const edhrecSimilar = useEdhrecSimilarCards(oracleId, client);
 
   useEffect(() => {
     if (!client.getCardEnrichment) {
@@ -88,15 +90,33 @@ export function CardEnrichmentPanel({
   }
 
   const { enrichment } = state;
-  const hasRelationships =
-    enrichment.similar_cards.length > 0 ||
-    enrichment.references.length > 0;
-  if (enrichment.tags.length === 0 && !hasRelationships) {
+  // Ordered by what actually helps while building a deck: what to play instead
+  // comes first, then the shape variations, then the wording cross-references.
+  const relationshipGroups: { heading: string; cards: RelatedOracleCard[] }[] = [
+    { heading: "Upgrades", cards: enrichment.upgrades },
+    { heading: "Similar cards", cards: enrichment.similar_cards },
+    { heading: "Creature versions", cards: enrichment.creature_versions },
+    { heading: "Spell versions", cards: enrichment.spell_versions },
+    { heading: "Outclasses", cards: enrichment.downgrades },
+    { heading: "Variants", cards: enrichment.variants },
+    { heading: "Related cards", cards: enrichment.related_cards },
+    { heading: "References", cards: enrichment.references },
+    // `referenced_by` stays deliberately unrendered — see docs/search.md and the
+    // changelog entry that removed it while keeping the data in the contract.
+  ];
+  // EDHREC goes last despite being useful, because it arrives over the network and
+  // appending it keeps it from shifting the local groups once it resolves.
+  const groups = [
+    ...relationshipGroups,
+    { heading: "Similar on EDHREC", cards: edhrecSimilar },
+  ];
+  // The container draws its own divider, so an empty one would leave a stray rule.
+  if (enrichment.tags.length === 0 && groups.every((g) => g.cards.length === 0)) {
     return null;
   }
 
   return (
-    <section className="card-enrichment" aria-label="Scryfall Tagger details">
+    <section className="card-enrichment" aria-label="Card tags and related cards">
       {enrichment.tags.length > 0 ? (
         <div className="card-enrichment__group">
           <h4>
@@ -113,24 +133,18 @@ export function CardEnrichmentPanel({
           </div>
         </div>
       ) : null}
-      <RelatedCards
-        heading="Similar cards"
-        cards={enrichment.similar_cards}
-        client={client}
-        openingCardId={openingCardId}
-        onOpenCard={onOpenCard}
-        onStartOpening={setOpeningCardId}
-        onNavigationError={setNavigationError}
-      />
-      <RelatedCards
-        heading="References"
-        cards={enrichment.references}
-        client={client}
-        openingCardId={openingCardId}
-        onOpenCard={onOpenCard}
-        onStartOpening={setOpeningCardId}
-        onNavigationError={setNavigationError}
-      />
+      {groups.map((group) => (
+        <RelatedCards
+          heading={group.heading}
+          cards={group.cards}
+          client={client}
+          openingCardId={openingCardId}
+          onOpenCard={onOpenCard}
+          onStartOpening={setOpeningCardId}
+          onNavigationError={setNavigationError}
+          key={group.heading}
+        />
+      ))}
       {navigationError ? (
         <p className="card-enrichment__navigation-error" role="status">
           {navigationError}
@@ -235,6 +249,46 @@ function RelatedCards({
       </div>
     </div>
   );
+}
+
+/**
+ * EDHREC's similar cards, loaded separately because this is a network call behind a
+ * 30-day cache rather than a local read. It resolves to an empty list while loading
+ * and on failure: the Tagger groups beside it are local and must never be delayed
+ * or replaced by an EDHREC outage, so nothing is reported to the reader.
+ */
+function useEdhrecSimilarCards(
+  oracleId: string,
+  client: ApiClient,
+): RelatedOracleCard[] {
+  const [cards, setCards] = useState<EdhrecSimilarCard[]>([]);
+
+  useEffect(() => {
+    if (!client.getCardEdhrecSimilar) {
+      return;
+    }
+    const controller = new AbortController();
+    setCards([]);
+    void client
+      .getCardEdhrecSimilar(oracleId, controller.signal)
+      .then((similar) => {
+        if (!controller.signal.aborted) {
+          setCards(similar.status === "applied" ? similar.cards : []);
+        }
+      })
+      .catch(() => {
+        // An unreachable EDHREC is not worth reporting next to local data.
+      });
+    return () => controller.abort();
+  }, [client, oracleId]);
+
+  // A published name that matches no local card cannot be opened, so it is left out
+  // of the links rather than rendered as a dead control.
+  return cards
+    .filter((card): card is EdhrecSimilarCard & { oracle_id: string } =>
+      Boolean(card.oracle_id),
+    )
+    .map((card) => ({ oracle_id: card.oracle_id, name: card.name }));
 }
 
 function scryfallOracleUrl(oracleId: string): string {

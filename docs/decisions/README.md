@@ -40,6 +40,17 @@ tradeoffs; they are not task lists.
 | [0022](0022-remove-set-and-rarity-agent-filters.md) | Accepted | Remove printing-level set and rarity filters from the agent tool |
 | [0023](0023-name-similarity-ordering-instead-of-a-name-filter.md) | Accepted | Card names order by fuzzy similarity instead of filtering by substring |
 | [0024](0024-cheapest-ordinary-printing-selection.md) | Accepted | Catalog keeps the cheapest ordinary printing, not the newest one |
+| [0025](0025-surface-every-tagger-relationship-classifier.md) | Accepted | Every Tagger relationship classifier is grouped and surfaced |
+| [0026](0026-on-demand-edhrec-similar-cards.md) | Accepted | EDHREC similar cards cached per card on demand, names resolved locally |
+| [0027](0027-conversational-deck-agent-without-tools.md) | Accepted | Deck agent ships without tools, with a client-held transcript |
+| [0028](0028-model-cost-and-interface-wide-debug-mode.md) | Accepted | Model cost read from provider accounting, behind one interface-wide debug mode |
+| [0029](0029-read-only-deck-agent-tools.md) | Accepted | Deck agent gets two read-only tools, answered from a posted deck snapshot |
+| [0030](0030-per-deck-chat-history-and-expandable-tool-calls.md) | Accepted | One saved chat per deck, and tool calls that open onto what they read |
+| [0031](0031-streamed-deck-agent-turns.md) | Accepted | Deck agent turns stream, showing each tool call as it runs |
+| [0032](0032-labelled-card-fields-and-grouped-related-cards.md) | Accepted | `see_cards` renders labelled fields in a fixed order, related cards grouped |
+| [0033](0033-braced-card-names-resolved-to-openable-cards.md) | Accepted | Agent braces card names; backend resolves them into openable cards |
+| [0034](0034-card-symbols-drawn-from-a-synced-local-set.md) | Accepted | Card text draws its symbols, from artwork synced into the repository |
+| [0035](0035-the-deck-agent-searches-the-catalog-itself.md) | Accepted | The deck agent searches the catalog itself, owning every filter |
 
 ## Updating Decisions
 

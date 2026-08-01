@@ -1049,6 +1049,82 @@ class FailingModelClient:
         )
 
 
+class PricedModelClient(StubModelClient):
+    """Answer like the stub, with the provider's own usage accounting attached."""
+
+    def __init__(self, cards: list[CardSearchResult], costs: list[float | None]) -> None:
+        super().__init__(cards)
+        for response, cost in zip(self._responses, costs, strict=True):
+            usage: dict[str, object] = {"prompt_tokens": 100, "completion_tokens": 50}
+            if cost is not None:
+                usage["cost"] = cost
+            response["usage"] = usage
+
+
+def test_debug_trace_reports_what_the_search_round_cost(tmp_path: Path) -> None:
+    cards = [GHALTA, GIGANTOSAURUS]
+    trace_path = tmp_path / "search.jsonl"
+
+    def run(costs: list[float | None]) -> CardSearchPage:
+        service = AgenticCardSearchService(
+            fuzzy_provider=StubFuzzyProvider(),  # type: ignore[arg-type]
+            local_tool=StubTool(cards),  # type: ignore[arg-type]
+            model_client=PricedModelClient(cards, costs),  # type: ignore[arg-type]
+            settings=AgenticSearchSettings(enabled=True),
+            page_size=1,
+            trace_logger=JsonlAgentSearchTraceLogger(trace_path),
+            trace_log_path=str(trace_path),
+            debug_default_enabled=False,
+        )
+        return asyncio.run(
+            service.search(AgenticCardSearchRequest(q="green big creature", debug=True))
+        )
+
+    priced = run([0.0004, 0.0021])
+    unpriced = run([None, None])
+
+    # One round is two model calls, so its price is their sum.
+    assert priced.debug is not None
+    assert priced.debug.total_cost_usd == pytest.approx(0.0025)
+    assert priced.debug.trace["total_cost_usd"] == pytest.approx(0.0025)
+    # A provider that reported no figure must not be shown as a free search.
+    assert unpriced.debug is not None
+    assert unpriced.debug.total_cost_usd is None
+
+
+def test_failed_search_still_reports_the_calls_it_paid_for(tmp_path: Path) -> None:
+    trace_path = tmp_path / "search.jsonl"
+    service = AgenticCardSearchService(
+        fuzzy_provider=StubFuzzyProvider(),  # type: ignore[arg-type]
+        local_tool=StubTool([GHALTA]),  # type: ignore[arg-type]
+        model_client=ContractBreakingModelClient(0.0007),  # type: ignore[arg-type]
+        settings=AgenticSearchSettings(enabled=True),
+        page_size=1,
+        trace_logger=JsonlAgentSearchTraceLogger(trace_path),
+        trace_log_path=str(trace_path),
+        debug_default_enabled=False,
+    )
+
+    with pytest.raises(AgenticCardSearchUnavailable) as raised:
+        asyncio.run(service.search(AgenticCardSearchRequest(q="green big creature", debug=True)))
+
+    assert raised.value.debug is not None
+    assert raised.value.debug.total_cost_usd == pytest.approx(0.0007)
+
+
+class ContractBreakingModelClient:
+    """Charge for a first call, then answer with no tool call at all."""
+
+    def __init__(self, cost: float) -> None:
+        self._cost = cost
+
+    async def chat_completion(self, _payload: dict[str, object]) -> dict[str, object]:
+        return {
+            "choices": [{"message": {"role": "assistant", "content": "No tool for me."}}],
+            "usage": {"cost": self._cost},
+        }
+
+
 def test_agent_failure_returns_the_partial_sanitized_debug_trace(
     tmp_path: Path,
 ) -> None:

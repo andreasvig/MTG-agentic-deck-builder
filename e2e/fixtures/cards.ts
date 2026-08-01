@@ -52,6 +52,32 @@ const baseCard: CardSearchResult = {
 
 export const solRing = baseCard;
 
+/**
+ * A complete but empty enrichment payload. Build partial fixtures by spreading
+ * this: the frontend validator requires every relationship group, so a fixture
+ * missing one fails the whole response with "card enrichment response was
+ * invalid" and the panel never renders.
+ */
+export function emptyEnrichment(
+  oracleId: string,
+  overrides: Partial<CardEnrichment> = {},
+): CardEnrichment {
+  return {
+    oracle_id: oracleId,
+    tags: [],
+    similar_cards: [],
+    references: [],
+    referenced_by: [],
+    upgrades: [],
+    downgrades: [],
+    variants: [],
+    creature_versions: [],
+    spell_versions: [],
+    related_cards: [],
+    ...overrides,
+  };
+}
+
 export const solRingEnrichment: CardEnrichment = {
   oracle_id: solRing.oracle_id,
   tags: [
@@ -70,6 +96,14 @@ export const solRingEnrichment: CardEnrichment = {
   ],
   references: [],
   referenced_by: [],
+  // Every relationship group the contract carries, because the runtime validator
+  // requires all of them and a short fixture fails the whole enrichment response.
+  upgrades: [],
+  downgrades: [],
+  variants: [],
+  creature_versions: [],
+  spell_versions: [],
+  related_cards: [],
 };
 
 export const manaVault: CardSearchResult = {
@@ -224,6 +258,7 @@ export function searchDebugSummary(): SearchDebugSummary {
     log_path: "local-data/search-debug.jsonl",
     log_written: true,
     total_duration_ms: 83.2,
+    total_cost_usd: null,
     stages: [
       {
         name: "Local fuzzy title ranking",
@@ -310,6 +345,7 @@ export function failedAgentSearchDebugSummary(): SearchDebugSummary {
     log_path: "local-data/search-debug.jsonl",
     log_written: true,
     total_duration_ms: 870.3,
+    total_cost_usd: 0.0031,
     stages: [
       {
         name: "system_prompt",

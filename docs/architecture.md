@@ -33,6 +33,19 @@ FastAPI (127.0.0.1:43127/api/v1)
        |-- Scryfall printing ID -> local Oracle ID normalization
        `--> local-data/card-edhrec.sqlite3 (raw JSON + normalized rows)
   |
+  | deck agent chat turn (POST /agent/chat/stream, or /agent/chat for plain JSON)
+  +--> DeckAgentService
+       |-- system prompt + the newest `agent.max_history_messages` transcript entries
+       |-- up to `agent.tools.max_iterations` rounds of read-only tool use
+       |     `-- DeckAgentToolbox: read_deck (posted snapshot + catalog)
+       |                           see_cards (catalog, Tagger sidecar, EDHREC)
+       |                           search_cards (LocalCardSearchTool, all filters
+       |                                         written by the model itself)
+       |-- one final completion advertising no tools, so a turn always answers
+       |-- streamed: `tool` as each call runs, `text` as the answer is written
+       `--> reply, the calls it made, and the cost summed over every completion
+             `-- on a debug turn, each call's arguments and its exact result
+  |
   | when fewer than six titles clear preview confidence
   v
 AgenticCardSearchService
@@ -121,6 +134,22 @@ public debug summary projects the audit trace into the seven valuable agent step
 `AgenticCardSearchRequest` and the additional page metadata form the public
 progressive HTTP contract.
 
+### `domain/agent_chat.py`
+
+The reply also carries `card_links`: the card names the answer braced, resolved against
+the local catalog so the chat can open them (ADR 0033).
+
+Also the streamed turn's events — `text`, `tool`, `done`, `error` — where `done`
+carries the same reply the JSON route returns, so nothing stored depends on which
+route produced it (ADR 0031).
+
+Strict contracts for the deck agent's chat turn: an alternating transcript whose
+newest message must be the user's, and a reply carrying the assistant message, the
+model that answered, how much of the transcript was replayed, and the turn's cost.
+The transcript is the request because the agent keeps no session (ADR 0027). A turn
+may set `debug`, which asks for each tool call's arguments and its exact result
+alongside the answer, bounded by `MAX_TOOL_PAYLOAD_CHARS` (ADR 0030).
+
 ### `domain/deck.py`
 
 Early backend deck models for stable identities, sections, quantities, and
@@ -129,6 +158,19 @@ categories. These are not yet exposed through routes or a repository.
 ### `api/router.py`
 
 Owns `/api/v1`, health response, and router composition.
+
+### `api/errors.py`
+
+The one public error envelope, `PublicError` and `PublicErrorResponse`, shared by
+every route so clients read failures the same way whatever answered.
+
+### `api/agent.py`
+
+Owns `POST /agent/chat` and `POST /agent/chat/stream`. Separates an unusable reply
+(`502`) from an unreachable or unconfigured agent (`503`). The streaming route checks
+availability *before* returning a response, because a status code cannot be revised
+once the first byte is out; a failure after that point becomes an `error` event
+carrying the same code and wording, from the one shared definition (ADR 0031).
 
 ### `api/cards.py`
 
@@ -139,12 +181,16 @@ Current product routes:
 
 ```text
 GET /api/v1/health
+POST /api/v1/agent/chat
+POST /api/v1/agent/chat/stream
 GET /api/v1/cards/search
 POST /api/v1/cards/search/agentic
 GET /api/v1/cards/tags/search
 GET /api/v1/cards/subtypes/search
 GET /api/v1/cards/{oracle_id}
 GET /api/v1/cards/{oracle_id}/enrichment
+GET /api/v1/cards/{oracle_id}/edhrec
+GET /api/v1/cards/{oracle_id}/edhrec/similar
 GET /api/v1/openapi.json
 ```
 
@@ -162,11 +208,20 @@ Scryfall-specific response objects must not cross this module boundary.
 
 ### `providers/openrouter.py`
 
-Secret-safe async boundary for direct OpenRouter chat completions. Transport
+Secret-safe async boundary for direct OpenRouter chat completions, whole or streamed.
+Streaming opens the connection and reads it line by line in worker threads, so the
+boundary keeps its dependency-free transport and its injectable `open_url`; keep-alive
+comments are ordinary traffic and an error chunk is raised rather than yielded
+(ADR 0031). Transport
 errors retain debug evidence without exposing credentials through public
 errors. In debug mode, an agentic `503` carries the sanitized partial trace so
 the drawer can show completed, failed, and skipped steps instead of discarding
 the evidence.
+
+The module also owns `completion_cost_usd`, which reads `usage.cost` out of a
+completion. Cost is taken from the provider's own accounting rather than computed
+from token counts, and an unreported figure returns `None` rather than `0.0` so it
+can never be summed as though it were free (ADR 0028).
 
 ### `providers/tagger.py`
 
@@ -196,8 +251,10 @@ Builds the optional Tagger enrichment sidecar. It imports all Oracle-tag
 memberships and Oracle-card relationships, preserves normalized columns plus
 raw JSON, checkpoints completed source phases/pages, validates SQLite
 integrity, and atomically installs only a complete database. Its read-only
-runtime adapter groups one Oracle card's tags, similar cards, references, and
-inverse references for the lazy card-enrichment endpoint. It also fuzzy-ranks
+runtime adapter groups one Oracle card's tags and every relationship class
+Tagger publishes — similar cards, strictness, body, variants, related cards,
+references and inverse references — for the lazy card-enrichment endpoint,
+normalizing each edge's direction through a local inverse table. It also fuzzy-ranks
 tag names, resolves stable tag IDs, and intersects Oracle memberships for
 explicit UI-selected tag filters. During explicit sync, it also exposes a
 bounded, deduplicated gameplay-concept snapshot and source metadata for
@@ -208,7 +265,9 @@ expansion, or an agent-editable filter.
 
 Owns the 30-day on-demand cache, complete raw commander/theme payloads,
 advertised theme metadata, normalized Oracle-ID associations, and
-inclusion/synergy evidence. It serializes fetches per commander/page and
+inclusion/synergy evidence. It also caches per-card similar-card lists, resolving
+EDHREC's identifier-free names against the local catalog and retaining
+unresolvable ones. It serializes fetches per commander/page and per card, and
 converts every failure into an optional enhancement-unavailable outcome at the
 search boundary.
 
@@ -258,6 +317,53 @@ repairs schema shape rather than judging intent. Validated agent `types` and
 teaches when a printed type belongs in a filter (ADR 0019). The validated
 arguments and every repair remain visible in the debug trace.
 
+### `deck_agent.py`
+
+The conversational deck agent. Trims the posted transcript to the configured memory
+window, keeping the newest end so the current question always survives, then runs a
+bounded tool loop: up to `agent.tools.max_iterations` rounds of asking, running
+whatever tools were requested, and asking again, followed by one completion that
+advertises no tools so the turn always ends in prose. It validates that content came
+back — a reasoning model can answer HTTP 200 with empty content beside a populated
+`reasoning` field, which is a contract error rather than an answer — and sums what
+every completion in the turn cost, counting any that reported no figure. On a turn
+that asked for `debug`, each reported call also carries the arguments the model sent
+and the exact text the tool returned, taken from the call that ran rather than
+re-rendered, and truncated with a visible marker rather than silently cut (ADR 0030).
+
+### `deck_agent_tools.py`
+
+The agent's three read-only tools (ADRs 0029 and 0035). `read_deck` is answered entirely from the
+deck snapshot the browser posted with the turn, resolved against the local catalog so
+names and types come from the catalog rather than the client; it returns the deck
+grouped by primary type with short ids and no card text. `see_cards` resolves names,
+ids or those short ids and reports only the requested details — rules, prices, Tagger
+tags, every related-card list grouped by how the cards relate with each card named
+once, EDHREC inclusion for this commander,
+Commander legality. Every card renders as labelled, quoted fields in one fixed order
+whatever order the details were asked for (ADR 0032). A tool that cannot answer returns
+text the model can adapt to rather than raising, and an unreported price or inclusion is
+stated as absent rather than rendered as zero.
+
+`search_cards` is the search agent's own `LocalCardSearchTool` with the immutable half
+of its input moved: for a panel search the interface owns colours, tags, a commander and
+price bounds, and here the model writes all of them. `SearchCardsArguments` subclasses
+`LocalCardSearchRequest` so the shared fields cannot drift, and adds only what the filter
+panel used to decide — a `commander` object, `commander_legal_only` and
+`exclude_cards_in_deck` — projecting them back into a plain request plus a
+`CardSearchFilters` before calling the engine. The commander object separates its colour
+identity, which is a hard filter, from its EDHREC evidence, which only sorts; omitting it
+means there is no commander rather than falling back to the open deck's command zone, and
+naming any other card in the catalog is how a question about a different commander is
+answered. Results render through the same card block `see_cards` uses — rules text and a single
+EUR estimate — under a header carrying only what the model could not have known: how many
+cards matched against how many are shown, a colour identity that removed cards, and a
+*missing* EDHREC lookup. The filters, the sort and the commander's name are not echoed
+back, since they are still in the model's own tool call. A commander's EDHREC deck themes
+are a `see_cards` detail rather than a header line, because a popular commander advertises
+seventy of them (ADR 0035). Nothing in `agentic_card_search.py`
+changed for it.
+
 ### `agentic_search_debug.py`
 
 Builds and validates complete agent traces, recursively redacts secrets, and
@@ -299,6 +405,15 @@ manabase.deck-library.v2
 manabase.active-deck.v1   # legacy migration only
 ```
 
+### `domain/cardSymbols.ts`
+
+Splits card text into words and symbols, against Scryfall's symbol table rather than
+against a regex's idea of what a symbol looks like — the distinction that tells `{T}`
+from `{Sol Ring}` in agent prose (ADR 0034). `cardSymbols.generated.ts` beside it is
+written by `npm run symbols:sync` along with the SVGs in `public/card-symbols/`; both
+are committed and neither is edited by hand. `components/CardText.tsx` is the only
+place that renders the result, and every card panel goes through it.
+
 ### `lib/api.ts`
 
 Builds fuzzy GET and agentic POST requests, performs fetch calls, maps public
@@ -329,10 +444,40 @@ alert while retaining its locally sorted cards. When a related card opens over
 the drawer, the drawer remains mounted and inert so its query and results
 survive.
 
+### `components/DeckAgentPanel.tsx`
+
+The deck agent in the reserved right column. Streams a turn: tool lines appear as
+each call runs and the answer as it is written, with a caret while it does, then the
+live copy is replaced by the committed turn (ADR 0031). Owns the composer (Enter sends,
+Shift+Enter breaks a line), the pending and error states, **Reset chat**, and the
+conversation's running cost while debug mode is on. A failed turn keeps its question
+in the transcript so sending again retries with the context intact. The transcript
+itself belongs to the deck rather than to the panel (ADR 0030). With debug mode on, a
+tool call that carries payloads renders as a disclosure over its **Call** and
+**Result** sub-boxes; one that does not stays a plain line, because an expander onto
+an empty box would claim the payload was empty rather than absent.
+
+### `hooks/useDeckAgentChats.ts`
+
+One conversation per deck — turns, running spend, unpriced-call count and the unsent
+composer draft — keyed by deck id and persisted under `manabase.deck-agent-chats.v1`
+(ADR 0030). Holds the whole
+store rather than one conversation, and takes the deck id on every mutator, so a reply
+lands in the transcript it was asked in. `domain/agent.ts` owns the serializer, which
+spends a fixed character budget newest-chat-first and newest-turn-first: tool payloads
+are dropped before turns, and turns before the newest conversation, so the chat store
+can never crowd the deck library out of browser storage.
+
+### `hooks/useDebugMode.ts`
+
+The interface-wide debug preference, persisted under `manabase.search-debug` and
+passed from `App.tsx` to both the search drawer and the deck agent (ADR 0028).
+
 ### `components/SearchTracePanel.tsx`
 
 Human-readable projection of the title matcher, ranked candidates, aliases,
-scores, and filter outcomes.
+scores, and filter outcomes. The summary line carries the round's duration and,
+when the round called a model, its cost.
 
 ### `components/DeckBoard.tsx`
 

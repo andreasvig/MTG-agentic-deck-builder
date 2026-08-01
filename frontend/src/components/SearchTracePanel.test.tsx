@@ -2,7 +2,12 @@ import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { expect, it } from "vitest";
 
-import { ghalta, searchDebugSummary } from "../test/fixtures";
+import {
+  failedAgentSearchDebugSummary,
+  ghalta,
+  searchDebugSummary,
+} from "../test/fixtures";
+import type { SearchDebugSummary } from "../domain/card";
 import { SearchTracePanel } from "./SearchTracePanel";
 
 it("renders readable content for every agentic trace stage", async () => {
@@ -137,4 +142,28 @@ it("renders readable content for every agentic trace stage", async () => {
       (body) => (body.textContent ?? "").trim().length > 0,
     ),
   ).toBe(true);
+});
+
+it("shows what an agent search cost, and nothing for a local one", () => {
+  const { rerender } = render(
+    <SearchTracePanel debug={failedAgentSearchDebugSummary()} />,
+  );
+
+  expect(screen.getByTitle("What this search cost")).toHaveTextContent(
+    "$0.0031",
+  );
+
+  // A local fuzzy search makes no model call, so there is no price to claim.
+  rerender(<SearchTracePanel debug={searchDebugSummary()} />);
+  expect(screen.queryByTitle("What this search cost")).not.toBeInTheDocument();
+
+  // A payload that omits the field entirely is a real case: the runtime validator
+  // accepts it so an older response still loads. Treating only an explicit null as
+  // absent crashed the whole page on `undefined.toFixed`, which every fixture that
+  // sets the field explicitly is blind to.
+  const withoutCost = searchDebugSummary() as Partial<SearchDebugSummary>;
+  delete withoutCost.total_cost_usd;
+  rerender(<SearchTracePanel debug={withoutCost as SearchDebugSummary} />);
+  expect(screen.getByText("Search trace")).toBeInTheDocument();
+  expect(screen.queryByTitle("What this search cost")).not.toBeInTheDocument();
 });

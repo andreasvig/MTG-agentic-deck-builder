@@ -6,6 +6,7 @@ from fastapi import APIRouter
 from pydantic import BaseModel, ConfigDict
 
 from mtg_deck_builder import __version__
+from mtg_deck_builder.api.agent import router as agent_router
 from mtg_deck_builder.api.cards import router as cards_router
 
 
@@ -21,6 +22,7 @@ class HealthResponse(BaseModel):
 
 router = APIRouter(prefix="/api/v1")
 router.include_router(cards_router)
+router.include_router(agent_router)
 
 
 @router.get("/health", response_model=HealthResponse, tags=["system"])

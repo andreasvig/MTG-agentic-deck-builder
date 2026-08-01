@@ -122,12 +122,37 @@ export interface RelatedOracleCard {
   name: string;
 }
 
+/**
+ * Every list describes the *other* card from the highlighted card's point of view,
+ * so `upgrades` are the cards Tagger considers strictly better than this one.
+ */
 export interface CardEnrichment {
   oracle_id: string;
   tags: CardTag[];
   similar_cards: RelatedOracleCard[];
   references: RelatedOracleCard[];
   referenced_by: RelatedOracleCard[];
+  upgrades: RelatedOracleCard[];
+  downgrades: RelatedOracleCard[];
+  variants: RelatedOracleCard[];
+  creature_versions: RelatedOracleCard[];
+  spell_versions: RelatedOracleCard[];
+  related_cards: RelatedOracleCard[];
+}
+
+/** One EDHREC similar-card name; `oracle_id` is null when it matched no local card. */
+export interface EdhrecSimilarCard {
+  rank: number;
+  name: string;
+  oracle_id: string | null;
+}
+
+export interface EdhrecSimilarCards {
+  status: "not_requested" | "applied" | "unavailable";
+  source: "cache" | "network" | null;
+  oracle_id: string;
+  cards: EdhrecSimilarCard[];
+  message: string | null;
 }
 
 export interface CardSearchPage {
@@ -183,6 +208,8 @@ export interface SearchDebugSummary {
   log_path: string;
   log_written: boolean;
   total_duration_ms: number;
+  /** USD the model calls in this run cost, or null when none was reported. */
+  total_cost_usd: number | null;
   stages: SearchDebugStage[];
   trace: SearchDebugTrace;
 }

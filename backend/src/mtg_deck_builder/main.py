@@ -15,6 +15,8 @@ from mtg_deck_builder.agentic_search_debug import JsonlAgentSearchTraceLogger
 from mtg_deck_builder.api.router import router as api_router
 from mtg_deck_builder.card_catalog import SQLiteCardCatalog
 from mtg_deck_builder.config import Settings, get_settings
+from mtg_deck_builder.deck_agent import DeckAgentService
+from mtg_deck_builder.deck_agent_tools import DeckAgentToolbox
 from mtg_deck_builder.edhrec_catalog import (
     EdhrecCommanderService,
     SQLiteEdhrecCatalog,
@@ -36,6 +38,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def lifespan(application: FastAPI) -> AsyncIterator[None]:
         title_match = runtime_settings.search.title_match
         agentic = runtime_settings.search.agentic
+        deck_agent = runtime_settings.agent
         semantic_sort = runtime_settings.search.semantic_sort
         catalog = SQLiteCardCatalog(runtime_settings.card_catalog_path)
         tagger_catalog = SQLiteTaggerCatalog(runtime_settings.tagger.database_path)
@@ -50,6 +53,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     timeout_seconds=edhrec.timeout_seconds,
                 ),
                 refresh_after_days=edhrec.refresh_after_days,
+                similar_refresh_after_days=edhrec.similar_refresh_after_days,
             )
             if edhrec.enabled
             else None
@@ -108,6 +112,43 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             trace_log_path=str(runtime_settings.search_debug_log_path),
             debug_default_enabled=runtime_settings.search_debug_enabled,
             edhrec_service=edhrec_service,
+        )
+        # The chat agent gets its own client: one xhigh reply outlives the search
+        # agent's whole timeout, and a shared client would apply one of the two
+        # deadlines to both.
+        application.state.deck_agent = DeckAgentService(
+            model_client=(
+                OpenRouterClient(
+                    api_key=api_key,
+                    base_url=runtime_settings.openrouter_base_url,
+                    timeout_seconds=deck_agent.timeout_seconds,
+                )
+                if api_key
+                else None
+            ),
+            settings=deck_agent,
+            # The same catalog, sidecar and EDHREC cache the interface reads, so the
+            # agent and the user cannot be looking at different data.
+            toolbox=DeckAgentToolbox(
+                card_catalog=catalog,
+                tagger_catalog=tagger_catalog,
+                edhrec_service=edhrec_service,
+                settings=deck_agent.tools,
+                # The search agent's engine, second instance. It holds only
+                # references — the same catalog, the same semantic index, the same
+                # sidecar — so what differs is the two result bounds, which are
+                # fixed at construction. The `weighted` blend weights are shared
+                # deliberately: how much semantic closeness is worth against EDHREC
+                # inclusion is a property of the ranking, not of which agent asked.
+                local_tool=LocalCardSearchTool(
+                    catalog,
+                    default_max_results=deck_agent.tools.search_cards_default_max_results,
+                    hard_max_results=deck_agent.tools.search_cards_hard_max_results,
+                    weighted_weights=agentic.ranking.weighted,
+                    semantic_index=semantic_index,
+                    tagger_catalog=tagger_catalog,
+                ),
+            ),
         )
         yield
 

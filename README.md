@@ -23,7 +23,9 @@ The first manual editing slice is usable and tested.
 | On-demand EDHREC commander/theme ranking | Shipped for browsing and agentic search |
 | Import/export and analytics | Not implemented |
 | Progressive one-tool agentic card search | Shipped |
-| Agent chat and deck tools | Not implemented |
+| Deck agent chat | Shipped, desktop only, streamed, one saved conversation per deck |
+| Deck agent read-only tools | Shipped: `read_deck`, `see_cards`, `search_cards` |
+| Deck agent deck mutations and confirmed patches | Not implemented |
 
 Read [`docs/implementation-status.md`](docs/implementation-status.md) before
 starting feature work. It is the canonical boundary between shipped, partial,
@@ -72,8 +74,8 @@ Deliberate UX choices:
   popup and is the single add workflow.
 - There is no standalone maybeboard in the active editor.
 - Card-type grouping is derived and cannot be edited.
-- The right side is not used for a permanent card inspector; it is reserved for
-  the later deck agent.
+- The right side is not used for a permanent card inspector; it belongs to the
+  deck agent, which now occupies it as a chat panel on desktop.
 
 These decisions are recorded in
 [`ADR 0005`](docs/decisions/0005-editor-grouping-and-inspection.md).
@@ -117,6 +119,18 @@ selected tag filters intersect its Oracle-card memberships. The command also
 rebuilds the semantic sidecar when needed so the v2 gameplay documents include
 the current bounded, deduplicated Tagger concepts. Exact Tagger relationships
 remain outside the embedding text.
+
+The mana and ability symbol artwork is already in the repository, so nothing needs
+running for card text to draw its symbols. Refresh it only when Wizards prints a new
+one:
+
+```bash
+npm run symbols:sync
+```
+
+It rewrites `frontend/public/card-symbols/` and the generated manifest beside the
+module that reads them, and is idempotent — the diff is empty until Scryfall's symbol
+set actually changes.
 
 ### Run
 
@@ -240,10 +254,11 @@ See [`ADR 0010`](docs/decisions/0010-always-on-semantic-sort.md),
 and
 [`ADR 0019`](docs/decisions/0019-prompt-taught-agent-filters.md).
 
-## Search Debugging
+## Debug Mode
 
-Open Search settings and enable **Search debug log**. The browser stores the
-preference locally.
+Open **Settings** in the editor toolbar and enable **Debug mode**. The browser
+stores the preference locally. It governs the search trace and the deck agent's
+running cost together.
 
 The inline trace viewer exposes:
 
@@ -258,6 +273,23 @@ The inline trace viewer exposes:
   sanitized provider evidence, and mark later steps as skipped.
 - The exact compact tool message sent to the model alongside the untouched raw
   tool JSON.
+- What the round cost, beside its duration, taken from the provider's reported
+  `usage.cost`. A local fuzzy search shows no figure because it called no model.
+
+The deck agent panel shows the running cost of the current conversation in its
+header while debug mode is on. A turn that used tools paid for several model
+calls, and the header totals all of them; a `+` means at least one call reported
+no price, so the total is a floor rather than the whole bill. **Reset chat**
+clears it with the transcript.
+
+Every tool the agent runs is shown in the transcript as its own small line above
+the answer — `read_deck()`, `see_cards(Sol Ring, Cultivate · inclusion, tags)`,
+`search_cards(mana rock, ramp · weighted · Atraxa, Praetors' Voice)` —
+regardless of debug mode, because what the agent read is part of the answer.
+While debug mode is on, that line opens onto two sub-boxes: the arguments the
+model sent, and the exact text the tool returned. Only a turn asked with debug
+mode on carries them, so lines from earlier turns stay plain rather than opening
+onto nothing.
 
 The backend also appends one complete JSON object per line:
 
@@ -289,6 +321,7 @@ runtime and debug overrides.
 npm run setup
 npm run catalog:sync
 npm run tagger:sync
+npm run symbols:sync
 npm run dev
 npm test
 npm run build
@@ -327,13 +360,15 @@ backend/
     main.py            FastAPI lifecycle and dependencies
     search.py          Fuzzy title matching
     search_debug.py    JSONL trace construction
+    deck_agent.py      Conversational deck agent and its tool loop
+    deck_agent_tools.py  read_deck, see_cards and search_cards, all read-only
     semantic_index.py  Local embedding index and cosine sorting
   tests/               Backend contract and behavior tests
 frontend/
   src/
     components/        Editor, search, dialogs, trace UI
     domain/            Card/deck contracts and migrations
-    hooks/             Deck and health application state
+    hooks/             Deck, chats, health, and debug-mode application state
     lib/               HTTP client and response validation
   public/              Static assets
 e2e/                   Playwright workflows and fixtures
@@ -354,7 +389,12 @@ changelog.md           Notable delivered changes
 - `scryfall_id` is selected-printing identity.
 - Deck libraries use `manabase.deck-library.v2`.
 - The previous `manabase.active-deck.v1` key is migration input only.
-- Search debug preference uses `manabase.search-debug`.
+- Debug mode uses `manabase.search-debug`, kept under its original name now that
+  it covers the deck agent too.
+- Deck agent conversations use `manabase.deck-agent-chats.v1`, one per deck id.
+  The store keeps the twelve most recently used decks inside a fixed character
+  budget, dropping tool payloads before turns, so it can never crowd the deck
+  library out of browser storage.
 - Command zone and Not assigned are permanent placement concepts.
 - Unknown legacy and former maybeboard placement migrates to Not assigned.
 
@@ -371,7 +411,14 @@ recorded in
 - No full printing/finish chooser.
 - No plaintext import/export.
 - No deck analytics.
-- No agent chat, tools, or confirmed patch workflow.
+- The deck agent streams its turns, but not its reasoning: at `xhigh` effort most of
+  a turn is thinking, so the panel reports that it is thinking rather than narrating it.
+- The deck agent can read the open deck (`read_deck`), look cards up
+  (`see_cards`) and search the whole catalog under filters it writes itself
+  (`search_cards`), but it cannot change anything: there is no add, remove, move, or
+  patch-and-confirm workflow, and no card search of its own. Its prompt says as
+  much, so it points at the card search rather than pretending. The panel is
+  desktop-only.
 - Search returns one representative printing per gameplay card: the cheapest one
   that is not a full-art, promo, foil-only or Secret Lair version. There is no
   way to ask for a specific printing.

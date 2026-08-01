@@ -11,7 +11,7 @@ from time import monotonic, perf_counter
 from typing import Any
 from uuid import UUID, uuid4
 
-from pydantic import BaseModel, TypeAdapter, ValidationError
+from pydantic import TypeAdapter, ValidationError
 
 from mtg_deck_builder.agentic_search import (
     AgentSearchContractError,
@@ -56,7 +56,12 @@ from mtg_deck_builder.providers import (
     CardSearchUnavailable,
     name_similarity_score,
 )
-from mtg_deck_builder.providers.openrouter import OpenRouterClient, OpenRouterError
+from mtg_deck_builder.providers.openrouter import (
+    OpenRouterClient,
+    OpenRouterError,
+    completion_cost_usd,
+)
+from mtg_deck_builder.providers.tool_schema import provider_tool_schema
 from mtg_deck_builder.search import (
     FuzzyTitleSearchProvider,
     matches_card_filters,
@@ -70,6 +75,9 @@ _TOOL_CALL_ADAPTER = TypeAdapter(AgentSearchToolCall)
 # The ordering the agent gets when it omits `sort_by`. It blends whichever
 # signals a run has, so unlike the EDHREC orderings it is always safe.
 DEFAULT_AGENT_SORT = "weighted"
+# The trace stages whose payloads carry a provider `usage` block, and therefore
+# the only ones a round's price can be read from.
+_MODEL_RESPONSE_TRACE_STAGES = ("initial_model_response", "final_model_response")
 _NESTED_TOOL_FIELDS = frozenset(
     {
         "name",
@@ -1333,44 +1341,6 @@ def _decimal_in_range(
     )
 
 
-def _provider_tool_schema(model: type[BaseModel]) -> dict[str, Any]:
-    """Render a model's JSON schema for advertisement to a model provider.
-
-    Pydantic describes a `Decimal` field as "a number, or a numeric string", and
-    that string alternative carries a regex with a negative lookahead. OpenAI's
-    schema validator rejects lookarounds outright, so the whole tool call fails.
-    Dropping the string alternative is safe in both directions: it only narrows
-    what the tool advertises, and runtime validation still accepts either form.
-    """
-
-    def prune(node: Any) -> Any:
-        if isinstance(node, dict):
-            alternatives = node.get("anyOf")
-            if isinstance(alternatives, list):
-                kept = [
-                    alternative
-                    for alternative in alternatives
-                    if not _has_unsupported_pattern(alternative)
-                ]
-                # Never prune away every branch; an empty anyOf is invalid schema.
-                node = {**node, "anyOf": kept or alternatives}
-            return {key: prune(value) for key, value in node.items()}
-        if isinstance(node, list):
-            return [prune(item) for item in node]
-        return node
-
-    return prune(model.model_json_schema())
-
-
-def _has_unsupported_pattern(schema: Any) -> bool:
-    """Report whether a subschema constrains strings with an unsupported regex."""
-
-    if not isinstance(schema, dict):
-        return False
-    pattern = schema.get("pattern")
-    return isinstance(pattern, str) and ("(?!" in pattern or "(?=" in pattern)
-
-
 def _tool_definitions() -> list[dict[str, Any]]:
     return [
         {
@@ -1382,7 +1352,7 @@ def _tool_definitions() -> list[dict[str, Any]]:
                 "description": (
                     "Filter and sort the complete local Magic card catalog."
                 ),
-                "parameters": _provider_tool_schema(LocalCardSearchRequest),
+                "parameters": provider_tool_schema(LocalCardSearchRequest),
                 # Deliberately not `strict`. Strict mode requires every property to
                 # appear in `required`, expressing optionality as a nullable type,
                 # and every field of this tool is optional. Gemini ignored the flag,
@@ -2101,12 +2071,14 @@ def _to_search_debug_summary(
         result_cards=result_cards,
         interpretation=interpretation,
     )
+    total_cost_usd = _trace_model_cost_usd(trace)
     record = {
         "schema_version": trace.schema_version,
         "trace_id": str(trace.trace_id),
         "started_at": trace.started_at.isoformat(),
         "completed_at": trace.completed_at.isoformat(),
         "total_duration_ms": round(total_duration_ms, 3),
+        "total_cost_usd": total_cost_usd,
         "request": trace.stages[0].payload,
         "configuration": {"workflow": "one_tool_then_final", "model_calls": 2},
         "decision": {
@@ -2139,6 +2111,7 @@ def _to_search_debug_summary(
         log_path=log_path,
         log_written=log_written,
         total_duration_ms=round(total_duration_ms, 3),
+        total_cost_usd=total_cost_usd,
         stages=[
             SearchDebugStage(
                 name=str(stage["name"]),
@@ -2168,12 +2141,16 @@ def _to_failed_search_debug_summary(
         (str(stage["name"]) for stage in stages if stage["status"] == "error"),
         "unknown",
     )
+    # A run that failed late still paid for the calls it did make, so the price is
+    # reported on failures too rather than only on the happy path.
+    total_cost_usd = _trace_model_cost_usd(trace)
     record = {
         "schema_version": trace.schema_version,
         "trace_id": str(trace.trace_id),
         "started_at": trace.started_at.isoformat(),
         "completed_at": trace.completed_at.isoformat(),
         "total_duration_ms": round(total_duration_ms, 3),
+        "total_cost_usd": total_cost_usd,
         "request": trace.stages[0].payload,
         "configuration": {"workflow": "one_tool_then_final", "model_calls": 2},
         "decision": {
@@ -2194,6 +2171,7 @@ def _to_failed_search_debug_summary(
         log_path=log_path,
         log_written=log_written,
         total_duration_ms=round(total_duration_ms, 3),
+        total_cost_usd=total_cost_usd,
         stages=[
             SearchDebugStage(
                 name=str(stage["name"]),
@@ -2204,6 +2182,27 @@ def _to_failed_search_debug_summary(
         ],
         trace=record,
     )
+
+
+def _trace_model_cost_usd(trace: AgentSearchTraceRecord) -> float | None:
+    """Total what one search round cost, summed over its model calls.
+
+    The figures are read back out of the captured raw responses rather than tracked
+    separately, so the price shown is the same evidence the trace already carries.
+    A round where the provider reported nothing stays `None`: adding an unreported
+    call in as zero would understate the price and look like a free search.
+    """
+
+    costs = [
+        cost
+        for stage in trace.stages
+        if stage.name in _MODEL_RESPONSE_TRACE_STAGES
+        for cost in (completion_cost_usd(stage.payload),)
+        if cost is not None
+    ]
+    if not costs:
+        return None
+    return round(sum(costs), 8)
 
 
 def _failed_agent_trace_presentation_stages(

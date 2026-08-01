@@ -1,13 +1,11 @@
 import {
   AlertCircle,
-  Bug,
   ChevronRight,
   CirclePlus,
   Minus,
   Plus,
   RotateCw,
   Search,
-  Settings2,
   Sparkles,
   SlidersHorizontal,
   Trash2,
@@ -46,6 +44,7 @@ import {
 import { ApiError, apiClient, type ApiClient } from "../lib/api";
 import { CardArt } from "./CardArt";
 import { CardEnrichmentPanel } from "./CardEnrichmentPanel";
+import { CardText } from "./CardText";
 import { SearchTracePanel } from "./SearchTracePanel";
 
 type SearchState =
@@ -73,7 +72,6 @@ const CARD_TYPES = [
   "Planeswalker",
   "Sorcery",
 ] as const;
-const SEARCH_DEBUG_STORAGE_KEY = "manabase.search-debug";
 const EMPTY_TAG_FILTERS: CardTagFilter[] = [];
 
 interface SearchDrawerProps {
@@ -84,6 +82,7 @@ interface SearchDrawerProps {
   entries: DeckCardEntry[];
   client?: ApiClient;
   suspended?: boolean;
+  debugEnabled?: boolean;
   onAdd: (card: CardSearchResult, targetGroupId?: string) => void;
   onOpenCard?: (card: CardSearchResult) => void;
   onSetQuantity: (scryfallId: string, quantity: number) => void;
@@ -98,6 +97,7 @@ export function SearchDrawer({
   entries,
   client = apiClient,
   suspended = false,
+  debugEnabled = false,
   onAdd,
   onOpenCard,
   onSetQuantity,
@@ -110,10 +110,6 @@ export function SearchDrawer({
     tags: initialTags,
   }));
   const [filtersOpen, setFiltersOpen] = useState(true);
-  const [settingsOpen, setSettingsOpen] = useState(false);
-  const [debugEnabled, setDebugEnabled] = useState(
-    () => window.localStorage.getItem(SEARCH_DEBUG_STORAGE_KEY) === "true",
-  );
   const [enhanceWithEdhrec, setEnhanceWithEdhrec] = useState(true);
   const [edhrecContext, setEdhrecContext] =
     useState<EdhrecCommanderContext | null>(null);
@@ -571,10 +567,6 @@ export function SearchDrawer({
       }
       if (event.key === "Escape") {
         event.preventDefault();
-        if (settingsOpen) {
-          setSettingsOpen(false);
-          return;
-        }
         onClose();
         return;
       }
@@ -605,7 +597,7 @@ export function SearchDrawer({
       document.body.style.overflow = previousOverflow;
       document.removeEventListener("keydown", handleKeyDown);
     };
-  }, [onClose, settingsOpen]);
+  }, [onClose]);
 
   const submit = (event: FormEvent) => {
     event.preventDefault();
@@ -701,18 +693,6 @@ export function SearchDrawer({
     setTagMatches([]);
   };
 
-  const toggleDebug = (enabled: boolean) => {
-    debugEnabledRef.current = enabled;
-    setDebugEnabled(enabled);
-    window.localStorage.setItem(SEARCH_DEBUG_STORAGE_KEY, String(enabled));
-    if (
-      query.trim() ||
-      hasFilterOnlyIntent(filtersRef.current, edhrecRef.current.enabled)
-    ) {
-      void runSearch(query);
-    }
-  };
-
   return (
     <div
       className="drawer-layer"
@@ -742,16 +722,6 @@ export function SearchDrawer({
           </div>
           <div className="search-drawer__header-actions">
             <button
-              className={`icon-button ${settingsOpen ? "is-active" : ""}`}
-              type="button"
-              aria-label="Search settings"
-              aria-expanded={settingsOpen}
-              title="Search settings"
-              onClick={() => setSettingsOpen((open) => !open)}
-            >
-              <Settings2 aria-hidden="true" size={18} />
-            </button>
-            <button
               className="icon-button"
               type="button"
               aria-label="Close card search"
@@ -760,23 +730,6 @@ export function SearchDrawer({
             >
               <X aria-hidden="true" size={20} />
             </button>
-            {settingsOpen ? (
-              <div className="search-settings" aria-label="Search settings">
-                <label>
-                  <span>
-                    <Bug aria-hidden="true" size={15} />
-                    Search debug log
-                  </span>
-                  <input
-                    type="checkbox"
-                    role="switch"
-                    aria-label="Search debug log"
-                    checked={debugEnabled}
-                    onChange={(event) => toggleDebug(event.target.checked)}
-                  />
-                </label>
-              </div>
-            ) : null}
           </div>
         </header>
 
@@ -1401,7 +1354,9 @@ export function SearchDrawer({
                             <strong>{card.name}</strong>
                             <ChevronRight aria-hidden="true" size={15} />
                           </button>
-                          <span className="mana-line">{card.mana_cost || "No mana cost"}</span>
+                          <span className="mana-line">
+                            <CardText text={card.mana_cost} fallback="No mana cost" />
+                          </span>
                           <span className="type-line">{card.type_line}</span>
                           {debugEnabled &&
                           state.page?.strategy === "fuzzy" &&
@@ -1505,11 +1460,15 @@ export function SearchDrawer({
                   <h3>{selected.name}</h3>
                   <p className="type-line">{selected.type_line}</p>
                   <p className="oracle-text">
-                    {selected.oracle_text ??
-                      selected.card_faces
-                        .map((face) => face.oracle_text)
-                        .filter(Boolean)
-                        .join("\n\n")}
+                    <CardText
+                      text={
+                        selected.oracle_text ??
+                        selected.card_faces
+                          .map((face) => face.oracle_text)
+                          .filter(Boolean)
+                          .join("\n\n")
+                      }
+                    />
                   </p>
                   <CardEnrichmentPanel
                     key={selected.oracle_id}

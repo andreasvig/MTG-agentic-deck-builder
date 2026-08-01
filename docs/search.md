@@ -82,12 +82,30 @@ complete sidecar. A successful database less than 24 hours old is considered
 current; use `npm run tagger:sync -- --force` for a clean snapshot.
 
 Selecting a search result or opening a deck card lazily reads this sidecar through
-`GET /api/v1/cards/{oracle_id}/enrichment`. The preview groups the response
-into clickable tag chips, similar cards, and cards the selection references.
-Inverse `referenced_by` data remains in the backend contract and sidecar but is
+`GET /api/v1/cards/{oracle_id}/enrichment`. The preview groups the response into
+clickable tag chips and every relationship class Tagger publishes, each described
+from the highlighted card's point of view: Upgrades and Outclasses from the
+strictness classifiers, Similar cards, Creature versions and Spell versions from
+the body classifiers, Variants from mirrored and colorshifted printings, Related
+cards, and cards the selection references (ADR 0025). Direction is normalized
+through a local inverse table rather than the feed's `classifierInverse`, because
+a wrong value there would present a card's upgrades as its downgrades. Inverse
+`referenced_by` data remains in the backend contract and sidecar but is
 not rendered. Related cards resolve through
 `GET /api/v1/cards/{oracle_id}` and open in the regular card dialog; the
 underlying search remains mounted.
+
+Card details additionally show EDHREC's own similar-card list through
+`GET /api/v1/cards/{oracle_id}/edhrec/similar`, which fetches one EDHREC card page
+on demand and caches it for `edhrec.similar_refresh_after_days`, 180 days by
+default, rather than the 30 days commander pages use (ADR 0026). EDHREC publishes
+six names with no identifiers, so each is resolved against the local catalog by
+exact name, falling back to the front face of a double-faced card. That resolution
+is redone on every read instead of being cached with the names, so a `catalog:sync`
+makes a previously unopenable suggestion work without refetching anything. A
+name that resolves to nothing stays in the stored list but is omitted from the
+links, and the section renders nothing at all while loading or after a failure, so
+an EDHREC outage never delays or replaces the local Tagger groups above it.
 
 An explicit tag selection is a hard filter: the backend intersects the local
 Oracle-ID memberships for every selected tag before fuzzy ranking or the local
@@ -406,6 +424,13 @@ skeleton (ADR 0020):
 # Guidelines  the rules, plus hand-written worked examples
 ```
 
+The deck agent has its own copy of the `# Tools` and `# Guidelines` material, because
+its `search_cards` tool drives the same `LocalCardSearchTool` (ADR 0035): the field
+reference sits in `agent.tools.search_cards_description` and the craft under
+`# Searching for cards` in `agent.system_prompt`. Two prompts describe one engine, so a
+change to how a field is worded here belongs there too, and the reverse. Both sites
+carry a cross-reference comment saying so.
+
 Everything else the model receives is data, not instruction:
 
 | Surface | Contains |
@@ -491,7 +516,17 @@ or `name_similarity` as the primary ordering and defaults to `weighted`. None
 filters or has a minimum score.
 The service supplies the original user request when the model omits
 `semantic_sort`, so every agent round retains semantic evidence and uses it as
-a tie-breaker for EDHREC sorts. The prompt teaches
+a tie-breaker for EDHREC sorts.
+
+That tie-breaker is weaker than it sounds, and it was measured on 2026-08-01
+against Ghalta, Primal Hunger. Under `edhrec_inclusion` or `edhrec_synergy` the
+primary key is `(has a figure, the figure, semantic score)`, and EDHREC figures
+are near-unique floats — so semantic closeness only orders the cards EDHREC has
+**no** figure for, and every one of those sorts below every card it does. Two
+searches differing only in whether `semantic_sort` was sent returned byte-identical
+result lists. When EDHREC lists more cards than the caller asked to see, the
+description changes nothing. The deck agent's prompt says so outright (ADR 0035);
+`search.agentic.system_prompt` does not yet. The prompt teaches
 the agent to clean up bad grammar, separate explicit constraints from broad
 intent, and use examples such as `untapping elves`, `big green creatures`,
 `grave yard things`, double-X artifacts, and `galta`.
@@ -533,6 +568,10 @@ MTG_CARD_CATALOG_PATH=local-data/cards.sqlite3
 ```
 
 ## Filters
+
+These are the *interface's* filters, which the search agent cannot escape and must not
+restate. The deck agent's `search_cards` has no interface panel, so it writes the
+equivalents itself as tool arguments (ADR 0035).
 
 After fuzzy ranking, the backend applies these values directly to local card
 data:
