@@ -337,10 +337,19 @@ def test_the_prompt_teaches_the_three_rules_that_make_editing_safe() -> None:
     # bare on purpose — a reason the model can satisfy while still breaking the rule
     # reads as permission, and that is how one search_cards rule doubled its calls.
     assert "State the count you want, not the operation." in section
-    # Read in the same turn. The justification has to fail exactly when the rule is
-    # broken, which is why it is the per-turn snapshot and not "do not guess".
+    # Read in the same turn, stated bare for the same reason as the rule above. The
+    # first draft justified it with the user having had the board in front of them
+    # since — which the model can judge false ("they only typed a reply, so my
+    # snapshot is current") while still skipping the read, and a reason that does not
+    # apply is permission. Enforcing it in code was considered and rejected: a change
+    # states the count it wants, so an unread edit is redundant rather than wrong, and
+    # enforcement would spend one of four tool iterations on every editing turn.
     assert "in the same turn before you edit" in section
-    assert "snapshot of an earlier deck" in section
+    assert "Every turn, without exception" in section
+    # And no defeasible reason crept back in. These are the words of the two dodges the
+    # first draft licensed.
+    assert "snapshot of an earlier deck" not in section
+    assert "two turns ago" not in section
     # An auto-applying tool has two ways to lie about when it acted.
     assert "already happened when the result comes back" in section
     assert "the user cannot see the tool result" in section
@@ -362,8 +371,17 @@ def test_every_new_field_of_edit_deck_has_a_worked_example() -> None:
     # And the swap, because one intent is one call rather than two.
     assert description.count('"reason"') >= 5
     assert "`0` removes the card entirely" in prose
-    for setting in ("limit", "1 to 50", "defaults to 10"):
-        assert setting in Settings().agent.tools.read_history_description
+    tools = Settings().agent.tools
+    for setting in ("limit", "1 to 50"):
+        assert setting in tools.read_history_description
+    # The advertised default has to be the live one. `limit` is deliberately `None` in the
+    # schema so the config setting stays in charge, which means this prose is the only place
+    # the model can learn the number — and nothing else compares the two, so changing the
+    # setting would leave the description lying to the model with the suite still green.
+    assert (
+        f"defaults to {tools.read_history_default_sessions}"
+        in tools.read_history_description
+    )
 
 
 def test_agent_settings_reject_a_blank_prompt_and_an_unknown_effort() -> None:

@@ -144,8 +144,19 @@ class _Entry:
 
 
 class StubCardCatalog:
-    def __init__(self, *, cards: dict[UUID, CardSearchResult] | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        cards: dict[UUID, CardSearchResult] | None = None,
+        other_printings: dict[UUID, UUID] | None = None,
+    ) -> None:
         self._cards = CARDS if cards is None else cards
+        # Printing -> oracle id for printings the catalog resolves but does not itself
+        # keep, because it holds the cheapest ordinary one per card (ADR 0024). Without
+        # this a stub knows exactly one printing per card, so the snapshot's printing and
+        # the catalog's are always the same UUID and any test claiming to tell them apart
+        # cannot fail.
+        self._other_printings = other_printings or {}
         self.entry_reads = 0
 
     async def entries(self) -> tuple[_Entry, ...]:
@@ -157,6 +168,7 @@ class StubCardCatalog:
         scryfall_ids: list[UUID],
     ) -> dict[UUID, UUID]:
         by_printing = {card.scryfall_id: card.oracle_id for card in self._cards.values()}
+        by_printing.update(self._other_printings)
         return {
             scryfall_id: by_printing[scryfall_id]
             for scryfall_id in scryfall_ids
@@ -1926,6 +1938,15 @@ def test_singleton_and_the_hundred_card_bound_are_warnings_too() -> None:
     # A basic land is the exemption, so 96 Forests draw no singleton warning at all.
     assert '"Forest" is now at' not in outcome.content
     assert "The deck is at 102 cards, 2 over the 100 a Commander deck holds." in outcome.content
+    # And a warning is a warning: both changes are still in the emitted edit, so the deck
+    # the browser applies is the deck this result describes. Asserting only the text would
+    # let the tool warn and then quietly withhold the change — the board would keep the
+    # card while the agent believed it had been added, which is the invisible divergence
+    # the decisions table forbids. The colour-identity case has its own test; these two
+    # warning classes had none.
+    assert outcome.edit is not None
+    assert {change.name for change in outcome.edit.changes} == {"Sol Ring", "Forest"}
+    assert [change.quantity for change in outcome.edit.changes] == [2, 96]
 
 
 def test_the_edit_result_does_not_echo_the_callers_own_arguments() -> None:
@@ -1994,9 +2015,53 @@ def test_the_emitted_edit_carries_the_deck_printing_and_a_payload_for_every_add(
     assert added.scryfall_id == PRINTING[EDIT_SOL_RING]
     assert added.group == "Ramp"
     # The removal travels with the printing the *snapshot* named, because that is the
-    # entry the browser will look for.
+    # entry the browser will look for. Only pinned properly by the test below — here the
+    # snapshot and the catalog name the same printing, so this cannot tell them apart.
     assert removed.card is None
     assert removed.scryfall_id == PRINTING[EDIT_GROWTH]
+
+
+def test_a_removal_names_the_printing_the_deck_holds_not_the_catalogs() -> None:
+    # A deck can hold any printing; the catalog keeps the cheapest ordinary one per card
+    # (ADR 0024), so the two routinely differ. The browser looks up its entry by printing,
+    # so an edit carrying the catalog's would miss the card the user is actually holding
+    # and silently do nothing.
+    held = UUID("f0000000-9999-4999-8999-999999999999")
+    assert held != PRINTING[EDIT_GROWTH]
+
+    deck = DeckAgentDeckSnapshot(
+        name="Gruul Stompy",
+        cards=[
+            DeckAgentDeckCard(
+                scryfall_id=PRINTING[EDIT_GHALTA],
+                quantity=1,
+                section="command_zone",
+            ),
+            DeckAgentDeckCard(scryfall_id=held, quantity=1, section="mainboard"),
+        ],
+    )
+
+    outcome = run(
+        make_toolbox(
+            card_catalog=StubCardCatalog(
+                cards=EDIT_CARDS,
+                other_printings={held: EDIT_GROWTH},
+            )
+        ),
+        EDIT_DECK,
+        {
+            "changes": [{"card": "Rampant Growth", "quantity": 0}],
+            "reason": "cutting the ramp spell",
+        },
+        deck,
+    )
+
+    assert outcome.ok is True
+    assert outcome.edit is not None
+    (removed,) = outcome.edit.changes
+    assert removed.scryfall_id == held
+    assert removed.scryfall_id != PRINTING[EDIT_GROWTH]
+    assert removed.previous_quantity == 1
 
 
 def test_a_card_named_twice_in_one_edit_uses_the_last_count_and_says_so() -> None:
