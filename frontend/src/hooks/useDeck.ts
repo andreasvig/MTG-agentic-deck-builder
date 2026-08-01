@@ -12,14 +12,34 @@ import {
   getColorIdentityWarnings,
   getCommandZoneProblem,
   getCommanderColorIdentity,
+  groupIdForEntry,
   parseStoredDeck,
   parseStoredDeckLibrary,
   placementForGroup,
   UNASSIGNED_GROUP_ID,
   validateCommandZoneAddition,
 } from "../domain/deck";
+import type {
+  DeckDiffApplyResult,
+  DeckEditEntry,
+  DeckHistory,
+  DeckHistoryActor,
+} from "../domain/history";
+import {
+  appendToHistory,
+  applyDeckDiff,
+  createDeckHistory,
+  DECK_HISTORY_PAYLOAD_CAP,
+  DECK_HISTORY_SESSION_CAP,
+  DECK_HISTORY_STORAGE_KEY,
+  deriveDeckDiff,
+  invertDeckDiff,
+  parseDeckHistory,
+  pruneHistory,
+} from "../domain/history";
 
-const MAX_UNDO_STEPS = 30;
+/** The most copies of one printing an edit may ask for, matching the tool's schema bound. */
+const MAX_EDIT_COPIES = 99;
 
 interface DeckMutationResult {
   deck: Deck;
@@ -30,28 +50,54 @@ interface DeckMutationRejection {
   error: string;
 }
 
+type DeckMutation = (
+  current: Deck,
+) => DeckMutationResult | DeckMutationRejection | null;
+
+/**
+ * One card's state after an edit, stated as the copy count wanted **afterwards** rather than
+ * as an operation. `quantity: 0` removes, and a change the deck already satisfies is a no-op
+ * — which is what makes a retried agent edit safe to apply a second time.
+ */
+export interface DeckEditChange {
+  /**
+   * The resolved printing. An edit is allowed to add a card the browser has never seen, and
+   * `validateCommandZoneAddition` and the colour-identity checks read the card's own fields,
+   * so the payload has to travel with the change rather than being looked up.
+   */
+  card: CardSearchResult;
+  quantity: number;
+  /** Where the card should sit afterwards. Omit to leave an existing card's placement alone. */
+  groupId?: string;
+}
+
+/** A whole edit: one intent, applied as one undo step and recorded as one history entry. */
+export interface DeckEdit {
+  changes: DeckEditChange[];
+  /** The one-liner history records. Agent edits carry the model's; a user edit needs none. */
+  reason?: string;
+}
+
 interface DeletedDeckSnapshot {
   deck: Deck;
   index: number;
-  history: Deck[];
+  /** Archived with the deck, restored with the deck. Otherwise a restored deck has no past. */
+  history: DeckHistory;
   replacementDeckId: string | null;
 }
 
 interface DeckState {
   library: DeckLibrary;
-  historyByDeck: Record<string, Deck[]>;
+  /** One edit log per deck, keyed by deck id. */
+  editLogs: Record<string, DeckHistory>;
   announcement: string;
   announcementTone: "status" | "error";
   deletedDeck: DeletedDeckSnapshot | null;
 }
 
 type DeckAction =
-  | {
-      type: "mutate";
-      mutation: (
-        current: Deck,
-      ) => DeckMutationResult | DeckMutationRejection | null;
-    }
+  | { type: "mutate"; mutation: DeckMutation }
+  | { type: "apply_edit"; edit: DeckEdit; actor: DeckHistoryActor }
   | { type: "undo" }
   | { type: "create_deck" }
   | { type: "select_deck"; deckId: string }
@@ -62,7 +108,6 @@ type DeckAction =
 export function useDeck() {
   const [state, dispatch] = useReducer(deckReducer, undefined, createInitialState);
   const deck = activeDeck(state.library);
-  const history = state.historyByDeck[deck.id] ?? [];
 
   useEffect(() => {
     try {
@@ -73,18 +118,22 @@ export function useDeck() {
     } catch {
       // The library remains usable when storage is disabled or full.
     }
-  }, [state.library]);
+    // Written second and in its own attempt, because the two share one quota: a history
+    // write that fails costs undo depth after a reload, while a library write that was
+    // skipped to make room for it would cost a deck edit.
+    try {
+      getLocalStorage()?.setItem(
+        DECK_HISTORY_STORAGE_KEY,
+        JSON.stringify(state.editLogs),
+      );
+    } catch {
+      // Undo stays available for this session even when history cannot be stored.
+    }
+  }, [state.library, state.editLogs]);
 
-  const mutate = useCallback(
-    (
-      mutation: (
-        current: Deck,
-      ) => DeckMutationResult | DeckMutationRejection | null,
-    ) => {
-      dispatch({ type: "mutate", mutation });
-    },
-    [],
-  );
+  const mutate = useCallback((mutation: DeckMutation) => {
+    dispatch({ type: "mutate", mutation });
+  }, []);
 
   const addCard = useCallback(
     (card: CardSearchResult, targetGroupId?: string, quantity = 1) => {
@@ -357,6 +406,15 @@ export function useDeck() {
     [mutate],
   );
 
+  /**
+   * Apply a whole resolved edit as one change. It runs the same validators the drag path
+   * runs, refuses entirely rather than in part, and lands as a single undo step and a single
+   * history entry under the given actor.
+   */
+  const applyEdit = useCallback((edit: DeckEdit, actor: DeckHistoryActor) => {
+    dispatch({ type: "apply_edit", edit, actor });
+  }, []);
+
   const createDeck = useCallback(() => {
     dispatch({ type: "create_deck" });
   }, []);
@@ -381,14 +439,33 @@ export function useDeck() {
     dispatch({ type: "undo" });
   }, []);
 
+  /**
+   * Whether the last recorded edit can actually be replayed backwards, established by
+   * planning the undo rather than by counting entries. An entry whose pooled card payloads
+   * have been pruned is readable but not replayable, so counting would light the button up
+   * for an undo the reducer then refuses.
+   */
+  const canUndo = useMemo(
+    () => planUndo(deck, editLogFor(state.editLogs, deck.id))?.ok === true,
+    [deck, state.editLogs],
+  );
+
   const statistics = useMemo(() => {
     const cardCount = deck.cards.reduce(
       (total, entry) => total + entry.quantity,
       0,
     );
+    // An entry may legitimately hold no `details`: `isDeckEntry` does not require one, so a
+    // deck written by an older build hydrates without it. `getCardPrice` reads `prices`
+    // unguarded, and the cast that used to stand here hid that from the type checker, so a
+    // single such entry took the whole board down inside this memo. Skipping it is what
+    // `getColorIdentityWarnings` already does. The total then under-reports, which is the
+    // behaviour an unpriced card has had all along.
     const price = deck.cards.reduce(
       (total, entry) =>
-        total + getCardPrice(entry.card.details as CardSearchResult) * entry.quantity,
+        entry.card.details
+          ? total + getCardPrice(entry.card.details) * entry.quantity
+          : total,
       0,
     );
     const manaCards = deck.cards.filter(
@@ -438,10 +515,11 @@ export function useDeck() {
     decks: state.library.decks,
     announcement: state.announcement,
     announcementTone: state.announcementTone,
-    canUndo: history.length > 0,
+    canUndo,
     deletedDeckName: state.deletedDeck?.deck.name ?? null,
     statistics,
     addCard,
+    applyEdit,
     setQuantity,
     removeCard,
     moveCard,
@@ -459,10 +537,12 @@ export function useDeck() {
 function createInitialState(): DeckState {
   let storedLibrary: string | null = null;
   let legacyDeck: string | null = null;
+  let storedLogs: string | null = null;
   try {
     const storage = getLocalStorage();
     storedLibrary = storage?.getItem(DECK_LIBRARY_STORAGE_KEY) ?? null;
     legacyDeck = storage?.getItem(DECK_STORAGE_KEY) ?? null;
+    storedLogs = storage?.getItem(DECK_HISTORY_STORAGE_KEY) ?? null;
   } catch {
     // Treat blocked or malformed browser storage as an empty library.
   }
@@ -470,13 +550,54 @@ function createInitialState(): DeckState {
   const migrationFallback = legacyDeck
     ? createDeckLibrary(parseStoredDeck(legacyDeck))
     : createDeckLibrary();
+  const library = parseStoredDeckLibrary(storedLibrary, migrationFallback);
   return {
-    library: parseStoredDeckLibrary(storedLibrary, migrationFallback),
-    historyByDeck: {},
+    library,
+    editLogs: parseStoredEditLogs(storedLogs, library.decks),
     announcement: "Deck ready.",
     announcementTone: "status",
     deletedDeck: null,
   };
+}
+
+/**
+ * Rebuild one log per deck from the single stored envelope.
+ *
+ * Each log is validated on its own, so one corrupt log costs that deck its undo depth rather
+ * than the whole library's. Only decks still in the library are hydrated: a log whose deck
+ * was deleted in an earlier session can never be reached again, and history shares the deck's
+ * storage quota. The envelope key is the authority on which deck a log belongs to, so a
+ * stored `deck_id` that disagrees with it is corrected rather than carried forward.
+ */
+function parseStoredEditLogs(
+  rawValue: string | null,
+  decks: Deck[],
+): Record<string, DeckHistory> {
+  let stored: unknown = null;
+  try {
+    stored = rawValue === null ? null : JSON.parse(rawValue);
+  } catch {
+    // A malformed history costs undo depth, never the deck.
+  }
+
+  const byDeck = isRecord(stored) ? stored : {};
+  const logs: Record<string, DeckHistory> = {};
+  for (const deck of decks) {
+    const candidate = byDeck[deck.id];
+    // The payload pool has to be a keyed object. An array would satisfy a container check and
+    // then index to nothing, giving a log whose every restoration refuses, so a pool of the
+    // wrong shape is turned away here rather than hydrated.
+    const pool = isRecord(candidate) ? candidate.cards : undefined;
+    const usable = isRecord(pool) && !Array.isArray(pool);
+    const parsed = parseDeckHistory(
+      usable ? candidate : null,
+      createDeckHistory(deck.id),
+    );
+    if (parsed.sessions.length > 0) {
+      logs[deck.id] = { ...parsed, deck_id: deck.id };
+    }
+  }
+  return logs;
 }
 
 function deckReducer(state: DeckState, action: DeckAction): DeckState {
@@ -537,20 +658,19 @@ function deckReducer(state: DeckState, action: DeckAction): DeckState {
         ? (remaining[Math.min(deletedIndex, remaining.length - 1)]?.id ??
           remaining[0].id)
         : state.library.active_deck_id;
-    const { [action.deckId]: deletedHistory = [], ...remainingHistory } =
-      state.historyByDeck;
+    const { [action.deckId]: deletedLog, ...remainingLogs } = state.editLogs;
     return {
       library: {
         active_deck_id: nextActive,
         decks: remaining,
       },
-      historyByDeck: remainingHistory,
+      editLogs: remainingLogs,
       announcement: `${deleted.name} deleted.`,
       announcementTone: "status",
       deletedDeck: {
         deck: deleted,
         index: deletedIndex,
-        history: deletedHistory,
+        history: deletedLog ?? createDeckHistory(action.deckId),
         replacementDeckId,
       },
     };
@@ -582,8 +702,8 @@ function deckReducer(state: DeckState, action: DeckAction): DeckState {
         active_deck_id: snapshot.deck.id,
         decks: restoredDecks,
       },
-      historyByDeck: {
-        ...state.historyByDeck,
+      editLogs: {
+        ...state.editLogs,
         [snapshot.deck.id]: snapshot.history,
       },
       announcement: `${snapshot.deck.name} restored.`,
@@ -593,28 +713,43 @@ function deckReducer(state: DeckState, action: DeckAction): DeckState {
   }
 
   if (action.type === "undo") {
-    const history = state.historyByDeck[current.id] ?? [];
-    const previous = history.at(-1);
-    if (!previous) {
+    const log = editLogFor(state.editLogs, current.id);
+    const undone = planUndo(current, log);
+    if (undone === null) {
       return {
         ...state,
         announcement: "Nothing to undo.",
         announcementTone: "status",
       };
     }
+    if (!undone.ok) {
+      // A refusal is announced rather than thrown, and the deck is left exactly as it was.
+      // Undoing halfway would be worse than not undoing.
+      return {
+        ...state,
+        announcement: undone.message,
+        announcementTone: "error",
+      };
+    }
     return {
       ...state,
-      library: replaceDeck(state.library, previous),
-      historyByDeck: {
-        ...state.historyByDeck,
-        [current.id]: history.slice(0, -1),
-      },
+      library: replaceDeck(state.library, {
+        ...undone.deck,
+        updated_at: new Date().toISOString(),
+      }),
+      editLogs: { ...state.editLogs, [current.id]: withoutLastEdit(log) },
       announcement: "Last deck change undone.",
       announcementTone: "status",
     };
   }
 
-  const result = action.mutation(current);
+  // An edit becomes the same kind of closure every mutator produces, so both arrive at the
+  // one derivation below and a whole edit is one entry in the log and one step of undo.
+  const mutation =
+    action.type === "apply_edit"
+      ? deckEditMutation(action.edit)
+      : action.mutation;
+  const result = mutation(current);
   if (!result) {
     return state;
   }
@@ -629,19 +764,287 @@ function deckReducer(state: DeckState, action: DeckAction): DeckState {
     ...result.deck,
     updated_at: new Date().toISOString(),
   };
-  const history = state.historyByDeck[current.id] ?? [];
+
+  // The one place the deck is diffed, for every mutation there is. The reducer already holds
+  // the deck before and the deck after, so the change is derived from what actually happened
+  // rather than from what a call site remembered to declare: the record is complete by
+  // construction, and a mutator added next year is recorded with no extra wiring at all.
+  const { diff, payloads } = deriveDeckDiff(current, updatedDeck);
+  const log = editLogFor(state.editLogs, current.id);
+  const entry: DeckEditEntry = {
+    id: createLocalId("edit"),
+    // The reducer's own stamp, so the edit's time and the deck's `updated_at` cannot disagree.
+    at: updatedDeck.updated_at,
+    ...diff,
+    ...(action.type === "apply_edit" && action.edit.reason
+      ? { reason: action.edit.reason }
+      : {}),
+  };
+  const appended = appendToHistory(log, {
+    entry,
+    payloads,
+    actor: action.type === "apply_edit" ? action.actor : "user",
+    newSessionId: createLocalId("session"),
+  });
+  // `appendToHistory` hands back the very object it was given when the diff was empty, so
+  // reference identity is how a mutation that changed nothing but `updated_at` is recognised
+  // — no second derivation and no empty entry in the log.
   return {
     ...state,
     library: replaceDeck(state.library, updatedDeck),
-    historyByDeck: {
-      ...state.historyByDeck,
-      [current.id]: [
-        ...history.slice(-(MAX_UNDO_STEPS - 1)),
-        current,
-      ],
-    },
+    editLogs:
+      appended === log
+        ? state.editLogs
+        : {
+            ...state.editLogs,
+            [current.id]: pruneHistory(
+              appended,
+              DECK_HISTORY_SESSION_CAP,
+              DECK_HISTORY_PAYLOAD_CAP,
+            ),
+          },
     announcement: result.announcement,
     announcementTone: "status",
+  };
+}
+
+function editLogFor(
+  logs: Record<string, DeckHistory>,
+  deckId: string,
+): DeckHistory {
+  return logs[deckId] ?? createDeckHistory(deckId);
+}
+
+/**
+ * What undoing the last recorded edit would do, or `null` when nothing is recorded.
+ *
+ * `canUndo` and the `undo` action both come through here, so the button cannot promise an
+ * undo the reducer then refuses. There are two ways an entry stops being replayable and both
+ * arrive as the same refusal: its pooled payload was pruned, or the card it has to put back
+ * never had a `details` payload to pool in the first place.
+ */
+function planUndo(
+  deck: Deck,
+  log: DeckHistory,
+): DeckDiffApplyResult | null {
+  const entry = log.sessions.at(-1)?.edits.at(-1);
+  return entry ? applyDeckDiff(deck, invertDeckDiff(entry), log.cards) : null;
+}
+
+/**
+ * Drop the last recorded edit, because an undo pops the log rather than appending its inverse.
+ *
+ * The alternative would make undo itself undoable, and would leave the log describing an edit
+ * the deck no longer contains. The agent reads this log to decide what to do next, so a log
+ * that disagrees with the deck is the same class of error as a half-applied edit.
+ */
+function withoutLastEdit(log: DeckHistory): DeckHistory {
+  const open = log.sessions.at(-1);
+  if (!open) {
+    return log;
+  }
+  const edits = open.edits.slice(0, -1);
+  const sessions =
+    edits.length > 0
+      ? [
+          ...log.sessions.slice(0, -1),
+          // `ended_at` rewinds with the pop, or the next edit would join a session by a gap
+          // measured against an edit that is no longer in it.
+          { ...open, ended_at: edits[edits.length - 1].at, edits },
+        ]
+      : log.sessions.slice(0, -1);
+  // Pruning here is the garbage collection: the popped edit may have been the only reason a
+  // pooled payload was still worth keeping.
+  return pruneHistory(
+    { ...log, sessions },
+    DECK_HISTORY_SESSION_CAP,
+    DECK_HISTORY_PAYLOAD_CAP,
+  );
+}
+
+/** What applying one change did, so the announcement can name counts the applier is sure of. */
+interface DeckEditChangeResult {
+  deck: Deck;
+  added: number;
+  removed: number;
+  moved: number;
+}
+
+/**
+ * Turn a resolved edit into the closure the reducer already knows how to run.
+ *
+ * Changes are folded onto a working deck in order and the whole edit is refused the moment
+ * one of them is, so the working deck is discarded and the real one is never touched. A
+ * half-applied edit is the worst outcome available here, because history would then record an
+ * intent that did not happen. Folding in order is also what makes a swap expressible: the
+ * incoming commander is validated against the deck the outgoing one has already left.
+ */
+function deckEditMutation(edit: DeckEdit): DeckMutation {
+  return (current) => {
+    if (edit.changes.length === 0) {
+      return null;
+    }
+
+    let deck = current;
+    let added = 0;
+    let removed = 0;
+    let moved = 0;
+    for (const change of edit.changes) {
+      const applied = applyEditChange(deck, change);
+      if ("error" in applied) {
+        return applied;
+      }
+      deck = applied.deck;
+      added += applied.added;
+      removed += applied.removed;
+      moved += applied.moved;
+    }
+
+    const parts = [
+      added > 0 ? `${added} added` : "",
+      removed > 0 ? `${removed} removed` : "",
+      moved > 0 ? `${moved} moved` : "",
+    ].filter((part) => part.length > 0);
+    if (parts.length === 0) {
+      return {
+        deck,
+        announcement: "The deck already matched that edit, so nothing changed.",
+      };
+    }
+    const cardCount = deck.cards.reduce(
+      (total, entry) => total + entry.quantity,
+      0,
+    );
+    return {
+      deck,
+      announcement: `Edit applied: ${parts.join(", ")}, ${cardCount} cards now.`,
+    };
+  };
+}
+
+/**
+ * Apply one declared card state, running the validators the drag path runs.
+ *
+ * The one guard deliberately not carried over is `addCard`'s refusal to move a card holding
+ * several copies into the command zone. That guard exists because dragging cannot say what
+ * the quantity should become; a change states the count it wants, so declaring one copy in the
+ * command zone is a complete instruction rather than an ambiguous one. Commander legality and
+ * the one-copy rule are enforced exactly as they are for a drag, and colour identity stays a
+ * warning here as it is there.
+ */
+function applyEditChange(
+  deck: Deck,
+  change: DeckEditChange,
+): DeckEditChangeResult | DeckMutationRejection {
+  const { card, quantity } = change;
+  // Rejected, never coerced: `Number(undefined)` is `NaN` and `Number(null)` is 0, and a
+  // quantity that silently became 0 deletes a card the edit meant to keep.
+  if (
+    !Number.isInteger(quantity) ||
+    quantity < 0 ||
+    quantity > MAX_EDIT_COPIES
+  ) {
+    return {
+      error: `${card.name} cannot be set to ${quantity} copies. A quantity must be a whole number from 0 to ${MAX_EDIT_COPIES}.`,
+    };
+  }
+
+  const existingIndex = deck.cards.findIndex(
+    (entry) => entry.card.scryfall_id === card.scryfall_id,
+  );
+  const existing = existingIndex >= 0 ? deck.cards[existingIndex] : undefined;
+
+  if (quantity === 0) {
+    if (!existing) {
+      // Already absent. Cutting a card twice is the same deck, which is what lets a retried
+      // edit be safe.
+      return { deck, added: 0, removed: 0, moved: 0 };
+    }
+    return {
+      deck: {
+        ...deck,
+        cards: deck.cards.filter((_, index) => index !== existingIndex),
+      },
+      added: 0,
+      removed: existing.quantity,
+      moved: 0,
+    };
+  }
+
+  const groupId =
+    change.groupId ??
+    (existing ? groupIdForEntry(existing, deck.custom_groups) : UNASSIGNED_GROUP_ID);
+  if (
+    groupId !== COMMAND_ZONE_GROUP_ID &&
+    groupId !== UNASSIGNED_GROUP_ID &&
+    !deck.custom_groups.some((group) => group.id === groupId)
+  ) {
+    return {
+      error: `${card.name} cannot be placed in a group this deck does not have. Create the group first.`,
+    };
+  }
+
+  if (groupId === COMMAND_ZONE_GROUP_ID) {
+    if (quantity !== 1) {
+      return {
+        error: `${card.name} is a commander, so it may only have one copy in the command zone.`,
+      };
+    }
+    // A card already in the command zone is not a new addition, and asking whether it may
+    // join would refuse it for being there already.
+    if (existing?.section !== "command_zone") {
+      const validation = validateCommandZoneAddition(deck.cards, card);
+      if (!validation.allowed) {
+        return {
+          error:
+            validation.reason ??
+            `${card.name} cannot be added to the command zone.`,
+        };
+      }
+    }
+  }
+
+  const placement = placementForGroup(groupId);
+  if (!existing) {
+    return {
+      deck: {
+        ...deck,
+        cards: [
+          ...deck.cards,
+          {
+            card: {
+              oracle_id: card.oracle_id,
+              scryfall_id: card.scryfall_id,
+              name: card.name,
+              details: card,
+            },
+            quantity,
+            ...placement,
+          },
+        ],
+      },
+      added: quantity,
+      removed: 0,
+      moved: 0,
+    };
+  }
+
+  const relocated =
+    existing.section !== placement.section ||
+    existing.categories[0] !== placement.categories[0];
+  if (existing.quantity === quantity && !relocated) {
+    return { deck, added: 0, removed: 0, moved: 0 };
+  }
+  return {
+    deck: {
+      ...deck,
+      cards: deck.cards.map((entry, index) =>
+        index === existingIndex ? { ...entry, quantity, ...placement } : entry,
+      ),
+    },
+    added: Math.max(0, quantity - existing.quantity),
+    removed: Math.max(0, existing.quantity - quantity),
+    moved: relocated ? 1 : 0,
   };
 }
 
@@ -688,6 +1091,10 @@ function isUntouchedEmptyDeck(deck: Deck): boolean {
     deck.custom_groups.length === 0 &&
     deck.created_at === deck.updated_at
   );
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
 }
 
 function getLocalStorage(): Storage | null {

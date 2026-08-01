@@ -1,12 +1,23 @@
 import { act, renderHook } from "@testing-library/react";
+import { StrictMode } from "react";
 import { beforeEach, describe, expect, it } from "vitest";
 
 import type { CardSearchResult } from "../domain/card";
+import type { Deck, DeckCardEntry } from "../domain/deck";
 import {
   COMMAND_ZONE_GROUP_ID,
+  createEmptyDeck,
+  DECK_LIBRARY_STORAGE_KEY,
   UNASSIGNED_GROUP_ID,
 } from "../domain/deck";
-import { counterspell, ghalta, solRing } from "../test/fixtures";
+import type { DeckEditEntry, DeckHistory } from "../domain/history";
+import {
+  createDeckHistory,
+  DECK_HISTORY_STORAGE_KEY,
+  parseDeckHistory,
+} from "../domain/history";
+import { counterspell, gamble, ghalta, solRing } from "../test/fixtures";
+import type { DeckEdit } from "./useDeck";
 import { useDeck } from "./useDeck";
 
 beforeEach(() => {
@@ -125,6 +136,372 @@ describe("useDeck custom groups", () => {
     expect(result.current.deck.cards[0]?.quantity).toBe(1);
   });
 });
+
+describe("useDeck history", () => {
+  it("records each mutator's change and replays it backwards on undo", () => {
+    const { result } = renderHook(() => useDeck());
+    // Every mutator gets a step, because the derivation is central: one that recorded
+    // nothing would stop being undoable and only its own step would notice.
+    const steps: { label: string; run: () => void }[] = [
+      { label: "addCard", run: () => result.current.addCard(solRing) },
+      {
+        label: "setQuantity",
+        run: () => result.current.setQuantity(solRing.scryfall_id, 3),
+      },
+      { label: "addCustomGroup", run: () => result.current.addCustomGroup("Ramp") },
+      {
+        label: "moveCard",
+        run: () =>
+          result.current.moveCard(
+            solRing.scryfall_id,
+            result.current.deck.custom_groups[0].id,
+          ),
+      },
+      { label: "renameDeck", run: () => result.current.renameDeck("Gruul Stompy") },
+      {
+        label: "removeCard",
+        run: () => result.current.removeCard(solRing.scryfall_id),
+      },
+    ];
+
+    const shapes: string[] = [];
+    for (const step of steps) {
+      shapes.push(shapeOf(result.current.deck));
+      act(step.run);
+      expect(
+        shapeOf(result.current.deck),
+        `${step.label} must change the deck`,
+      ).not.toBe(shapes[shapes.length - 1]);
+      expect(result.current.canUndo, `${step.label} must be undoable`).toBe(true);
+    }
+
+    for (const step of [...steps].reverse()) {
+      act(() => result.current.undo());
+      expect(
+        shapeOf(result.current.deck),
+        `undoing ${step.label} must restore the deck it found`,
+      ).toBe(shapes.pop());
+    }
+    // Undo pops the log rather than recording its inverse, so six edits undo exactly six
+    // times and the seventh attempt finds an empty log.
+    expect(result.current.canUndo).toBe(false);
+    act(() => result.current.undo());
+    expect(result.current.announcement).toBe("Nothing to undo.");
+    expect(shapeOf(result.current.deck)).toBe(
+      shapeOf(createEmptyDeck(new Date(), "Untitled Commander")),
+    );
+  });
+
+  it("undoes a change made before a remount, from history in localStorage", () => {
+    const first = renderHook(() => useDeck());
+    act(() => first.result.current.addCard(solRing));
+    act(() => first.result.current.setQuantity(solRing.scryfall_id, 4));
+    const deckId = first.result.current.deck.id;
+    first.unmount();
+
+    const second = renderHook(() => useDeck());
+
+    expect(second.result.current.deck.id).toBe(deckId);
+    expect(second.result.current.deck.cards[0]?.quantity).toBe(4);
+    expect(second.result.current.canUndo).toBe(true);
+
+    act(() => second.result.current.undo());
+
+    expect(second.result.current.deck.cards[0]?.quantity).toBe(1);
+
+    // The second undo has to rebuild Sol Ring from the pooled payload, so it also proves the
+    // card pool survived the round trip and not merely the list of changes.
+    act(() => second.result.current.undo());
+
+    expect(second.result.current.deck.cards).toEqual([]);
+    expect(second.result.current.canUndo).toBe(false);
+  });
+
+  it("writes history under its own key and leaves the deck library alone", () => {
+    const { result } = renderHook(() => useDeck());
+
+    act(() => result.current.addCard(solRing));
+
+    expect(DECK_HISTORY_STORAGE_KEY).toBe("manabase.deck-history.v1");
+    const log = storedLog(result.current.deck.id);
+    expect(log.sessions).toHaveLength(1);
+    expect(log.sessions[0]?.actor).toBe("user");
+    expect(recordedEdits(log)).toHaveLength(1);
+    expect(log.cards[solRing.scryfall_id]?.name).toBe("Sol Ring");
+
+    const library = window.localStorage.getItem(DECK_LIBRARY_STORAGE_KEY);
+    expect(library).toContain('"name":"Sol Ring"');
+    expect(library).not.toContain("sessions");
+  });
+
+  it("does not offer an undo whose pooled card details are gone", () => {
+    const first = renderHook(() => useDeck());
+    act(() => first.result.current.addCard(solRing));
+    act(() => first.result.current.removeCard(solRing.scryfall_id));
+    const deckId = first.result.current.deck.id;
+    first.unmount();
+
+    // What a prune leaves behind: the entries stay readable and the payload pool is gone.
+    const log = storedLog(deckId);
+    expect(recordedEdits(log)).toHaveLength(2);
+    window.localStorage.setItem(
+      DECK_HISTORY_STORAGE_KEY,
+      JSON.stringify({ [deckId]: { ...log, cards: {} } }),
+    );
+
+    const second = renderHook(() => useDeck());
+
+    // Read depth and undo depth are separate: the removal is still named in the log, and it
+    // can no longer be replayed, so the button must not offer it.
+    expect(recordedEdits(storedLog(deckId))[1]?.cards[0]?.name).toBe("Sol Ring");
+    expect(second.result.current.canUndo).toBe(false);
+
+    act(() => second.result.current.undo());
+
+    expect(second.result.current.announcementTone).toBe("error");
+    expect(second.result.current.announcement).toContain("Sol Ring");
+    expect(second.result.current.deck.cards).toEqual([]);
+  });
+
+  it("keeps the deck usable when a stored card has no cached details", () => {
+    window.localStorage.setItem(
+      DECK_LIBRARY_STORAGE_KEY,
+      JSON.stringify(
+        storedLibraryHolding({
+          card: {
+            oracle_id: solRing.oracle_id,
+            scryfall_id: solRing.scryfall_id,
+            name: solRing.name,
+          },
+          quantity: 2,
+          section: "mainboard",
+          categories: [UNASSIGNED_GROUP_ID],
+        }),
+      ),
+    );
+
+    // Stored entries are not required to carry `details`, and pricing one that does not used
+    // to throw inside the statistics memo and take the whole board with it.
+    const { result } = renderHook(() => useDeck());
+
+    expect(result.current.deck.cards[0]?.card.details).toBeUndefined();
+    expect(result.current.statistics.cardCount).toBe(2);
+    expect(result.current.statistics.price).toBe(0);
+    expect(result.current.statistics.averageMana).toBe(0);
+  });
+
+  it("archives a deleted deck's history and restores it with the deck", () => {
+    const { result } = renderHook(() => useDeck());
+    const deckId = result.current.deck.id;
+
+    act(() => result.current.addCard(solRing));
+    act(() => result.current.createDeck());
+    act(() => result.current.selectDeck(deckId));
+    expect(result.current.canUndo).toBe(true);
+
+    act(() => result.current.deleteDeck(deckId));
+
+    expect(result.current.deck.id).not.toBe(deckId);
+    expect(result.current.canUndo).toBe(false);
+    expect(storedLog(deckId).sessions).toEqual([]);
+
+    act(() => result.current.restoreDeletedDeck());
+
+    expect(result.current.deck.id).toBe(deckId);
+    expect(recordedEdits(storedLog(deckId))).toHaveLength(1);
+    expect(result.current.canUndo).toBe(true);
+
+    act(() => result.current.undo());
+
+    expect(result.current.deck.cards).toEqual([]);
+  });
+});
+
+describe("useDeck applied edits", () => {
+  it("applies a multi-card edit as one history entry and one undo step", () => {
+    const { result } = renderHook(() => useDeck());
+    act(() => result.current.addCard(counterspell));
+
+    act(() =>
+      result.current.applyEdit(
+        {
+          changes: [
+            { card: solRing, quantity: 1 },
+            { card: gamble, quantity: 2, groupId: UNASSIGNED_GROUP_ID },
+            { card: counterspell, quantity: 0 },
+          ],
+          reason: "swapping the weakest card for two rocks",
+        },
+        "agent",
+      ),
+    );
+
+    expect(cardNames(result.current.deck)).toEqual(["Sol Ring", "Gamble"]);
+    expect(result.current.statistics.cardCount).toBe(3);
+    expect(result.current.announcement).toBe(
+      "Edit applied: 3 added, 1 removed, 3 cards now.",
+    );
+
+    const log = storedLog(result.current.deck.id);
+    const recorded = recordedEdits(log);
+    expect(recorded).toHaveLength(2);
+    expect(recorded[1]?.cards).toHaveLength(3);
+    expect(recorded[1]?.reason).toBe("swapping the weakest card for two rocks");
+    // The actor sits on the session, so an agent edit cannot join the user's.
+    expect(log.sessions.map((session) => session.actor)).toEqual([
+      "user",
+      "agent",
+    ]);
+
+    act(() => result.current.undo());
+
+    expect(cardNames(result.current.deck)).toEqual(["Counterspell"]);
+    expect(result.current.deck.cards[0]?.quantity).toBe(1);
+  });
+
+  it("refuses an edit the validators reject, applying nothing and recording nothing", () => {
+    const { result } = renderHook(() => useDeck());
+    act(() => result.current.addCard(ghalta, COMMAND_ZONE_GROUP_ID));
+    const before = shapeOf(result.current.deck);
+    const recordedBefore = recordedEdits(
+      storedLog(result.current.deck.id),
+    ).length;
+
+    act(() =>
+      result.current.applyEdit(
+        {
+          changes: [
+            { card: solRing, quantity: 1 },
+            { card: counterspell, quantity: 1, groupId: COMMAND_ZONE_GROUP_ID },
+          ],
+          reason: "a second commander that cannot pair",
+        },
+        "agent",
+      ),
+    );
+
+    expect(result.current.announcementTone).toBe("error");
+    expect(result.current.announcement).toContain("cannot share the command zone");
+    // Sol Ring was legal and came first. It must still not be in the deck: a half-applied
+    // edit would leave history recording an intent that did not happen.
+    expect(cardNames(result.current.deck)).not.toContain("Sol Ring");
+    expect(shapeOf(result.current.deck)).toBe(before);
+    expect(recordedEdits(storedLog(result.current.deck.id))).toHaveLength(
+      recordedBefore,
+    );
+  });
+
+  it("rejects a malformed or unplaceable change, changing nothing", () => {
+    const { result } = renderHook(() => useDeck());
+
+    act(() =>
+      result.current.applyEdit(
+        { changes: [{ card: solRing, quantity: 100 }] },
+        "agent",
+      ),
+    );
+    expect(result.current.announcementTone).toBe("error");
+    expect(result.current.deck.cards).toEqual([]);
+
+    act(() =>
+      result.current.applyEdit(
+        { changes: [{ card: solRing, quantity: Number.NaN }] },
+        "agent",
+      ),
+    );
+    expect(result.current.announcement).toContain("whole number");
+    expect(result.current.deck.cards).toEqual([]);
+
+    act(() =>
+      result.current.applyEdit(
+        { changes: [{ card: solRing, quantity: 1, groupId: "group-missing" }] },
+        "agent",
+      ),
+    );
+    expect(result.current.announcement).toContain(
+      "a group this deck does not have",
+    );
+    expect(result.current.deck.cards).toEqual([]);
+    expect(result.current.canUndo).toBe(false);
+  });
+
+  it("applies the same edit twice as one recorded change", () => {
+    const { result } = renderHook(() => useDeck());
+    const edit: DeckEdit = {
+      changes: [{ card: solRing, quantity: 1 }],
+      reason: "one rock",
+    };
+
+    act(() => result.current.applyEdit(edit, "agent"));
+    act(() => result.current.applyEdit(edit, "agent"));
+
+    expect(result.current.deck.cards).toHaveLength(1);
+    expect(result.current.deck.cards[0]?.quantity).toBe(1);
+    expect(result.current.announcement).toBe(
+      "The deck already matched that edit, so nothing changed.",
+    );
+    expect(recordedEdits(storedLog(result.current.deck.id))).toHaveLength(1);
+  });
+
+  it("applies an edit once when the hook renders in StrictMode", () => {
+    const { result } = renderHook(() => useDeck(), { wrapper: StrictMode });
+
+    act(() =>
+      result.current.applyEdit(
+        { changes: [{ card: solRing, quantity: 2 }] },
+        "agent",
+      ),
+    );
+
+    expect(result.current.deck.cards).toHaveLength(1);
+    expect(result.current.deck.cards[0]?.quantity).toBe(2);
+    expect(recordedEdits(storedLog(result.current.deck.id))).toHaveLength(1);
+
+    act(() => result.current.undo());
+
+    expect(result.current.deck.cards).toEqual([]);
+  });
+});
+
+/**
+ * Everything a diff models, as one comparable value: the fields `updated_at` is not one of,
+ * because the reducer restamps it on an undo and comparing it would fail every restoration.
+ */
+function shapeOf(deck: Deck): string {
+  return JSON.stringify({
+    name: deck.name,
+    cards: deck.cards,
+    custom_groups: deck.custom_groups,
+  });
+}
+
+function cardNames(deck: Deck): string[] {
+  return deck.cards.map((entry) => entry.card.name);
+}
+
+function recordedEdits(log: DeckHistory): DeckEditEntry[] {
+  return log.sessions.flatMap((session) => session.edits);
+}
+
+/** One deck's log, read back out of storage the way a reload would read it. */
+function storedLog(deckId: string): DeckHistory {
+  const raw = window.localStorage.getItem(DECK_HISTORY_STORAGE_KEY);
+  const envelope: unknown = raw === null ? null : JSON.parse(raw);
+  const candidate =
+    typeof envelope === "object" && envelope !== null
+      ? (envelope as Record<string, unknown>)[deckId]
+      : null;
+  return parseDeckHistory(candidate, createDeckHistory(deckId));
+}
+
+/** A stored library built by the real factory, holding one entry a test wants to pin. */
+function storedLibraryHolding(entry: DeckCardEntry): unknown {
+  const deck = createEmptyDeck(new Date(), "Stored deck");
+  return {
+    active_deck_id: deck.id,
+    decks: [{ ...deck, cards: [entry] }],
+  };
+}
 
 function partnerCard(name: string): CardSearchResult {
   const id = name.toLocaleLowerCase().replaceAll(" ", "-");
