@@ -158,16 +158,20 @@ not the intended end state.
   streaming route reports availability before it starts; a later failure arrives as an
   `error` event with the same code and wording. The interface uses the streaming route
   only — the JSON one remains the plain API contract.
-- Five tools, four of them read-only (ADRs 0029, 0035 and 0036):
-  - `read_deck()` — the open deck grouped under each card's primary type, with
-    names and short ids, and no card text. It also reports a
-    quantity-weighted mana curve and a total EUR price without being asked, adopting the
-    statistics memo's own conventions exactly — price over every card including the
-    command zone, average mana value over neither the command zone nor anything with
-    `Land` in its type line — so the tool and the interface cannot give two different
-    correct answers. Where they part company is a card with no EUR estimate: the
-    interface reads it as `0` and under-reports silently, while the tool excludes it and
-    counts it in words, because a card with no price is not a free card.
+- Five tools, four of them read-only (ADRs 0029, 0035, 0036 and 0039):
+  - `read_deck(extra_info)` — the open deck grouped under each card's primary type, with
+    names and short ids, and no card text. `extra_info` adds figures to that listing and
+    nothing is sent unasked (ADR 0039): `mana` puts every card's printed mana cost on its
+    line and the quantity-weighted curve underneath as a markdown table of mana value
+    against card count; `price` puts every card's EUR estimate on its line, a total beside
+    each type heading, and the deck's total at the bottom. A card line's price is the line
+    total with the unit price beside it, so the heading totals can be reproduced from the
+    lines. Both summaries adopt the statistics memo's own conventions exactly — price over
+    every card including the command zone, average mana value over neither the command zone
+    nor anything with `Land` in its type line — so the tool and the interface cannot give
+    two different correct answers. Where they part company is a card with no EUR estimate:
+    the interface reads it as `0` and under-reports silently, while the tool excludes it and
+    says so, per card and per section, because a card with no price is not a free card.
   - `see_cards(cards, details)` — named or short-id cards at the requested depth:
     rules, prices, Tagger tags, EDHREC similar cards, EDHREC inclusion for this
     deck's commander, Commander legality. Defaults to rules.

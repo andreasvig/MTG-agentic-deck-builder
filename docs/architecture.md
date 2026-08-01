@@ -352,10 +352,13 @@ log from the request into the toolbox so `read_history` can answer from it (ADR 
 
 ### `deck_agent_tools.py`
 
-The agent's five tools (ADRs 0029, 0035 and 0036), four of them read-only. `read_deck` is answered entirely from the
+The agent's five tools (ADRs 0029, 0035, 0036 and 0039), four of them read-only. `read_deck` is answered entirely from the
 deck snapshot the browser posted with the turn, resolved against the local catalog so
 names and types come from the catalog rather than the client; it returns the deck
-grouped by primary type with short ids and no card text. `see_cards` resolves names,
+grouped by primary type with short ids and no card text. Its one argument, `extra_info`,
+adds a figure to every card line and a summary underneath — `mana` for printed costs and
+the curve as a markdown table, `price` for EUR estimates and a total per section — and
+neither is sent unless asked for (ADR 0039). `see_cards` resolves names,
 ids or those short ids and reports only the requested details — rules, prices, Tagger
 tags, every related-card list grouped by how the cards relate with each card named
 once, EDHREC inclusion for this commander,

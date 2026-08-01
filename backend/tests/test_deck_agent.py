@@ -323,6 +323,12 @@ def test_settings_load_the_repository_agent_yaml() -> None:
     assert "commander" in prompt
     # The tool descriptions are prompt text and live in the same file.
     assert "no card text" in settings.agent.tools.read_deck_description.casefold()
+    # Both extras are advertised in the description and named in the prompt. A figure
+    # the model is not told it can ask for is a figure it never asks for, which is how
+    # the placement field went unused until its description was fixed.
+    assert "extra_info" in prompt
+    for extra in ("`mana`", "`price`"):
+        assert extra in settings.agent.tools.read_deck_description
     for detail in ("rules", "prices", "tags", "similar", "inclusion", "legality"):
         assert detail in settings.agent.tools.see_cards_description
 

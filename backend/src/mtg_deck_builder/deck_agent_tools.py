@@ -61,6 +61,7 @@ from mtg_deck_builder.domain.agent_chat import (
     DeckAgentModel,
     DeckEditChange,
     DeckEditZone,
+    DeckExtraInfo,
     DeckSection,
     EditDeckArguments,
     ReadHistoryArguments,
@@ -114,14 +115,6 @@ _SECTION_DISPLAY_ORDER = (
 # zeros, and `7+` is how the curve is drawn everywhere else a player has seen one.
 _CURVE_TOP_BUCKET = 7
 
-# How many blocks the widest bar may run to. One block per card while everything fits;
-# past that every bar scales down together so the shape stays readable on one line. The
-# count printed beside each bar is always the literal number of cards, so a scaled bar
-# never becomes the only source of truth.
-_CURVE_BAR_MAX = 20
-
-_CURVE_BLOCK = "█"
-
 # Short enough to be cheap across a hundred-card deck, long enough that a collision
 # inside one deck is vanishingly unlikely — and collisions are checked for anyway.
 _MINIMUM_ID_PREFIX = 8
@@ -170,6 +163,20 @@ _SIMILAR_FIELD = "similar_cards"
 _MORE_SPECIFIC_THAN_SIMILAR = frozenset(
     {"upgrades", "downgrades", "creature_versions", "spell_versions", "variants"}
 )
+
+# The order `read_deck`'s extras are applied in, whatever order they were asked for,
+# and the order they read in on a card line: what a card costs to cast before what it
+# costs to buy.
+_EXTRA_ORDER: tuple[DeckExtraInfo, ...] = ("mana", "price")
+
+_MISSING_FROM_EXTRA_ORDER = set(get_args(DeckExtraInfo)) - set(_EXTRA_ORDER)
+if _MISSING_FROM_EXTRA_ORDER:
+    # Same reason as the detail order below: an extra left out of the order is silently
+    # never applied, and the tool would answer a request for it with a bare listing.
+    raise RuntimeError(
+        "read_deck extras missing from the render order: "
+        f"{sorted(_MISSING_FROM_EXTRA_ORDER)}"
+    )
 
 _MISSING_FROM_DETAIL_ORDER = set(get_args(CardDetail)) - set(_DETAIL_ORDER)
 if _MISSING_FROM_DETAIL_ORDER:
@@ -272,7 +279,15 @@ class ToolOutcome:
 
 
 class ReadDeckArguments(DeckAgentModel):
-    """`read_deck` takes no arguments; it reads whichever deck is open."""
+    """Which deck to read — always the open one — and what to add to the listing.
+
+    `extra_info` is the whole argument surface: the listing is names and short ids by
+    default, and each extra asked for carries one figure down every card line and
+    totals it underneath. Asked for rather than always sent, because a bare listing is
+    what makes this the cheap tool to call first.
+    """
+
+    extra_info: list[DeckExtraInfo] = Field(default_factory=list)
 
 
 class SeeCardsArguments(DeckAgentModel):
@@ -515,8 +530,11 @@ class DeckAgentToolbox:
             )
         try:
             if name == READ_DECK:
-                ReadDeckArguments.model_validate(arguments)
-                return await self._read_deck(deck, history)
+                return await self._read_deck(
+                    ReadDeckArguments.model_validate(arguments),
+                    deck,
+                    history,
+                )
             if name == SEE_CARDS:
                 return await self._see_cards(
                     SeeCardsArguments.model_validate(arguments),
@@ -561,12 +579,18 @@ class DeckAgentToolbox:
 
     async def _read_deck(
         self,
+        arguments: ReadDeckArguments,
         deck: DeckAgentDeckSnapshot | None,
         history: DeckAgentDeckHistory | None = None,
     ) -> ToolOutcome:
         """List the open deck by card type, with names and short ids but no rules."""
 
-        signature = f"{READ_DECK}()"
+        # Canonicalised once, exactly as `see_cards` canonicalises its details: the tool
+        # line the user reads names the extras in the order the listing applies them,
+        # and an extra asked for twice is applied once.
+        asked = set(arguments.extra_info)
+        extras = tuple(extra for extra in _EXTRA_ORDER if extra in asked)
+        signature = _read_deck_signature(extras)
         if deck is None:
             return ToolOutcome(
                 signature=signature,
@@ -601,9 +625,12 @@ class DeckAgentToolbox:
             "",
         ]
         if commanders:
-            lines.append(f"Commander ({len(commanders)})")
+            lines.append(
+                f"Commander ({len(commanders)}){_heading_total(commanders, extras)}"
+            )
             lines.extend(
-                _deck_line(entry, prefixes, with_quantity=False) for entry in commanders
+                _deck_line(entry, prefixes, extras=extras, with_quantity=False)
+                for entry in commanders
             )
         else:
             lines.append("Commander (0) — the command zone is empty.")
@@ -613,9 +640,9 @@ class DeckAgentToolbox:
                 continue
             lines.append("")
             count = sum(entry.quantity for entry in group)
-            lines.append(f"{section} ({count})")
+            lines.append(f"{section} ({count}){_heading_total(group, extras)}")
             lines.extend(
-                _deck_line(entry, prefixes)
+                _deck_line(entry, prefixes, extras=extras)
                 for entry in sorted(group, key=lambda item: item.card.name)
             )
         if unresolved:
@@ -624,13 +651,12 @@ class DeckAgentToolbox:
                 f"Not in the local catalog ({len(unresolved)}): "
                 + ", ".join(str(identifier) for identifier in unresolved)
             )
-        if entries:
-            # Unconditional rather than asked for: these are the two numbers a player
-            # checks first, and a deck listing that made the agent call a second tool to
-            # learn its own curve would be answering half the question. Skipped only when
-            # nothing resolved, because a curve over no cards is not a curve.
+        # The summary each extra earns, under the listing it has already annotated.
+        # Skipped when nothing resolved, because a curve over no cards is not a curve.
+        if entries and "mana" in extras:
             lines.append("")
             lines.extend(_curve_lines(entries))
+        if entries and "price" in extras:
             lines.append("")
             lines.extend(_price_lines(entries, unresolved_count=len(unresolved)))
         lines.append("")
@@ -638,6 +664,11 @@ class DeckAgentToolbox:
             f"No card text here. Call {SEE_CARDS} with the names or short ids above "
             "for rules, prices, tags, inclusion rates or similar cards."
         )
+        # What this listing could have carried and did not, named per extra so a
+        # listing that already priced every card does not offer the price again.
+        missing = [extra for extra in _EXTRA_ORDER if extra not in extras]
+        if entries and missing:
+            lines.append(_extras_hint(missing))
         # Only when there is a past to read. A pointer at an empty record would spend a
         # tool round to learn nothing, and one at a client that posts no history would
         # spend it to learn nothing twice.
@@ -1465,13 +1496,106 @@ def _deck_line(
     entry: _DeckEntry,
     prefixes: dict[UUID, str],
     *,
+    extras: tuple[DeckExtraInfo, ...] = (),
     with_quantity: bool = True,
 ) -> str:
     prefix = prefixes.get(entry.card.oracle_id, str(entry.card.oracle_id))
     quantity = f"{entry.quantity}x " if with_quantity and entry.quantity > 1 else ""
     # No placement suffix: a card is either under the `Commander` heading or it is in the
     # deck, and the heading already says which.
-    return f"  {quantity}{entry.card.name} [{prefix}]"
+    line = f"  {quantity}{entry.card.name} [{prefix}]"
+    figures = [
+        _mana_figure(entry) if extra == "mana" else _price_figure(entry)
+        for extra in extras
+    ]
+    return f"{line} — {' · '.join(figures)}" if figures else line
+
+
+def _mana_figure(entry: _DeckEntry) -> str:
+    """Say what one card costs to cast, in the symbols it is printed with.
+
+    A land has no printed cost, and neither does a card the catalog holds without one,
+    so the mana value stands in rather than the line going blank — the reader is being
+    told a cost either way, and for a land `MV 0` is the true one.
+    """
+
+    return entry.card.mana_cost or f"MV {entry.card.mana_value:g}"
+
+
+def _price_figure(entry: _DeckEntry) -> str:
+    """Price one deck entry: what its copies cost, and what one copy costs.
+
+    The line total rather than the unit price, because the total under each heading is
+    quantity-weighted and a reader adding up unit prices would not reproduce it. The
+    unit price follows in parentheses whenever there is more than one copy, so the
+    arithmetic is on the line rather than left to be trusted.
+
+    A card with no estimate says so, for the reason `_price_lines` gives at length: a
+    card with no price is not a free card, and `EUR 0.00` is what claims it is.
+    """
+
+    unit = entry.card.prices.eur
+    if unit is None:
+        return "no EUR estimate"
+    if entry.quantity == 1:
+        return f"EUR {unit:.2f}"
+    return f"EUR {unit * entry.quantity:.2f} ({entry.quantity} x {unit:.2f})"
+
+
+def _heading_total(
+    group: list[_DeckEntry],
+    extras: tuple[DeckExtraInfo, ...],
+) -> str:
+    """Total one section's EUR estimate, beside the heading that counts its cards.
+
+    Only under `price`, and only ever a suffix: the count is what the heading is about,
+    and this is the figure the user asked to have next to it. What is missing from the
+    figure is stated rather than folded into it, exactly as the deck's own total states
+    it — a section holding an unpriced card is not a cheaper section.
+    """
+
+    if "price" not in extras:
+        return ""
+    total = sum(
+        (
+            entry.card.prices.eur * entry.quantity
+            for entry in group
+            if entry.card.prices.eur is not None
+        ),
+        Decimal(0),
+    )
+    unpriced = sum(entry.quantity for entry in group if entry.card.prices.eur is None)
+    if unpriced == sum(entry.quantity for entry in group):
+        return " — no EUR estimates"
+    suffix = f" — EUR {total:.2f}"
+    if unpriced:
+        suffix += f", {unpriced} unpriced"
+    return suffix
+
+
+def _extras_hint(missing: list[DeckExtraInfo]) -> str:
+    """Say what this listing could have carried and did not.
+
+    The model reads this right under the listing it just got, which is the moment
+    "and what does it cost?" is worth answering with one argument rather than a second
+    tool.
+    """
+
+    offers = {
+        "mana": '["mana"] adds every card\'s mana cost and the curve',
+        "price": '["price"] adds every card\'s EUR estimate and a total per section',
+    }
+    return f"Call {READ_DECK} with extra_info for more: " + "; ".join(
+        offers[extra] for extra in missing
+    )
+
+
+def _read_deck_signature(extras: tuple[str, ...]) -> str:
+    """Render the call the way the chat shows it: which extras it asked for."""
+
+    return _bounded(
+        f"{READ_DECK}({', '.join(extras)})" if extras else f"{READ_DECK}()"
+    )
 
 
 def _counts_toward_curve(entry: _DeckEntry) -> bool:
@@ -1519,21 +1643,19 @@ def _curve_lines(entries: list[_DeckEntry]) -> list[str]:
     quantity = sum(entry.quantity for entry in counted)
     total_mana = sum(entry.card.mana_value * entry.quantity for entry in counted)
 
-    widest = max(buckets)
-    cells = [
-        f"{_bucket_label(value):<2} {_curve_bar(count, widest)} {count}"
-        for value, count in enumerate(buckets)
+    # A markdown table rather than a bar chart, because the reader is a language model:
+    # it reads a two-column table exactly, and reads a row of blocks by counting glyphs.
+    # A bar that had to be scaled down to fit one line was never countable anyway.
+    lines = [
+        "Curve — non-land cards outside the command zone",
+        "",
+        "| MV | Cards |",
+        "| --- | --- |",
     ]
-    # Two columns, so eight buckets cost four lines of every read_deck call rather than
-    # eight. The left column is padded to its own widest cell so the pairs line up.
-    rows = (len(cells) + 1) // 2
-    left, right = cells[:rows], cells[rows:]
-    width = max(len(cell) for cell in left)
-    lines = ["Curve — non-land cards outside the command zone"]
     lines.extend(
-        f"  {cell.ljust(width)}   {right[index] if index < len(right) else ''}".rstrip()
-        for index, cell in enumerate(left)
+        f"| {_bucket_label(value)} | {count} |" for value, count in enumerate(buckets)
     )
+    lines.append("")
     lines.append(
         f"Average mana value {total_mana / quantity:.2f} across "
         f"{quantity} {_cards(quantity)}."
@@ -1543,20 +1665,6 @@ def _curve_lines(entries: list[_DeckEntry]) -> list[str]:
 
 def _bucket_label(value: int) -> str:
     return f"{value}+" if value == _CURVE_TOP_BUCKET else str(value)
-
-
-def _curve_bar(count: int, widest: int) -> str:
-    """One block per card, or a proportional bar once that would run off the line.
-
-    An empty bucket still gets a mark, so every row reads as the same three fields
-    rather than collapsing into two numbers with a gap between them.
-    """
-
-    if count == 0:
-        return "·"
-    if widest <= _CURVE_BAR_MAX:
-        return _CURVE_BLOCK * count
-    return _CURVE_BLOCK * max(1, round(count * _CURVE_BAR_MAX / widest))
 
 
 def _price_lines(entries: list[_DeckEntry], *, unresolved_count: int = 0) -> list[str]:
@@ -2175,7 +2283,13 @@ def _commander_legality(card: CardSearchResult) -> str:
 
 def _signature(name: object, arguments: dict[str, Any]) -> str:
     if name == READ_DECK:
-        return f"{READ_DECK}()"
+        # Built from the raw argument, because this is the path taken when validation
+        # is what failed: an `extra_info` of `["colour"]` is exactly the call worth
+        # being able to read.
+        asked = arguments.get("extra_info")
+        return _read_deck_signature(
+            tuple(str(extra) for extra in asked) if isinstance(asked, list) else ()
+        )
     if name == SEE_CARDS:
         cards = arguments.get("cards")
         count = len(cards) if isinstance(cards, list) else 0

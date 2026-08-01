@@ -26,7 +26,7 @@ The first manual editing slice is usable and tested.
 | Import/export and analytics | Not implemented |
 | Progressive one-tool agentic card search | Shipped |
 | Deck agent chat | Shipped, desktop only, streamed, one saved conversation per deck |
-| Deck agent read-only tools | Shipped: `read_deck`, `see_cards`, `search_cards`, `read_history` |
+| Deck agent read-only tools | Shipped: `read_deck` (with `extra_info` for costs, the curve and prices), `see_cards`, `search_cards`, `read_history` |
 | Deck agent deck editing | Shipped: `edit_deck`, auto-applied, one undo step per edit |
 | Backend-enforced deck mutation and confirmed patches | Not implemented, and not the direction — see ADR 0036 |
 
@@ -438,8 +438,8 @@ recorded in
 - The deck agent's panel is desktop-only. It can read the open deck (`read_deck`), look
   cards up (`see_cards`), search the whole catalog under filters it writes itself
   (`search_cards`), read what has already been done (`read_history`) and change the deck
-  (`edit_deck`) — but not everything an edit could be. It can place a card in a group the
-  deck already has and cannot create one, it does not reorder anything, and Partner and
+  (`edit_deck`) — but not everything an edit could be. It sets the count a card should be
+  at and which of the two zones it sits in, it does not reorder anything, and Partner and
   background command zones are unhandled here as they are in the other tools.
 - Deck history is browser-local and per deck, so it does not survive a browser wipe and
   is not readable across devices. There is no branching: stepping back and then editing

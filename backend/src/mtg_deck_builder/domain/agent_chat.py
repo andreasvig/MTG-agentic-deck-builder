@@ -100,6 +100,15 @@ Every value is backed by data this application already holds locally or fetches
 on demand; there is deliberately no value the tool would have to invent.
 """
 
+DeckExtraInfo = Literal["mana", "price"]
+"""What `read_deck` may add to a bare deck listing, per card and in a summary.
+
+Each value is one figure carried down the whole listing and totalled at the bottom,
+not a separate report: `mana` puts every card's cost on its own line and the curve
+under the deck, `price` puts every card's estimate on its line and a total under each
+heading. Both are off by default, because the listing exists to be the cheap tool.
+"""
+
 
 class DeckAgentModel(BaseModel):
     """Strict base model for the deck-agent chat contract."""

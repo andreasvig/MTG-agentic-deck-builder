@@ -905,31 +905,47 @@ CURVE_CARDS = {
         CURVE_BOSS,
         "Curve Boss",
         "Legendary Creature — Avatar",
+        mana_cost="{4}{G}{G}",
         mana_value=6,
         prices=CardPrices(eur="10.00"),
     ),
     CURVE_ZERO: make_card(
-        CURVE_ZERO, "Zero Rock", "Artifact", mana_value=0, prices=CardPrices(eur="0.25")
+        CURVE_ZERO,
+        "Zero Rock",
+        "Artifact",
+        mana_cost="{0}",
+        mana_value=0,
+        prices=CardPrices(eur="0.25"),
     ),
     CURVE_ONE: make_card(
         CURVE_ONE,
         "One Drop",
         "Creature — Elf Druid",
+        mana_cost="{G}",
         mana_value=1,
         prices=CardPrices(eur="0.50"),
     ),
     # Nine, not seven: the top bucket has to collect a value above its own label or it
     # is only a bucket for exactly seven.
     CURVE_BIG: make_card(
-        CURVE_BIG, "Big Finish", "Sorcery", mana_value=9, prices=CardPrices(eur="3.00")
+        CURVE_BIG,
+        "Big Finish",
+        "Sorcery",
+        mana_cost="{7}{R}{R}",
+        mana_value=9,
+        prices=CardPrices(eur="3.00"),
     ),
     # Dryad Arbor's shape, and the reason this file cares about it: `useDeck.ts` tests
     # `type_line.includes("Land")`, so a creature that is also a land is out of the
     # curve on screen. The tool mirrors that deliberately.
+    # Printed with no mana cost at all, and its mana value is not zero: the two cards
+    # that make the `extra_info: ["mana"]` fallback observable as the card's own value
+    # rather than as a constant.
     CURVE_ARBOR: make_card(
         CURVE_ARBOR,
         "Dryad Arbor",
         "Legendary Creature — Land Dryad",
+        mana_cost=None,
         mana_value=1,
         prices=CardPrices(eur="1.00"),
     ),
@@ -937,11 +953,17 @@ CURVE_CARDS = {
         CURVE_FOREST,
         "Forest",
         "Basic Land — Forest",
+        mana_cost=None,
         mana_value=0,
         prices=CardPrices(eur="0.10"),
     ),
     CURVE_UNPRICED: make_card(
-        CURVE_UNPRICED, "No Estimate", "Instant", mana_value=2, prices=CardPrices()
+        CURVE_UNPRICED,
+        "No Estimate",
+        "Instant",
+        mana_cost="{1}{U}",
+        mana_value=2,
+        prices=CardPrices(),
     ),
 }
 
@@ -979,11 +1001,18 @@ def make_curve_deck(*, only_commander: bool = False) -> DeckAgentDeckSnapshot:
     return DeckAgentDeckSnapshot(name="Curve Test", cards=cards)
 
 
+MANA = {"extra_info": ["mana"]}
+PRICE = {"extra_info": ["price"]}
+BOTH = {"extra_info": ["mana", "price"]}
+
+
 def curve_rows(content: str) -> dict[str, int]:
-    """Read the histogram back as bucket label -> card count.
+    """Read the curve back out of its markdown table as bucket label -> card count.
 
     Parsed rather than string-matched so the assertions pin the numbers and not the
-    glyphs or the column layout, either of which may be retuned.
+    table's own punctuation. The header and separator rows are asserted here rather
+    than in every caller: a table the reader's markdown cannot parse is a table with
+    the wrong number of cells, and this is where that is visible.
     """
 
     lines = content.splitlines()
@@ -991,12 +1020,14 @@ def curve_rows(content: str) -> dict[str, int]:
     end = next(
         index for index, line in enumerate(lines) if line.startswith("Average mana value")
     )
+    rows = [line for line in lines[start:end] if line.startswith("|")]
+    assert rows[0] == "| MV | Cards |"
+    assert rows[1] == "| --- | --- |"
     counts: dict[str, int] = {}
-    for line in lines[start + 1 : end]:
-        fields = line.split()
-        assert len(fields) % 3 == 0, line
-        for index in range(0, len(fields), 3):
-            counts[fields[index]] = int(fields[index + 2])
+    for row in rows[2:]:
+        cells = [cell.strip() for cell in row.strip("|").split("|")]
+        assert len(cells) == 2, row
+        counts[cells[0]] = int(cells[1])
     return counts
 
 
@@ -1011,7 +1042,7 @@ def average_line(content: str) -> str:
 
 
 def test_read_deck_draws_a_quantity_weighted_curve_in_eight_buckets() -> None:
-    outcome = run(make_curve_toolbox(), READ_DECK, {}, make_curve_deck())
+    outcome = run(make_curve_toolbox(), READ_DECK, MANA, make_curve_deck())
 
     assert curve_rows(outcome.content) == {
         "0": 2,
@@ -1028,7 +1059,7 @@ def test_read_deck_draws_a_quantity_weighted_curve_in_eight_buckets() -> None:
 
 
 def test_the_curve_excludes_the_command_zone_and_anything_with_land_in_its_type() -> None:
-    outcome = run(make_curve_toolbox(), READ_DECK, {}, make_curve_deck())
+    outcome = run(make_curve_toolbox(), READ_DECK, MANA, make_curve_deck())
 
     rows = curve_rows(outcome.content)
     # The commander is a six-drop, and it is not in the curve.
@@ -1049,7 +1080,7 @@ def test_the_curve_excludes_the_command_zone_and_anything_with_land_in_its_type(
 
 
 def test_the_price_sums_every_card_including_the_command_zone() -> None:
-    outcome = run(make_curve_toolbox(), READ_DECK, {}, make_curve_deck())
+    outcome = run(make_curve_toolbox(), READ_DECK, PRICE, make_curve_deck())
 
     line = price_line(outcome.content)
     # 10.00 + 0.25*2 + 0.50*4 + 3.00 + 1.00 + 0.10*3, over 13 cards.
@@ -1060,7 +1091,7 @@ def test_the_price_sums_every_card_including_the_command_zone() -> None:
 
 
 def test_a_card_with_no_price_is_counted_in_words_and_never_priced_at_zero() -> None:
-    outcome = run(make_curve_toolbox(), READ_DECK, {}, make_curve_deck())
+    outcome = run(make_curve_toolbox(), READ_DECK, PRICE, make_curve_deck())
 
     line = price_line(outcome.content)
     # `getCardPrice` in the frontend reads a missing estimate as 0, so the figure on
@@ -1090,7 +1121,7 @@ def test_a_card_with_no_price_is_counted_in_words_and_never_priced_at_zero() -> 
             }
         ),
         READ_DECK,
-        {},
+        PRICE,
         make_curve_deck(),
     )
 
@@ -1113,7 +1144,7 @@ def test_the_unpriced_count_counts_copies_rather_than_distinct_cards() -> None:
         ],
     )
 
-    line = price_line(run(make_curve_toolbox(), READ_DECK, {}, deck).content)
+    line = price_line(run(make_curve_toolbox(), READ_DECK, PRICE, deck).content)
 
     assert "3 of them have" in line
     assert "1 of them" not in line
@@ -1140,7 +1171,7 @@ def test_a_price_over_a_deck_with_unresolved_printings_does_not_speak_for_the_de
         ],
     )
 
-    content = run(make_curve_toolbox(), READ_DECK, {}, deck).content
+    content = run(make_curve_toolbox(), READ_DECK, PRICE, deck).content
     line = price_line(content)
 
     assert "Not in the local catalog (1)" in content
@@ -1160,7 +1191,7 @@ def test_a_deck_where_nothing_has_a_price_reports_no_total_rather_than_zero() ->
         ],
     )
 
-    outcome = run(make_curve_toolbox(), READ_DECK, {}, deck)
+    outcome = run(make_curve_toolbox(), READ_DECK, PRICE, deck)
 
     # No figure at all, because a total of zero would be a claim about the deck's value.
     assert re.search(r"EUR\s+\d", outcome.content) is None
@@ -1169,11 +1200,11 @@ def test_a_deck_where_nothing_has_a_price_reports_no_total_rather_than_zero() ->
 
 def test_a_deck_holding_only_a_commander_has_no_curve_and_says_so() -> None:
     outcome = run(
-        make_curve_toolbox(), READ_DECK, {}, make_curve_deck(only_commander=True)
+        make_curve_toolbox(), READ_DECK, BOTH, make_curve_deck(only_commander=True)
     )
 
-    # An all-zero histogram reads as a deck full of nought-cost spells.
-    assert "█" not in outcome.content
+    # An all-zero table reads as a deck full of nought-cost spells.
+    assert "| 0 | 0 |" not in outcome.content
     assert "Average mana value" not in outcome.content
     assert "Curve" in outcome.content
     # The price still lands, because the command zone counts toward it.
@@ -1181,10 +1212,12 @@ def test_a_deck_holding_only_a_commander_has_no_curve_and_says_so() -> None:
 
 
 def test_an_empty_or_absent_deck_gets_no_curve_and_no_price() -> None:
+    # Both extras asked for: there is nothing to report either way, and a deck with no
+    # cards must not answer with an empty table or a total of nothing.
     empty = run(
-        make_toolbox(), READ_DECK, {}, DeckAgentDeckSnapshot(name="Untitled", cards=[])
+        make_toolbox(), READ_DECK, BOTH, DeckAgentDeckSnapshot(name="Untitled", cards=[])
     )
-    no_deck = run(make_toolbox(), READ_DECK, {}, None)
+    no_deck = run(make_toolbox(), READ_DECK, BOTH, None)
 
     for outcome in (empty, no_deck):
         assert outcome.ok is True
@@ -1196,16 +1229,149 @@ def test_an_empty_or_absent_deck_gets_no_curve_and_no_price() -> None:
     assert "No deck is open" in no_deck.content
 
 
-def test_the_curve_bar_scales_rather_than_running_off_the_line() -> None:
-    from mtg_deck_builder.deck_agent_tools import _CURVE_BAR_MAX, _curve_bar
+def test_a_bare_listing_carries_no_curve_no_price_and_no_card_figures() -> None:
+    # The control for every test above: each of those figures is asked for, and this is
+    # the same deck with nothing asked. A listing that reported them anyway would make
+    # the whole `extra_info` argument decoration.
+    outcome = run(make_curve_toolbox(), READ_DECK, {}, make_curve_deck())
 
-    # One block per card while that fits, so a small deck's bar is countable.
-    assert _curve_bar(3, widest=4) == "███"
-    # Past the cap every bar scales together and none of them vanishes, because the
-    # count beside it is the truth and the bar is only the shape.
-    scaled = _curve_bar(1, widest=_CURVE_BAR_MAX * 40)
-    assert len(scaled) == 1
-    assert len(_curve_bar(_CURVE_BAR_MAX * 40, widest=_CURVE_BAR_MAX * 40)) == _CURVE_BAR_MAX
+    assert outcome.signature == "read_deck()"
+    # The heading, not the word: this deck is called "Curve Test" and its commander
+    # "Curve Boss", so a bare `"Curve" not in` would pass over a printed table.
+    assert "| MV | Cards |" not in outcome.content
+    assert "Curve — " not in outcome.content
+    assert "Average mana value" not in outcome.content
+    # No figure, rather than no mention: the closing hint names `EUR` as something this
+    # listing could have carried, so what must be absent is a number.
+    assert re.search(r"EUR\s+\d", outcome.content) is None
+    # No per-card figure either: the mana cost of the commander and the price of a
+    # Forest are both absent, and the card lines end at the short id.
+    assert "{4}{G}{G}" not in outcome.content
+    assert "  3x Forest [dddddddd-6]" in outcome.content
+    # And the listing says what it could have carried, naming both extras.
+    assert 'extra_info for more: ["mana"]' in outcome.content
+    assert '["price"] adds' in outcome.content
+
+
+def test_each_extra_is_offered_only_while_it_is_missing() -> None:
+    # The offer is per extra, so a listing that already priced every card must not
+    # offer the price again — and a listing carrying both must not offer anything.
+    priced = run(make_curve_toolbox(), READ_DECK, PRICE, make_curve_deck())
+    both = run(make_curve_toolbox(), READ_DECK, BOTH, make_curve_deck())
+
+    assert '["mana"] adds' in priced.content
+    assert '["price"] adds' not in priced.content
+    assert "extra_info for more" not in both.content
+
+
+def test_the_mana_extra_prints_each_card_printed_cost_and_falls_back_to_its_value() -> (
+    None
+):
+    outcome = run(make_curve_toolbox(), READ_DECK, MANA, make_curve_deck())
+
+    assert outcome.signature == "read_deck(mana)"
+    # The printed cost, not the mana value: a six-drop reads as its symbols.
+    assert "Curve Boss [dddddddd-1] — {4}{G}{G}" in outcome.content
+    assert "4x One Drop [dddddddd-3] — {G}" in outcome.content
+    # A card printed with no cost falls back to its own mana value, which for Dryad
+    # Arbor is 1 and for a Forest is 0 — so the fallback cannot be a constant.
+    assert "Dryad Arbor [dddddddd-5] — MV 1" in outcome.content
+    assert "3x Forest [dddddddd-6] — MV 0" in outcome.content
+    # Asking for the cost does not price the deck. A figure, not the word: the closing
+    # hint offers the price this listing did not carry.
+    assert re.search(r"EUR\s+\d", outcome.content) is None
+
+
+def test_the_price_extra_prints_a_line_total_with_the_unit_price_beside_it() -> None:
+    outcome = run(make_curve_toolbox(), READ_DECK, PRICE, make_curve_deck())
+
+    assert outcome.signature == "read_deck(price)"
+    # One copy: the price is the price. Four copies: the line total, and the unit price
+    # in parentheses so the section total below can be reproduced from the lines.
+    assert "Curve Boss [dddddddd-1] — EUR 10.00" in outcome.content
+    assert "4x One Drop [dddddddd-3] — EUR 2.00 (4 x 0.50)" in outcome.content
+    # A card the catalog has no estimate for says so on its own line rather than
+    # reading as free.
+    assert "No Estimate [dddddddd-7] — no EUR estimate" in outcome.content
+    assert "EUR 0.00" not in outcome.content
+    # Asking for the price does not print the curve.
+    assert "Average mana value" not in outcome.content
+
+
+def test_the_price_extra_totals_each_section_and_says_what_is_missing() -> None:
+    outcome = run(make_curve_toolbox(), READ_DECK, PRICE, make_curve_deck())
+
+    # Quantity-weighted per section, command zone included: 4 x 0.50 and 3 x 0.10 + 1.00.
+    assert "Commander (1) — EUR 10.00" in outcome.content
+    assert "Creature (4) — EUR 2.00" in outcome.content
+    assert "Land (4) — EUR 1.30" in outcome.content
+    # A section whose every card is unpriced reports no figure at all, for the same
+    # reason the deck's total does: EUR 0.00 would be a claim about its value.
+    assert "Instant (1) — no EUR estimates" in outcome.content
+    # And the deck's own total still lands under the listing.
+    assert "EUR 16.80" in price_line(outcome.content)
+
+
+def test_a_section_holding_one_unpriced_card_counts_it_beside_the_total() -> None:
+    # The main fixture's unpriced card is alone in its section, which cannot tell "no
+    # estimates at all" from "a total that is missing some cards". Filed as an artifact
+    # here so one heading covers a priced card and an unpriced one.
+    toolbox = make_curve_toolbox(
+        cards={
+            **CURVE_CARDS,
+            CURVE_UNPRICED: make_card(
+                CURVE_UNPRICED,
+                "No Estimate",
+                "Artifact",
+                mana_cost="{1}{U}",
+                mana_value=2,
+                prices=CardPrices(),
+            ),
+        }
+    )
+    deck = DeckAgentDeckSnapshot(
+        name="Curve Test",
+        cards=[
+            DeckAgentDeckCard(
+                scryfall_id=PRINTING[CURVE_ZERO], quantity=1, section="mainboard"
+            ),
+            DeckAgentDeckCard(
+                scryfall_id=PRINTING[CURVE_UNPRICED], quantity=2, section="mainboard"
+            ),
+        ],
+    )
+
+    content = run(toolbox, READ_DECK, PRICE, deck).content
+
+    # Copies, not distinct cards: two copies missing from the total are two cards.
+    assert "Artifact (3) — EUR 0.25, 2 unpriced" in content
+
+
+def test_both_extras_read_in_one_order_however_they_were_asked_for() -> None:
+    asked = run(
+        make_curve_toolbox(),
+        READ_DECK,
+        {"extra_info": ["price", "mana", "mana"]},
+        make_curve_deck(),
+    )
+
+    # Cost before price on the card line, and named once in the tool line, whatever
+    # order and however many times they were asked for.
+    assert asked.signature == "read_deck(mana, price)"
+    assert "Curve Boss [dddddddd-1] — {4}{G}{G} · EUR 10.00" in asked.content
+    assert "3x Forest [dddddddd-6] — MV 0 · EUR 0.30 (3 x 0.10)" in asked.content
+
+
+def test_an_extra_that_is_not_an_extra_fails_the_call_and_stays_readable() -> None:
+    outcome = run(
+        make_curve_toolbox(), READ_DECK, {"extra_info": ["colour"]}, make_curve_deck()
+    )
+
+    assert outcome.ok is False
+    # The tool line names what was asked for, because a rejected argument is exactly
+    # the call worth being able to read back.
+    assert outcome.signature == "read_deck(colour)"
+    assert "extra_info" in outcome.content
 
 
 # --------------------------------------------------------------------------------
