@@ -365,7 +365,11 @@ export function applyDeckDiff(
       ok: false,
       problem: "missing_payload",
       scryfall_ids: unrestorable.map((change) => change.scryfall_id),
-      message: `This change cannot be replayed because the stored card details for ${names} have been pruned from history.`,
+      // Says what is true without asserting why. Two causes reach here — the payload was
+      // pruned to stay inside the storage budget, or the card never had details to pool in the
+      // first place (a deck written by an older build hydrates that way) — and this function
+      // cannot tell them apart, so claiming "pruned" is wrong half the time.
+      message: `This change cannot be replayed: history holds no card details for ${names}.`,
     };
   }
 

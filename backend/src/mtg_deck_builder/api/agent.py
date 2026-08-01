@@ -64,9 +64,11 @@ async def chat_with_deck_agent(
         status.HTTP_200_OK: {
             "description": (
                 "Server-sent events: `text` as the answer is written, `tool` as each "
-                "call finishes, then one `done` carrying the same reply "
-                "`POST /agent/chat` returns — or one `error` if the turn failed after "
-                "the response had begun."
+                "call finishes, `deck_edit` when a turn changed the deck — carrying the "
+                "resolved change for the browser to apply, since the server holds no "
+                "deck — then one `done` carrying the same reply `POST /agent/chat` "
+                "returns, or one `error` if the turn failed after the response had "
+                "begun."
             ),
             "content": {"text/event-stream": {}},
         },

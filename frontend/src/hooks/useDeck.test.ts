@@ -3,6 +3,7 @@ import { StrictMode } from "react";
 import { beforeEach, describe, expect, it } from "vitest";
 
 import type { CardSearchResult } from "../domain/card";
+import { getCardPrice } from "../domain/card";
 import type { Deck, DeckCardEntry } from "../domain/deck";
 import {
   COMMAND_ZONE_GROUP_ID,
@@ -209,12 +210,49 @@ describe("useDeck history", () => {
 
     expect(second.result.current.deck.cards[0]?.quantity).toBe(1);
 
-    // The second undo has to rebuild Sol Ring from the pooled payload, so it also proves the
-    // card pool survived the round trip and not merely the list of changes.
+    // This second undo reverses the *add*, which is a removal — so it reads no payload. What
+    // it proves is that the list of changes survived storage. The pool surviving is a separate
+    // claim, and it needs a removal to undo rather than an add; the test below is the one that
+    // makes it.
     act(() => second.result.current.undo());
 
     expect(second.result.current.deck.cards).toEqual([]);
     expect(second.result.current.canUndo).toBe(false);
+  });
+
+  it("rebuilds a removed card from the pooled payload after a remount", () => {
+    const first = renderHook(() => useDeck());
+    act(() => first.result.current.addCard(solRing));
+    act(() => first.result.current.addCard(counterspell));
+    // Removing it is what puts the payload in the pool: `deriveDeckDiff` pools a card only as
+    // it enters or leaves the deck, so undoing an add can never exercise the pool.
+    act(() => first.result.current.removeCard(solRing.scryfall_id));
+    const deckId = first.result.current.deck.id;
+    first.unmount();
+
+    const second = renderHook(() => useDeck());
+
+    expect(second.result.current.deck.id).toBe(deckId);
+    expect(cardNames(second.result.current.deck)).toEqual(["Counterspell"]);
+    expect(second.result.current.canUndo).toBe(true);
+
+    act(() => second.result.current.undo());
+
+    // The whole `CardSearchResult` came back through JSON, not merely the card's name — an
+    // entry restored without its details prices at nothing and disappears from both
+    // validators, so deep equality against the fixture is the property that matters.
+    const restored = second.result.current.deck.cards.find(
+      (entry) => entry.card.scryfall_id === solRing.scryfall_id,
+    );
+
+    expect(restored?.card.details).toEqual(solRing);
+    // And at the index it was cut from, ahead of the card that outlived it.
+    expect(cardNames(second.result.current.deck)).toEqual([
+      "Sol Ring",
+      "Counterspell",
+    ]);
+    // Priced, which is the visible consequence of the details surviving.
+    expect(second.result.current.statistics.price).toBeGreaterThan(0);
   });
 
   it("writes history under its own key and leaves the deck library alone", () => {
@@ -232,6 +270,28 @@ describe("useDeck history", () => {
     const library = window.localStorage.getItem(DECK_LIBRARY_STORAGE_KEY);
     expect(library).toContain('"name":"Sol Ring"');
     expect(library).not.toContain("sessions");
+  });
+
+  it("collects a payload the undo it belongs to has popped", () => {
+    const { result } = renderHook(() => useDeck());
+
+    act(() => result.current.addCard(solRing));
+    act(() => result.current.removeCard(solRing.scryfall_id));
+
+    // Removing pooled Sol Ring's details, because undoing that removal would have to rebuild
+    // the card from them.
+    const deckId = result.current.deck.id;
+    expect(Object.keys(storedLog(deckId).cards)).toEqual([solRing.scryfall_id]);
+
+    act(() => result.current.undo());
+    act(() => result.current.undo());
+
+    // Undo pops the entry rather than recording an inverse, so once both entries are gone
+    // nothing can ever read that payload again and keeping it is pure quota. Nothing asserted
+    // this before, so a mutant that skipped the collection leaked for the deck's whole life
+    // with the suite still green.
+    expect(recordedEdits(storedLog(deckId))).toEqual([]);
+    expect(storedLog(deckId).cards).toEqual({});
   });
 
   it("does not offer an undo whose pooled card details are gone", () => {
@@ -288,6 +348,21 @@ describe("useDeck history", () => {
     expect(result.current.statistics.cardCount).toBe(2);
     expect(result.current.statistics.price).toBe(0);
     expect(result.current.statistics.averageMana).toBe(0);
+
+    // Zero is the only figure this deck could produce, so on its own the assertion above
+    // cannot tell "the guard skipped the detail-less entry" from "pricing is broken and
+    // returns zero for everything". Adding a *different* priced card separates them: the
+    // total must be that card's alone, which pins the intended behaviour — a detail-less
+    // entry is skipped, so the total under-reports rather than crashing or zeroing.
+    //
+    // It has to be a different card. Adding `solRing` here merges into the stored entry by
+    // printing and keeps its detail-less `CardReference` rather than backfilling the details,
+    // so the total would stay at zero and this assertion would prove nothing.
+    act(() => result.current.addCard(counterspell));
+
+    expect(result.current.statistics.cardCount).toBe(3);
+    expect(result.current.statistics.price).toBe(getCardPrice(counterspell));
+    expect(result.current.statistics.price).toBeGreaterThan(0);
   });
 
   it("archives a deleted deck's history and restores it with the deck", () => {
