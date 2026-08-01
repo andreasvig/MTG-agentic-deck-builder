@@ -19,10 +19,7 @@ import {
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { CardInspector } from "./components/CardInspector";
-import {
-  DeckAgentPanel,
-  type DeckEditReport,
-} from "./components/DeckAgentPanel";
+import { DeckAgentPanel } from "./components/DeckAgentPanel";
 import {
   DeckBoard,
   type GroupMode,
@@ -33,8 +30,13 @@ import { DeleteDeckDialog } from "./components/DeleteDeckDialog";
 import { SearchDrawer } from "./components/SearchDrawer";
 import type { CardSearchResult, CardTagFilter } from "./domain/card";
 import { formatEuro, getCardImage } from "./domain/card";
-import type { DeckAgentDeckEdit } from "./domain/agent";
-import { toDeckAgentHistory, toDeckSnapshot } from "./domain/agent";
+import type { DeckAgentAppliedEdit, DeckAgentDeckEdit } from "./domain/agent";
+import {
+  refusedDeckEdit,
+  summarizeDeckEditRecord,
+  toDeckAgentHistory,
+  toDeckSnapshot,
+} from "./domain/agent";
 import type { Deck, DeckCustomGroup } from "./domain/deck";
 import {
   COMMAND_ZONE_GROUP_ID,
@@ -66,6 +68,7 @@ function App() {
     announcement,
     announcementTone,
     canUndo,
+    lastRecordedEditId,
     deletedDeckName,
     statistics,
     addCard,
@@ -108,39 +111,52 @@ function App() {
   );
 
   /**
-   * Apply an edit the agent made, as the agent, and report what became of it.
+   * Apply an edit the agent made, as the agent, and describe what became of it.
    *
    * The panel hands over what the backend resolved; translating it into the deck's own
    * typed operation happens here, where both contracts are already in scope. The actor
    * is what makes the history readable — an agent edit opens its own session, so "who
    * did this" has one answer per block rather than one per edit.
    *
-   * Two of the three things that can happen to an edit are decided before the deck ever
-   * sees it, so both are reported from here: a translation that cannot resolve a card
-   * refuses the edit outright, and a placement this deck cannot honour is dropped while
-   * the rest of the change goes through. The panel writes the transcript from this answer,
-   * and silence would leave it claiming an edit the deck never made.
+   * Translation is a closure handed to the deck rather than a value computed here, so both
+   * it and the verdict see the deck the edit is actually being applied to. That is not a
+   * nicety: a turn can carry several edits, they arrive in one pass of the stream with no
+   * render between them, and the second one is about the deck the first one left behind.
+   *
+   * What comes back is the block the transcript stores, written from the deck's own record of
+   * the edit. Never from `edit`: the counts in it are the backend's belief about the snapshot
+   * this browser posted, and a durable block that repeated them would name cards the deck
+   * did not move and count copies it did not add.
    */
   const applyAgentEdit = useCallback(
-    (edit: DeckAgentDeckEdit): DeckEditReport => {
-      const translated = toDeckEdit(edit, deck);
-      // Refused whole rather than in part: an edit missing one of its changes is the
-      // half-applied edit the design refuses, because history would then record an
-      // intent that did not happen. The deck is never asked, so the reason is worded
-      // here — it is the only place that knows the edit got no further than this.
-      if (!translated) {
-        return {
-          applied: false,
-          reason:
-            "That edit named a card this deck cannot identify, so none of it was applied.",
-        };
+    (edit: DeckAgentDeckEdit): DeckAgentAppliedEdit | null => {
+      const outcome = applyEdit(
+        // Refused whole rather than in part: an edit missing one of its changes is the
+        // half-applied edit the design refuses, because history would then record an intent
+        // that did not happen. The deck is never asked, so the reason is worded here — this
+        // is the only place that knows the edit got no further than being resolved.
+        (open) =>
+          toDeckEdit(edit, open) ?? {
+            error:
+              "That edit named a card this deck cannot identify, so none of it was applied.",
+          },
+        "agent",
+      );
+      if (!outcome.applied) {
+        return refusedDeckEdit(outcome.reason);
       }
-      const outcome = applyEdit(translated.edit, "agent");
-      return outcome.applied
-        ? { applied: true, unmoved: translated.unmoved }
-        : outcome;
+      // Nothing recorded is the deck saying it already matched the edit. The deck announces
+      // that itself, and it is the whole of what happened: there is no change to describe,
+      // so the transcript stays silent rather than claiming one.
+      return outcome.recorded
+        ? summarizeDeckEditRecord(
+            outcome.recorded.diff,
+            edit.reason,
+            outcome.recorded.editId,
+          )
+        : null;
     },
-    [applyEdit, deck],
+    [applyEdit],
   );
 
   /**
@@ -674,6 +690,7 @@ function App() {
             onOpenCard={setSelectedCard}
             onDeckEdit={applyAgentEdit}
             onUndoDeckEdit={undo}
+            undoableEditId={lastRecordedEditId}
             readDeckHistory={readDeckHistory}
           />
         </div>
@@ -814,17 +831,13 @@ function App() {
  * And the group travels as the name on screen, which only the deck can turn back into
  * the id it files cards under.
  *
- * The moves the deck will not make come back with the edit, because this is where they
- * are decided and nowhere downstream can tell. A change that keeps a card's quantity says
- * only "put this card here", so it either relocates the card or does nothing at all — and
- * the transcript may not call the second one a move.
+ * Both readings are of `deck` as it is at the moment the edit is applied, which is why this
+ * takes it as an argument rather than closing over one: the printing a cut names may have
+ * left the deck since the turn was sent, and the group a change names may have been created
+ * by an earlier edit in the same turn.
  */
-function toDeckEdit(
-  edit: DeckAgentDeckEdit,
-  deck: Deck,
-): { edit: DeckEdit; unmoved: string[] } | null {
+function toDeckEdit(edit: DeckAgentDeckEdit, deck: Deck): DeckEdit | null {
   const changes: DeckEditChange[] = [];
-  const unmoved: string[] = [];
   for (const change of edit.changes) {
     const held = deck.cards.find(
       (entry) => entry.card.scryfall_id === change.scryfall_id,
@@ -842,20 +855,13 @@ function toDeckEdit(
       change.group === undefined
         ? undefined
         : groupIdForName(change.group, deck.custom_groups);
-    if (
-      change.quantity === change.previous_quantity &&
-      (groupId === undefined ||
-        (held && groupIdForEntry(held, deck.custom_groups) === groupId))
-    ) {
-      unmoved.push(change.name);
-    }
     changes.push({
       card,
       quantity: change.quantity,
       ...(groupId ? { groupId } : {}),
     });
   }
-  return { edit: { reason: edit.reason, changes }, unmoved };
+  return { reason: edit.reason, changes };
 }
 
 /**

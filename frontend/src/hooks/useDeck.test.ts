@@ -18,7 +18,7 @@ import {
   parseDeckHistory,
 } from "../domain/history";
 import { counterspell, gamble, ghalta, solRing } from "../test/fixtures";
-import type { DeckEdit, DeckEditOutcome } from "./useDeck";
+import type { DeckEdit, DeckEditOutcome, DeckEditPlanner } from "./useDeck";
 import { useDeck } from "./useDeck";
 
 beforeEach(() => {
@@ -399,14 +399,14 @@ describe("useDeck applied edits", () => {
 
     act(() =>
       result.current.applyEdit(
-        {
+        () => ({
           changes: [
             { card: solRing, quantity: 1 },
             { card: gamble, quantity: 2, groupId: UNASSIGNED_GROUP_ID },
             { card: counterspell, quantity: 0 },
           ],
           reason: "swapping the weakest card for two rocks",
-        },
+        }),
         "agent",
       ),
     );
@@ -444,13 +444,13 @@ describe("useDeck applied edits", () => {
 
     act(() =>
       result.current.applyEdit(
-        {
+        () => ({
           changes: [
             { card: solRing, quantity: 1 },
             { card: counterspell, quantity: 1, groupId: COMMAND_ZONE_GROUP_ID },
           ],
           reason: "a second commander that cannot pair",
-        },
+        }),
         "agent",
       ),
     );
@@ -477,13 +477,13 @@ describe("useDeck applied edits", () => {
     let refused: DeckEditOutcome | undefined;
     act(() => {
       refused = result.current.applyEdit(
-        {
+        () => ({
           changes: [
             { card: solRing, quantity: 1 },
             { card: counterspell, quantity: 1, groupId: COMMAND_ZONE_GROUP_ID },
           ],
           reason: "a second commander that cannot pair",
-        },
+        }),
         "agent",
       );
     });
@@ -510,13 +510,24 @@ describe("useDeck applied edits", () => {
     let accepted: DeckEditOutcome | undefined;
     act(() => {
       accepted = result.current.applyEdit(
-        { changes: [{ card: solRing, quantity: 1 }] },
+        () => ({ changes: [{ card: solRing, quantity: 1 }] }),
         "agent",
       );
     });
 
-    // And an edit the deck takes says so, or every applied block would read as refused.
-    expect(accepted).toEqual({ applied: true });
+    // And an edit the deck takes says so, or every applied block would read as refused. It
+    // comes back with what the deck recorded, not merely with the fact that it did: the
+    // entry's own id, and the diff the deck derived from itself before and after. That is
+    // what anything describing the edit is written from, and it is the very entry the log
+    // holds — one derivation, handed to the caller rather than repeated beside it.
+    const recordedEntry = recordedEdits(storedLog(result.current.deck.id)).at(-1);
+    expect(accepted).toEqual({
+      applied: true,
+      recorded: { editId: recordedEntry?.id, diff: expect.any(Object) },
+    });
+    expect(
+      accepted?.applied === true ? accepted.recorded?.diff.cards : null,
+    ).toEqual(recordedEntry?.cards);
     expect(cardNames(result.current.deck)).toContain("Sol Ring");
     expect(recordedEdits(storedLog(result.current.deck.id))).toHaveLength(
       recordedBefore + 1,
@@ -528,7 +539,7 @@ describe("useDeck applied edits", () => {
 
     act(() =>
       result.current.applyEdit(
-        { changes: [{ card: solRing, quantity: 100 }] },
+        () => ({ changes: [{ card: solRing, quantity: 100 }] }),
         "agent",
       ),
     );
@@ -537,7 +548,7 @@ describe("useDeck applied edits", () => {
 
     act(() =>
       result.current.applyEdit(
-        { changes: [{ card: solRing, quantity: Number.NaN }] },
+        () => ({ changes: [{ card: solRing, quantity: Number.NaN }] }),
         "agent",
       ),
     );
@@ -546,7 +557,7 @@ describe("useDeck applied edits", () => {
 
     act(() =>
       result.current.applyEdit(
-        { changes: [{ card: solRing, quantity: 1, groupId: "group-missing" }] },
+        () => ({ changes: [{ card: solRing, quantity: 1, groupId: "group-missing" }] }),
         "agent",
       ),
     );
@@ -564,8 +575,8 @@ describe("useDeck applied edits", () => {
       reason: "one rock",
     };
 
-    act(() => result.current.applyEdit(edit, "agent"));
-    act(() => result.current.applyEdit(edit, "agent"));
+    act(() => result.current.applyEdit(() => edit, "agent"));
+    act(() => result.current.applyEdit(() => edit, "agent"));
 
     expect(result.current.deck.cards).toHaveLength(1);
     expect(result.current.deck.cards[0]?.quantity).toBe(1);
@@ -575,12 +586,78 @@ describe("useDeck applied edits", () => {
     expect(recordedEdits(storedLog(result.current.deck.id))).toHaveLength(1);
   });
 
+  it("judges a second edit in the same tick against what the first one left", () => {
+    const { result } = renderHook(() => useDeck());
+    const seen: Array<string[]> = [];
+    const commanderEdit = (card: CardSearchResult): DeckEditPlanner => (open) => {
+      seen.push(open.cards.map((entry) => entry.card.name));
+      return {
+        changes: [{ card, quantity: 1, groupId: COMMAND_ZONE_GROUP_ID }],
+        reason: `${card.name} leads this deck`,
+      };
+    };
+
+    let first: DeckEditOutcome | undefined;
+    let second: DeckEditOutcome | undefined;
+    // Both in one tick, with no render between them — which is how they arrive, since one
+    // pass of the stream reader hands over every event the response carried.
+    act(() => {
+      first = result.current.applyEdit(commanderEdit(ghalta), "agent");
+      second = result.current.applyEdit(commanderEdit(counterspell), "agent");
+    });
+
+    // The second edit was resolved and judged against the deck the first one produced. Both
+    // halves matter: an edit resolved against the deck as it was at the start of the tick
+    // reads a card the first edit removed, and a verdict reached there calls this refusal an
+    // application — and then something durable says the deck did what it turned down.
+    expect(seen).toEqual([[], ["Ghalta, Primal Hunger"]]);
+    expect(first?.applied).toBe(true);
+    expect(second).toEqual({
+      applied: false,
+      reason: expect.stringContaining("cannot share the command zone"),
+    });
+    expect(cardNames(result.current.deck)).toEqual(["Ghalta, Primal Hunger"]);
+
+    // One recorded edit, and it is the one the accepted edit reported. So whatever describes
+    // that edit is the only thing that may offer to undo it.
+    const recorded = recordedEdits(storedLog(result.current.deck.id));
+    expect(recorded).toHaveLength(1);
+    expect(first?.applied === true ? first.recorded?.editId : null).toBe(
+      recorded[0]?.id,
+    );
+    expect(result.current.lastRecordedEditId).toBe(recorded[0]?.id);
+  });
+
+  it("resolves an agent edit on top of a user change made in the same tick", () => {
+    const { result } = renderHook(() => useDeck());
+    act(() => result.current.addCard(gamble));
+
+    let seenQuantity: number | undefined;
+    act(() => {
+      result.current.setQuantity(gamble.scryfall_id, 3);
+      result.current.applyEdit((open) => {
+        seenQuantity = open.cards.find(
+          (entry) => entry.card.scryfall_id === gamble.scryfall_id,
+        )?.quantity;
+        return { changes: [{ card: solRing, quantity: 1 }], reason: "some ramp" };
+      }, "agent");
+    });
+
+    // Every change to the deck goes through one store, so an agent edit resolved in the same
+    // tick as a drag sees the drag. Not seeing it would apply the edit to a deck that no
+    // longer exists and quietly undo what the user just did.
+    expect(seenQuantity).toBe(3);
+    expect(result.current.deck.cards[0]?.quantity).toBe(3);
+    expect(cardNames(result.current.deck)).toEqual(["Gamble", "Sol Ring"]);
+    expect(recordedEdits(storedLog(result.current.deck.id))).toHaveLength(3);
+  });
+
   it("applies an edit once when the hook renders in StrictMode", () => {
     const { result } = renderHook(() => useDeck(), { wrapper: StrictMode });
 
     act(() =>
       result.current.applyEdit(
-        { changes: [{ card: solRing, quantity: 2 }] },
+        () => ({ changes: [{ card: solRing, quantity: 2 }] }),
         "agent",
       ),
     );

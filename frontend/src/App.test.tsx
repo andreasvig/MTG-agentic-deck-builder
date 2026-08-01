@@ -1153,4 +1153,298 @@ describe("agent deck edits", () => {
     // read: an empty log is a deck that has never been edited, which is an answer.
     expect(requests[0].history).toEqual({ sessions: [] });
   });
+
+  /** A second legal commander, so the command zone can refuse the second one on merit. */
+  const korvold: CardSearchResult = {
+    ...ghalta,
+    oracle_id: "oracle-korvold",
+    scryfall_id: "printing-korvold",
+    name: "Korvold, Fae-Cursed King",
+  };
+
+  /** One `deck_edit` frame putting one card in the command zone. */
+  function commanderEdit(card: CardSearchResult, reason: string) {
+    return {
+      type: "deck_edit",
+      edit: {
+        deck_name: "Gruul Stompy",
+        reason,
+        changes: [
+          {
+            scryfall_id: card.scryfall_id,
+            name: card.name,
+            quantity: 1,
+            previous_quantity: 0,
+            group: "Command zone",
+            card,
+          },
+        ],
+      },
+    };
+  }
+
+  it("reaches the verdict for a second edit in one turn from the deck the first one left", async () => {
+    seedDeck({ cards: [deckEntry(gamble)] });
+    // One turn, two edits. The backend emits one `deck_edit` per successful `edit_deck`
+    // call inside a multi-round tool loop, so two is an ordinary shape — and both frames
+    // are read in a single pass of the stream, with no render in between.
+    serveAgentTurn([
+      commanderEdit(ghalta, "Ghalta leads this deck."),
+      commanderEdit(korvold, "Korvold can lead it instead."),
+      doneFrame("Ghalta is in the command zone."),
+    ]);
+    render(<App />);
+
+    await ask("Give me a commander");
+    expect(
+      await screen.findByText("Ghalta is in the command zone."),
+    ).toBeInTheDocument();
+
+    const transcript = screen.getByRole("log", {
+      name: "Deck agent conversation",
+    });
+    // The deck took the first edit and refused the second, because by the time it saw the
+    // second one Ghalta was already in the command zone. A verdict reached against the
+    // deck as it stood when the turn was sent calls that refusal an application.
+    expect(within(transcript).getAllByText(/^Applied:/)).toHaveLength(1);
+    expect(within(transcript).getByText("Applied: +1 / −0")).toBeInTheDocument();
+    expect(
+      within(transcript).getByText("+ Ghalta, Primal Hunger"),
+    ).toBeInTheDocument();
+    expect(within(transcript).getByText("Not applied")).toBeInTheDocument();
+    expect(
+      within(transcript).getByText(/cannot share the command zone with Ghalta/),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByText("+ Korvold, Fae-Cursed King"),
+    ).not.toBeInTheDocument();
+
+    // Korvold got nowhere near the deck, and only the edit that happened was recorded.
+    expect(storedDeck().cards.map((entry) => entry.card.name)).toEqual([
+      "Gamble",
+      "Ghalta, Primal Hunger",
+    ]);
+    expect(storedHistorySessions()).toHaveLength(1);
+    expect(storedHistorySessions()[0].edits).toHaveLength(1);
+
+    // One Undo, on the block whose edit is the deck's last recorded change. Left on the
+    // newest block instead, it would offer to take Korvold back out and would in fact
+    // take the commander the transcript says is in.
+    const undo = within(transcript).getAllByRole("button", { name: "Undo" });
+    expect(undo).toHaveLength(1);
+    expect(
+      within(transcript).getByText("Applied: +1 / −0").closest(".deck-agent__edit"),
+    ).toContainElement(undo[0]);
+  });
+
+  it("restores the applied block, its undo and a refusal after a reload", async () => {
+    seedDeck({ cards: [deckEntry(gamble)] });
+    serveAgentTurn([
+      commanderEdit(ghalta, "Ghalta leads this deck."),
+      commanderEdit(korvold, "Korvold can lead it instead."),
+      doneFrame("Ghalta is in the command zone."),
+    ]);
+    const { unmount } = render(<App />);
+
+    await ask("Give me a commander");
+    expect(
+      await screen.findByText("Ghalta is in the command zone."),
+    ).toBeInTheDocument();
+    await waitFor(() => expect(storedHistorySessions()).toHaveLength(1));
+
+    unmount();
+    render(<App />);
+    const transcript = await screen.findByRole("log", {
+      name: "Deck agent conversation",
+    });
+
+    // The transcript is the durable record, and the deck's log is durable beside it. So the
+    // block that happened still reads applied, the one that did not still reads refused —
+    // where anything the stored transcript cannot carry would come back as an edit — and the
+    // Undo is still on the block whose entry is the deck's newest recorded change.
+    expect(within(transcript).getByText("Applied: +1 / −0")).toBeInTheDocument();
+    expect(
+      within(transcript).getByText("+ Ghalta, Primal Hunger"),
+    ).toBeInTheDocument();
+    expect(within(transcript).getByText("Not applied")).toBeInTheDocument();
+    expect(
+      within(transcript).getByText(/cannot share the command zone with Ghalta/),
+    ).toBeInTheDocument();
+    const undo = within(transcript).getAllByRole("button", { name: "Undo" });
+    expect(undo).toHaveLength(1);
+    expect(
+      within(transcript).getByText("Applied: +1 / −0").closest(".deck-agent__edit"),
+    ).toContainElement(undo[0]);
+
+    // And it still reverses that edit, whole.
+    await userEvent.setup().click(undo[0]);
+    expect(
+      screen.queryByLabelText("1 Ghalta, Primal Hunger in deck"),
+    ).not.toBeInTheDocument();
+  });
+
+  it("claims nothing for an edit the deck already matched", async () => {
+    // The user added the second copy while the turn was in flight, so the count the backend
+    // resolved the edit against is one behind the deck. The edit is a no-op by the time the
+    // deck sees it, and the copy it asked for is a copy already there.
+    seedDeck({ cards: [{ ...deckEntry(gamble), quantity: 2 }] });
+    serveAgentTurn([
+      {
+        type: "deck_edit",
+        edit: {
+          deck_name: "Gruul Stompy",
+          reason: "A second Gamble is worth it.",
+          changes: [
+            {
+              scryfall_id: gamble.scryfall_id,
+              name: gamble.name,
+              quantity: 2,
+              previous_quantity: 1,
+              card: gamble,
+            },
+          ],
+        },
+      },
+      doneFrame("Two copies now."),
+    ]);
+    render(<App />);
+
+    await ask("Run a second Gamble");
+    expect(await screen.findByText("Two copies now.")).toBeInTheDocument();
+
+    // Nothing moved, so nothing is claimed and nothing is offered to reverse. No block of
+    // any kind: one reading "Applied: +1 / −0 / + Gamble" would be the transcript describing
+    // the request, with an Undo that takes out a copy the user put in — and one reading "Not
+    // applied" would be the transcript blaming the deck for turning down an edit it took.
+    const transcript = screen.getByRole("log", {
+      name: "Deck agent conversation",
+    });
+    expect(transcript.querySelectorAll(".deck-agent__edit")).toHaveLength(0);
+    expect(screen.queryByText(/^Applied:/)).not.toBeInTheDocument();
+    expect(screen.queryByText("Not applied")).not.toBeInTheDocument();
+    expect(screen.queryByText("+ Gamble")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Undo" })).not.toBeInTheDocument();
+    expect(storedHistorySessions()).toEqual([]);
+    expect(screen.getByLabelText("2 Gamble in deck")).toBeInTheDocument();
+
+    // The deck's own account of the turn is the only signal, and it is the right one.
+    expect(
+      screen.getByText("The deck already matched that edit, so nothing changed."),
+    ).toBeInTheDocument();
+  });
+
+  it("counts what the deck moved, not what the event asked for", async () => {
+    // The backend resolved this against a deck holding one copy; the deck holds three,
+    // because the user bumped it while the turn was in flight. So an edit whose own counts
+    // say "no change at all" cuts two copies the moment the deck applies it.
+    seedDeck({ cards: [{ ...deckEntry(gamble), quantity: 3 }] });
+    serveAgentTurn([
+      {
+        type: "deck_edit",
+        edit: {
+          deck_name: "Gruul Stompy",
+          reason: "One Gamble is enough.",
+          changes: [
+            {
+              scryfall_id: gamble.scryfall_id,
+              name: gamble.name,
+              quantity: 1,
+              previous_quantity: 1,
+              card: gamble,
+            },
+          ],
+        },
+      },
+      doneFrame("One copy is enough."),
+    ]);
+    render(<App />);
+
+    await ask("How many Gambles?");
+    expect(await screen.findByText("One copy is enough.")).toBeInTheDocument();
+    expect(screen.getByLabelText("1 Gamble in deck")).toBeInTheDocument();
+
+    // Counted from the deck's own diff, so the block says what the deck did — two copies
+    // out — rather than the nothing the event asked for. Written from the event, this turn
+    // renders no block at all while the deck changes and records the change: an edit with a
+    // reversal to offer and nowhere to offer it.
+    const transcript = screen.getByRole("log", {
+      name: "Deck agent conversation",
+    });
+    expect(within(transcript).getByText("Applied: +0 / −2")).toBeInTheDocument();
+    expect(within(transcript).getByText("− Gamble")).toBeInTheDocument();
+    expect(storedHistorySessions()).toHaveLength(1);
+
+    const undo = within(transcript).getAllByRole("button", { name: "Undo" });
+    expect(undo).toHaveLength(1);
+    expect(
+      within(transcript).getByText("Applied: +0 / −2").closest(".deck-agent__edit"),
+    ).toContainElement(undo[0]);
+
+    await userEvent.setup().click(undo[0]);
+    expect(screen.getByLabelText("3 Gamble in deck")).toBeInTheDocument();
+  });
+
+  it("moves the undo to whichever edit is the deck's newest recorded change", async () => {
+    seedDeck({ cards: [deckEntry(gamble)] });
+    serveAgentTurn([
+      {
+        type: "deck_edit",
+        edit: {
+          deck_name: "Gruul Stompy",
+          reason: "You have no ramp at all.",
+          changes: [
+            {
+              scryfall_id: solRing.scryfall_id,
+              name: solRing.name,
+              quantity: 1,
+              previous_quantity: 0,
+              card: solRing,
+            },
+          ],
+        },
+      },
+      doneFrame("Sol Ring is in."),
+    ]);
+    render(<App />);
+
+    await ask("Fix my ramp");
+    expect(await screen.findByText("Sol Ring is in.")).toBeInTheDocument();
+
+    const transcript = screen.getByRole("log", {
+      name: "Deck agent conversation",
+    });
+    expect(
+      within(transcript).getByRole("button", { name: "Undo" }),
+    ).toBeInTheDocument();
+
+    // Then the user edits the deck themselves. `undo` reverses the deck's *last recorded
+    // change*, which is now the user's, so the block for the agent's edit may no longer
+    // offer to reverse it: the click would take a copy of Gamble back out while claiming
+    // to take Sol Ring out. The affordance goes with the edit, not with the newest block.
+    const user = userEvent.setup();
+    await user.click(
+      screen.getByRole("button", { name: "Increase Gamble quantity" }),
+    );
+    expect(screen.getByLabelText("2 Gamble in deck")).toBeInTheDocument();
+    expect(
+      within(transcript).queryByRole("button", { name: "Undo" }),
+    ).not.toBeInTheDocument();
+    // Still one applied block: what the transcript records did not change, only what it
+    // offers. The deck's own undo is where the user's own change is reversed from.
+    expect(within(transcript).getByText("Applied: +1 / −0")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Undo last deck change" }));
+
+    // The user's change is popped, so the agent's edit is the newest recorded one again and
+    // the block that describes it can offer its reversal once more.
+    expect(screen.getByLabelText("1 Gamble in deck")).toBeInTheDocument();
+    const restored = within(transcript).getAllByRole("button", { name: "Undo" });
+    expect(restored).toHaveLength(1);
+    expect(
+      within(transcript).getByText("Applied: +1 / −0").closest(".deck-agent__edit"),
+    ).toContainElement(restored[0]);
+
+    await user.click(restored[0]);
+    expect(screen.queryByLabelText("1 Sol Ring in deck")).not.toBeInTheDocument();
+  });
 });

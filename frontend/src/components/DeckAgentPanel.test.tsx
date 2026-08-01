@@ -3,6 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { beforeEach, expect, it, vi } from "vitest";
 
 import type {
+  DeckAgentAppliedEdit,
   DeckAgentCardLink,
   DeckAgentChatReply,
   DeckAgentDeckEdit,
@@ -814,15 +815,35 @@ function deckEdit(overrides: Partial<DeckAgentDeckEdit> = {}): DeckAgentDeckEdit
   };
 }
 
+/**
+ * What the deck did with `deckEdit()`, as the deck itself would report it.
+ *
+ * The panel writes its block from this and never from the event, so a test that drives the
+ * event has to supply the answer too — the same way the real deck answers with the diff it
+ * derived and the id of the entry it recorded.
+ */
+function appliedSwap(editId = "edit-1"): DeckAgentAppliedEdit {
+  return {
+    reason: "Swapping in two rocks for the weakest ramp.",
+    addedCopies: 2,
+    removedCopies: 2,
+    added: ["Sol Ring", "Arcane Signet"],
+    removed: ["Wayfarer's Bauble", "Rampant Growth"],
+    moved: [],
+    editId,
+  };
+}
+
 it("hands a streamed deck edit to the deck and says what it applied", async () => {
   const stream = drivenStream();
-  const onDeckEdit = vi.fn();
+  const onDeckEdit = vi.fn().mockReturnValue(appliedSwap());
   const { unmount } = render(
     <DeckAgentPanel
       deckId="deck-a"
       client={client(stream.chat)}
       onDeckEdit={onDeckEdit}
       onUndoDeckEdit={vi.fn()}
+      undoableEditId="edit-1"
     />,
   );
 
@@ -853,7 +874,8 @@ it("hands a streamed deck edit to the deck and says what it applied", async () =
   ).toBeInTheDocument();
   expect(screen.getByRole("button", { name: "Undo" })).toBeInTheDocument();
 
-  // It belongs to the turn, so it comes back with the turn after a reload.
+  // It belongs to the turn, so it comes back with the turn after a reload — and with its
+  // Undo, because the entry it names is still the deck's newest recorded change.
   unmount();
   render(
     <DeckAgentPanel
@@ -861,10 +883,12 @@ it("hands a streamed deck edit to the deck and says what it applied", async () =
       client={client(stream.chat)}
       onDeckEdit={onDeckEdit}
       onUndoDeckEdit={vi.fn()}
+      undoableEditId="edit-1"
     />,
   );
   expect(screen.getByText("Applied: +2 / −2")).toBeInTheDocument();
   expect(screen.getByText("+ Sol Ring, Arcane Signet")).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Undo" })).toBeInTheDocument();
 });
 
 /** The sentence the deck itself produces for an illegal second commander. */
@@ -873,9 +897,24 @@ const refusal =
   "A second commander needs a legal Partner, Partner with, Friends forever, " +
   "Choose a Background, or Doctor's companion pairing.";
 
+/**
+ * A refusal as the deck reports one: its own sentence, no card named, no entry recorded.
+ *
+ * Written out rather than built by `refusedDeckEdit`, because this is the durable encoding
+ * the stored transcript has to read back as a refusal — the shape is the assertion.
+ */
+const refusedBlock: DeckAgentAppliedEdit = {
+  reason: refusal,
+  addedCopies: 0,
+  removedCopies: 0,
+  added: [],
+  removed: [],
+  moved: [],
+};
+
 it("records an edit the deck refused as refused, and offers no undo for it", async () => {
   const stream = drivenStream();
-  const onDeckEdit = vi.fn().mockReturnValue({ applied: false, reason: refusal });
+  const onDeckEdit = vi.fn().mockReturnValue(refusedBlock);
   const { unmount } = render(
     <DeckAgentPanel
       deckId="deck-a"
@@ -932,14 +971,17 @@ it("keeps the undo on the edit the deck took when a later one is refused", async
   const onUndoDeckEdit = vi.fn();
   const onDeckEdit = vi
     .fn()
-    .mockReturnValueOnce({ applied: true, unmoved: [] })
-    .mockReturnValueOnce({ applied: false, reason: refusal });
+    .mockReturnValueOnce(appliedSwap())
+    .mockReturnValueOnce(refusedBlock);
   render(
     <DeckAgentPanel
       deckId="deck-a"
       client={client(stream.chat)}
       onDeckEdit={onDeckEdit}
       onUndoDeckEdit={onUndoDeckEdit}
+      // The first edit is still the deck's newest recorded change: the refusal that came
+      // after it recorded nothing, so it cannot have taken the affordance.
+      undoableEditId="edit-1"
     />,
   );
 
@@ -1060,8 +1102,9 @@ it("undoes the applied edit from the transcript, on the only block that can", as
     <DeckAgentPanel
       deckId="deck-a"
       client={client(first.chat)}
-      onDeckEdit={vi.fn()}
+      onDeckEdit={vi.fn().mockReturnValue(appliedSwap())}
       onUndoDeckEdit={onUndoDeckEdit}
+      undoableEditId="edit-1"
     />,
   );
 
@@ -1086,8 +1129,17 @@ it("undoes the applied edit from the transcript, on the only block that can", as
     <DeckAgentPanel
       deckId="deck-a"
       client={client(second.chat)}
-      onDeckEdit={vi.fn()}
+      onDeckEdit={vi.fn().mockReturnValue({
+        reason: "Cutting a five-drop.",
+        addedCopies: 0,
+        removedCopies: 1,
+        added: [],
+        removed: ["Colossal Dreadmaw"],
+        moved: [],
+        editId: "edit-2",
+      })}
       onUndoDeckEdit={onUndoDeckEdit}
+      undoableEditId="edit-2"
     />,
   );
   await userEvent.type(

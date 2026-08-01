@@ -5,7 +5,7 @@ import {
   UNASSIGNED_GROUP_ID,
   groupName,
 } from "./deck";
-import type { DeckCardPlacement, DeckHistory } from "./history";
+import type { DeckCardPlacement, DeckDiff, DeckHistory } from "./history";
 import { createDeckHistory, parseDeckHistory } from "./history";
 
 export type DeckAgentRole = "user" | "assistant";
@@ -208,15 +208,15 @@ function isCardSearchResult(value: unknown): value is CardSearchResult {
 }
 
 /**
- * One applied edit as the transcript keeps it: what changed, with no card payloads.
+ * One edit as the transcript keeps it: what the deck did, with no card payloads.
  *
- * The event that produced it carries a whole `CardSearchResult` per added card, which
+ * The event that asked for it carries a whole `CardSearchResult` per added card, which
  * the deck needs and the transcript does not. Storing the event as it arrived would
  * spend the chat's whole storage budget on payloads the deck already holds, so the
  * conversation keeps the sentence and the deck keeps the cards.
  */
 export interface DeckAgentAppliedEdit {
-  /** The model's one line, the same text history records against the edit. */
+  /** The model's one line for an edit; the deck's own sentence for a refusal. */
   reason: string;
   /** Copies in and copies out, which is what `+2 / −2` in the transcript counts. */
   addedCopies: number;
@@ -226,34 +226,101 @@ export interface DeckAgentAppliedEdit {
   removed: string[];
   /** Same count, new group: a move states neither an addition nor a cut. */
   moved: string[];
+  /**
+   * The history entry this block describes, when the deck recorded one.
+   *
+   * What decides which block may carry an Undo. `undo` reverses the deck's *last recorded
+   * change*, so the affordance belongs to whichever block describes that entry and to no
+   * other — a question of identity rather than of position. Comparing ids is what makes an
+   * Undo impossible to strand: a block that is not the newest recorded edit simply does not
+   * match, whether the newer edit came later in the same turn, in a later turn, or from the
+   * user dragging a card afterwards.
+   *
+   * Absent on a refusal, which recorded nothing, and on a block restored from a transcript
+   * an older build wrote. Both then offer no Undo, which is the safe way to be wrong.
+   */
+  editId?: string;
 }
 
-/** Reduce a resolved edit to the block the transcript shows and stores. */
-export function summarizeDeckEdit(
-  edit: DeckAgentDeckEdit,
+/**
+ * Describe one recorded edit as the transcript shows and stores it.
+ *
+ * Written from the diff the deck derived by comparing itself before and after, and never
+ * from the event that asked for the edit. The event is a request, and its copy counts are
+ * the backend's belief about the snapshot this browser posted — a belief that is wrong
+ * whenever the deck moved on, which it does when the user edits mid-turn and when an
+ * earlier edit in the same turn already touched the card. The diff is what happened, so
+ * every name and every copy counted here is true by construction.
+ *
+ * Takes the diff of an edit the deck *recorded*, which is why the block it returns always
+ * names at least one card: an edit states copy counts and placements and nothing else, so a
+ * diff it produced and that was worth recording changed a card. That is what keeps an applied
+ * block distinguishable from a refusal, which names none — see `refusedDeckEdit`.
+ */
+export function summarizeDeckEditRecord(
+  diff: DeckDiff,
+  reason: string,
+  editId: string,
 ): DeckAgentAppliedEdit {
   const summary: DeckAgentAppliedEdit = {
-    reason: edit.reason,
+    reason,
+    addedCopies: 0,
+    removedCopies: 0,
+    added: [],
+    removed: [],
+    moved: [],
+    editId,
+  };
+  for (const change of diff.cards) {
+    // Absent on a side means the card was not in the deck on that side, which counts as
+    // none of it — an added card is every copy in, and a cut card is every copy out.
+    const before = change.before?.quantity ?? 0;
+    const after = change.after?.quantity ?? 0;
+    if (after > before) {
+      summary.addedCopies += after - before;
+      summary.added.push(change.name);
+    } else if (after < before) {
+      summary.removedCopies += before - after;
+      summary.removed.push(change.name);
+    } else {
+      // Neither in nor out. A derivation records a card only when something about it
+      // changed, so a card at an unchanged count is one that changed section or group.
+      summary.moved.push(change.name);
+    }
+  }
+  return summary;
+}
+
+/**
+ * A block recording that an edit did not happen, in the deck's own words.
+ *
+ * A refusal needs no field of its own, and deliberately has none: an edit that named no card
+ * and counted no copy is not something that happened, and nothing else can produce that
+ * shape. A block is written only for an edit the deck recorded, every recorded edit changed
+ * at least one card, and a card that changed lands in exactly one of the three name lists.
+ * Encoding a refusal in the fields the transcript already stores is what makes it survive a
+ * reload, where a flag the stored-transcript reader has never heard of would quietly come
+ * back as an applied edit. `reason` carries the deck's own sentence, reused rather than
+ * reworded so the transcript and the toast cannot disagree about why.
+ */
+export function refusedDeckEdit(reason: string): DeckAgentAppliedEdit {
+  return {
+    reason,
     addedCopies: 0,
     removedCopies: 0,
     added: [],
     removed: [],
     moved: [],
   };
-  for (const change of edit.changes) {
-    if (change.quantity > change.previous_quantity) {
-      summary.addedCopies += change.quantity - change.previous_quantity;
-      summary.added.push(change.name);
-    } else if (change.quantity < change.previous_quantity) {
-      summary.removedCopies += change.previous_quantity - change.quantity;
-      summary.removed.push(change.name);
-    } else {
-      // Neither in nor out. The backend drops a change the deck already satisfies, so
-      // what is left at an unchanged count is a card that moved group.
-      summary.moved.push(change.name);
-    }
-  }
-  return summary;
+}
+
+/** Whether a block records a refusal rather than an edit. See `refusedDeckEdit`. */
+export function isRefusedDeckEdit(applied: DeckAgentAppliedEdit): boolean {
+  return (
+    applied.added.length === 0 &&
+    applied.removed.length === 0 &&
+    applied.moved.length === 0
+  );
 }
 
 export interface DeckAgentChatReply {
@@ -478,6 +545,11 @@ function readStoredAppliedEdit(value: unknown): DeckAgentAppliedEdit | null {
     added: readStoredNames(value.added),
     removed: readStoredNames(value.removed),
     moved: readStoredNames(value.moved),
+    // Carried through storage because the log outlives the page too: the edit this block
+    // describes is still the deck's newest recorded change after a reload, so its Undo has
+    // to come back with it. Absent stays absent — a block an older build stored names no
+    // entry, and inventing an id for it would attach an Undo to somebody else's edit.
+    ...(typeof value.editId === "string" ? { editId: value.editId } : {}),
   };
 }
 

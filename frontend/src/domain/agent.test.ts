@@ -1,19 +1,24 @@
 import { describe, expect, it } from "vitest";
 
 import { solRing } from "../test/fixtures";
-import type {
-  DeckAgentChat,
-  DeckAgentDeckEdit,
-  DeckAgentTranscriptEntry,
-} from "./agent";
+import { UNASSIGNED_GROUP_ID } from "./deck";
+import type { DeckAgentChat, DeckAgentTranscriptEntry } from "./agent";
 import {
+  isRefusedDeckEdit,
   parseStoredAgentChats,
   readDeckAgentDeckEdit,
+  refusedDeckEdit,
   serializeAgentChats,
-  summarizeDeckEdit,
+  summarizeDeckEditRecord,
   toDeckAgentHistory,
 } from "./agent";
-import type { DeckCardChange, DeckHistory, DeckSession } from "./history";
+import type {
+  DeckCardChange,
+  DeckCardPlacement,
+  DeckDiff,
+  DeckHistory,
+  DeckSession,
+} from "./history";
 
 function entry(
   content: string,
@@ -196,6 +201,10 @@ describe("agent chat storage", () => {
           added: ["Sol Ring", "Arcane Signet"],
           removed: ["Wayfarer's Bauble", "Rampant Growth"],
           moved: [],
+          // The recorded entry this block describes. The deck's log survives a reload too,
+          // so this edit is still its newest recorded change afterwards — and without the
+          // id the restored block could no longer prove that and would lose its Undo.
+          editId: "edit-7",
         },
       ],
     };
@@ -203,6 +212,7 @@ describe("agent chat storage", () => {
     const stored = roundTrip({ "deck-a": chat([edited]) });
 
     expect(stored["deck-a"].entries[0]).toEqual(edited);
+    expect(stored["deck-a"].entries[0].appliedEdits?.[0].editId).toBe("edit-7");
     // A turn stored before the agent could edit anything did not edit anything, so it
     // reads back with the field absent rather than with an empty list claiming it did.
     const plain = roundTrip({ "deck-a": chat([entry("Just talking.", {}, false)]) });
@@ -324,45 +334,81 @@ describe("agent deck edits", () => {
   });
 
   it("counts copies in and copies out, and a move as neither", () => {
-    const edit = readDeckAgentDeckEdit(
-      deckEditEvent({
-        changes: [
-          {
-            scryfall_id: solRing.scryfall_id,
-            name: solRing.name,
-            quantity: 2,
-            previous_quantity: 0,
-            card: solRing,
-          },
-          {
-            scryfall_id: "printing-rampant-growth",
-            name: "Rampant Growth",
-            quantity: 0,
-            previous_quantity: 2,
-          },
-          {
-            scryfall_id: "printing-arcane-signet",
-            name: "Arcane Signet",
-            quantity: 1,
-            previous_quantity: 1,
-            group: "Ramp",
-          },
-        ],
-      }),
-    ) as DeckAgentDeckEdit;
+    const diff: DeckDiff = {
+      summary: "+2 / −4",
+      cards: [
+        recordedChange("Sol Ring", null, placed(2)),
+        recordedChange("Rampant Growth", placed(2), null),
+        recordedChange(
+          "Arcane Signet",
+          placed(1, ["group-ramp"]),
+          placed(1, ["group-rocks"]),
+        ),
+        // The deck held three copies and ended with one. Two copies out, which no request
+        // could have said: the one that produced this asked for a quantity of 1 while
+        // believing the deck held 1, and is therefore a request for nothing at all.
+        recordedChange("Gamble", placed(3), placed(1)),
+      ],
+    };
 
-    expect(summarizeDeckEdit(edit)).toEqual({
+    expect(
+      summarizeDeckEditRecord(
+        diff,
+        "Swapping in two rocks for the weakest ramp.",
+        "edit-7",
+      ),
+    ).toEqual({
       reason: "Swapping in two rocks for the weakest ramp.",
       addedCopies: 2,
-      removedCopies: 2,
+      removedCopies: 4,
       added: ["Sol Ring"],
-      removed: ["Rampant Growth"],
-      // Same count, new group. The backend drops a change the deck already satisfies,
-      // so what is left at an unchanged count moved rather than did nothing.
+      removed: ["Rampant Growth", "Gamble"],
+      // Same count on both sides. A derivation records a card only when something about it
+      // changed, so what is left at an unchanged count moved rather than did nothing.
       moved: ["Arcane Signet"],
+      // The entry it describes, which is what decides whether it may carry an Undo.
+      editId: "edit-7",
     });
   });
+
+  it("records a refusal as a block that names nothing and holds no entry", () => {
+    const refused = refusedDeckEdit(
+      "Counterspell cannot share the command zone with Ghalta, Primal Hunger.",
+    );
+
+    // The deck's own sentence, and no claim of any kind about the cards the edit named.
+    expect(refused).toEqual({
+      reason:
+        "Counterspell cannot share the command zone with Ghalta, Primal Hunger.",
+      addedCopies: 0,
+      removedCopies: 0,
+      added: [],
+      removed: [],
+      moved: [],
+    });
+    expect(isRefusedDeckEdit(refused)).toBe(true);
+    // No entry, because nothing was recorded — which is what keeps the Undo off it.
+    expect(refused.editId).toBeUndefined();
+
+    // And an edit the deck did record is never read as one. Every recorded edit changed at
+    // least one card, and that card lands in one of the three lists, so the shapes cannot
+    // collide however the block is stored and read back.
+    const applied = summarizeDeckEditRecord(
+      { summary: "+1 / −0", cards: [recordedChange("Sol Ring", null, placed(1))] },
+      "You have no ramp at all.",
+      "edit-1",
+    );
+    expect(isRefusedDeckEdit(applied)).toBe(false);
+  });
 });
+
+/** One side of a recorded change. `index` is a position hint the summary never reads. */
+function placed(
+  quantity: number,
+  categories: string[] = [UNASSIGNED_GROUP_ID],
+): DeckCardPlacement {
+  return { quantity, section: "mainboard", categories, index: 0 };
+}
 
 /** One recorded card change, in the shape the browser writes to storage. */
 function recordedChange(

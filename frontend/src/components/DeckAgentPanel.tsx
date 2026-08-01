@@ -18,7 +18,7 @@ import type {
   DeckAgentMessage,
   DeckAgentToolCall,
 } from "../domain/agent";
-import { formatModelCostUsd, summarizeDeckEdit } from "../domain/agent";
+import { formatModelCostUsd, isRefusedDeckEdit } from "../domain/agent";
 import type { CardSearchResult } from "../domain/card";
 import { useDeckAgentChats } from "../hooks/useDeckAgentChats";
 import { apiClient, type ApiClient } from "../lib/api";
@@ -34,20 +34,6 @@ interface LiveTurn {
 
 const NO_LIVE_TURN: LiveTurn = { text: "", toolCalls: [], appliedEdits: [] };
 
-/**
- * What the deck did with an edit handed to it, as the transcript has to describe it.
- *
- * Two facts, because the block makes two claims. Whether the edit happened at all is the
- * deck's verdict, and a refusal carries the deck's own sentence. Which of the cards it named
- * actually went somewhere is a second question: a change that keeps a card's quantity reads
- * as a move and nothing the panel can see says otherwise, while the deck may have kept the
- * card exactly where it was — an unknown group name is dropped rather than obeyed. Names
- * listed here are the moves the block must not claim.
- */
-export type DeckEditReport =
-  | { applied: true; unmoved: string[] }
-  | { applied: false; reason: string };
-
 interface DeckAgentPanelProps {
   client?: ApiClient;
   debugEnabled?: boolean;
@@ -62,13 +48,26 @@ interface DeckAgentPanelProps {
    * the same reason: how a deck changes is not this panel's business, so it hands the
    * resolved edit outward rather than reaching into deck state itself.
    *
-   * It answers with what the deck did, because the transcript is durable and must not
-   * claim an edit the deck turned down. A caller that reports nothing is read as
-   * accepting the edit whole, which is all a caller without a deck could mean.
+   * It answers with the block to record — what the deck *did* with the edit, which the
+   * panel writes down as given and does not second-guess. The transcript is durable, so
+   * the one thing it may not do is describe the request: only the deck knows whether the
+   * edit happened, which cards moved, and how many copies went either way.
+   *
+   * `null` answers that there is nothing to record, which is what an edit the deck already
+   * matched leaves behind. A refusal is a block too — see `refusedDeckEdit` — because an
+   * edit that did not happen still has to be said.
    */
-  onDeckEdit?: (edit: DeckAgentDeckEdit) => DeckEditReport | undefined;
+  onDeckEdit?: (edit: DeckAgentDeckEdit) => DeckAgentAppliedEdit | null;
   /** Reverse the deck's last recorded change, behind the transcript's Undo. */
   onUndoDeckEdit?: () => void;
+  /**
+   * The id of the deck's newest recorded edit, or nothing when it has none.
+   *
+   * Which block gets the Undo, decided by comparison rather than by position: `undo`
+   * reverses this one edit, so it is the only block that may offer to. See
+   * `DeckAgentAppliedEdit.editId`.
+   */
+  undoableEditId?: string | null;
   /**
    * The deck's recorded history, read at the moment a turn is sent.
    *
@@ -94,10 +93,12 @@ interface DeckAgentPanelProps {
  *
  * A deck edit is the one thing on the stream that is not presentation: the deck has
  * already changed by the time the block describing it appears, which is why that block
- * is worded in the past tense and carries an Undo rather than a confirmation. It is
- * written from what the deck reports back rather than from the event, because the deck
- * can refuse — a commander that cannot legally share the zone, a group it does not have —
- * and the transcript is the lasting record of what happened, not of what was proposed.
+ * is worded in the past tense and carries an Undo rather than a confirmation. The block is
+ * the deck's own account of what it did, handed back by `onDeckEdit` — nothing here is
+ * written from the event. The event is what was asked for, and the two differ every time the
+ * deck had moved on or turned the edit down: a commander that cannot legally share the zone,
+ * a group the deck does not have, a card the user had already cut. The transcript is the
+ * lasting record of what happened, not of what was proposed.
  */
 export function DeckAgentPanel({
   client = apiClient,
@@ -107,6 +108,7 @@ export function DeckAgentPanel({
   onOpenCard,
   onDeckEdit,
   onUndoDeckEdit,
+  undoableEditId = null,
   readDeckHistory,
 }: DeckAgentPanelProps) {
   const { chat, appendEntry, recordReply, setDraft, clearChat } =
@@ -203,14 +205,13 @@ export function DeckAgentPanel({
             }));
           },
           onDeckEdit: (edit) => {
-            // Handed outward first and recorded second. The deck is the authority on
-            // what an edit does, and a transcript that described the change before the
-            // deck had been offered it would be describing an intention.
-            const report = onDeckEdit?.(edit);
-            const block = editBlock(edit, report);
-            // Absent when the deck neither took nor refused anything: a block naming no
-            // card has nothing to say, and one claiming an edit that did not happen is
-            // the transcript inventing it.
+            // Handed outward first and written down second, from the answer. The deck is
+            // the authority on what an edit does, and a transcript that described the
+            // change before the deck had been offered it would be describing an intention.
+            const block = onDeckEdit?.(edit) ?? null;
+            // Absent when the deck neither took nor refused anything: it already matched
+            // the edit, so there is nothing to describe, and a block here would be the
+            // transcript inventing a change out of a request.
             if (!block) {
               return;
             }
@@ -286,23 +287,6 @@ export function DeckAgentPanel({
     recordReply,
     setDraft,
   ]);
-
-  /**
-   * Which turn's applied block gets the Undo, which is the newest one the deck took.
-   *
-   * `undo` reverses the deck's last recorded change, so offering it on an older block
-   * would promise a reversal of that block and deliver a reversal of something else.
-   * One affordance, on the only edit it can actually undo — and a refused block is not
-   * one: the deck recorded nothing for it, so there is nothing there to reverse and a
-   * button offering to would undo somebody else's edit.
-   */
-  const undoableEntryIndex = entries.reduce(
-    (newest, entry, index) =>
-      (entry.appliedEdits ?? []).some((applied) => !isRefusedEdit(applied))
-        ? index
-        : newest,
-    -1,
-  );
 
   if (!client.streamDeckAgentChat) {
     return null;
@@ -382,16 +366,20 @@ export function DeckAgentPanel({
                   )}
                 </p>
               </article>
-              {(entry.appliedEdits ?? []).map((applied, editIndex, all) => (
+              {(entry.appliedEdits ?? []).map((applied, editIndex) => (
                 <AppliedEditBlock
                   applied={applied}
                   key={`edit-${editIndex}-${applied.reason}`}
-                  // Only the last *applied* block of the newest edited turn: see
-                  // `undoableEntryIndex`. A refusal after an accepted edit does not take
-                  // the affordance away from the edit that is still the deck's last one.
+                  // The block whose edit *is* the deck's last recorded change, and no
+                  // other. Matching ids rather than counting backwards from the newest
+                  // block is what makes the affordance impossible to strand: a refusal
+                  // records nothing and therefore never matches, a later edit in the same
+                  // turn takes the match with it, and so does a drag the user made after
+                  // the turn ended. A block with no id — a refusal, or one an older build
+                  // stored — cannot match either, which is the safe way to be wrong.
                   onUndo={
-                    index === undoableEntryIndex &&
-                    editIndex === lastAppliedIndex(all)
+                    applied.editId !== undefined &&
+                    applied.editId === undoableEditId
                       ? onUndoDeckEdit
                       : undefined
                   }
@@ -490,63 +478,6 @@ export function DeckAgentPanel({
 }
 
 /**
- * The transcript's record of one edit the agent made, or of one the deck refused.
- *
- * Built from the event and then corrected by the deck, never the other way round. The
- * event says what the agent resolved; only the deck can say what became of it, and the
- * transcript outlives every toast — so a block reading "Applied" for a change the deck
- * turned down is the record disagreeing with the deck for good.
- *
- * A refusal needs no field of its own, and deliberately has none: an edit that named no
- * card and counted no copy is not something that happened, and nothing else can produce
- * that shape. Every edit the stream can carry has at least one change, every change lands
- * in exactly one of the three name lists, and a block left with nothing to name is dropped
- * rather than stored. Encoding it in the fields the transcript already stores is what makes
- * a refusal survive a reload, where a flag the stored-transcript reader has never heard of
- * would quietly become an applied block again. `reason` carries the deck's own sentence.
- */
-function editBlock(
-  edit: DeckAgentDeckEdit,
-  report: DeckEditReport | undefined,
-): DeckAgentAppliedEdit | null {
-  if (report && !report.applied) {
-    return {
-      reason: report.reason,
-      addedCopies: 0,
-      removedCopies: 0,
-      added: [],
-      removed: [],
-      moved: [],
-    };
-  }
-  const summary = summarizeDeckEdit(edit);
-  const unmoved = report?.unmoved ?? [];
-  const moved = summary.moved.filter((name) => !unmoved.includes(name));
-  return moved.length === 0 &&
-    summary.added.length === 0 &&
-    summary.removed.length === 0
-    ? null
-    : { ...summary, moved };
-}
-
-/** Whether a block records a refusal rather than an edit. See `editBlock`. */
-function isRefusedEdit(applied: DeckAgentAppliedEdit): boolean {
-  return (
-    applied.added.length === 0 &&
-    applied.removed.length === 0 &&
-    applied.moved.length === 0
-  );
-}
-
-/** Which block in a turn carries the Undo: the last one the deck actually took. */
-function lastAppliedIndex(blocks: DeckAgentAppliedEdit[]): number {
-  return blocks.reduce(
-    (last, applied, index) => (isRefusedEdit(applied) ? last : index),
-    -1,
-  );
-}
-
-/**
  * One edit the agent made, below the answer that explains it.
  *
  * Written in the past tense throughout, because it is: the deck took the change before
@@ -562,7 +493,7 @@ function AppliedEditBlock({
   applied: DeckAgentAppliedEdit;
   onUndo?: () => void;
 }) {
-  if (isRefusedEdit(applied)) {
+  if (isRefusedDeckEdit(applied)) {
     return (
       <div className="deck-agent__edit deck-agent__edit--refused">
         <p className="deck-agent__edit-summary">

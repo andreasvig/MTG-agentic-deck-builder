@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useReducer } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import type { CardSearchResult } from "../domain/card";
 import { getCardPrice, isBasicLand } from "../domain/card";
@@ -20,6 +20,7 @@ import {
   validateCommandZoneAddition,
 } from "../domain/deck";
 import type {
+  DeckDiff,
   DeckDiffApplyResult,
   DeckEditEntry,
   DeckHistory,
@@ -79,16 +80,56 @@ export interface DeckEdit {
 }
 
 /**
+ * What one edit the deck took became in the log: the entry's id, and the diff behind it.
+ *
+ * The diff is the deck's own derivation from the deck before and the deck after, so it is
+ * the record of what happened rather than of what was asked for. Anything describing the
+ * edit downstream — a transcript block, a toast, a report — has to be written from this and
+ * not from the request, because the two disagree whenever the deck had moved on: the copy
+ * counts in a request are the *requester's* belief about the deck, and only this is the deck.
+ *
+ * `editId` is the entry's own id, which is what decides where an Undo may be offered. `undo`
+ * reverses the deck's last recorded change, so the affordance belongs to whatever describes
+ * *that* entry — a question of identity, answerable by comparison, rather than of position.
+ */
+export interface DeckEditRecord {
+  editId: string;
+  diff: DeckDiff;
+}
+
+/**
  * What the deck did with an edit it was handed.
  *
  * The validators live here and only here, so the deck is the only thing that knows whether
  * an edit happened — and a caller that assumed it did would describe an intention. The
  * refusal travels back carrying the *same* sentence the announcement carries, because two
  * places wording why an edit failed is two places to disagree.
+ *
+ * An accepted edit answers with what it recorded, or with `null` when it recorded nothing:
+ * the deck already matched the edit, so the change is real in intent and empty in effect.
+ * The three cases are distinct on purpose. A refusal is something that did not happen and
+ * must be said so; a recorded edit is something that did and can be described and reversed;
+ * and an empty one is neither, so anything describing it would be inventing it.
  */
 export type DeckEditOutcome =
-  | { applied: true }
+  | { applied: true; recorded: DeckEditRecord | null }
   | { applied: false; reason: string };
+
+/**
+ * How a caller turns the deck an edit is about to be applied to into the edit to apply.
+ *
+ * A function rather than a value because resolving an edit reads the deck — a cut names a
+ * printing whose payload has to come from the deck that holds it, and a group name has to
+ * be turned into the id this deck files cards under. Handed the deck the verdict will be
+ * reached against, so the resolution and the verdict cannot be about two different decks.
+ * That matters within a single turn: the agent may edit twice, and the second edit is about
+ * the deck the first one left behind, which no value captured in an earlier render can be.
+ *
+ * Refusing with an `error` is for a caller that cannot resolve the edit at all. The deck
+ * never sees one, so it announces nothing and the caller is the only place it can be
+ * recorded — which is why it comes back as a refusal rather than as nothing at all.
+ */
+export type DeckEditPlanner = (deck: Deck) => DeckEdit | { error: string };
 
 interface DeletedDeckSnapshot {
   deck: Deck;
@@ -109,7 +150,6 @@ interface DeckState {
 
 type DeckAction =
   | { type: "mutate"; mutation: DeckMutation }
-  | { type: "apply_edit"; edit: DeckEdit; actor: DeckHistoryActor }
   | { type: "undo" }
   | { type: "create_deck" }
   | { type: "select_deck"; deckId: string }
@@ -118,7 +158,41 @@ type DeckAction =
   | { type: "clear_announcement" };
 
 export function useDeck() {
-  const [state, dispatch] = useReducer(deckReducer, undefined, createInitialState);
+  const [state, setState] = useState(createInitialState);
+  /**
+   * The state the next action will be reduced from, which is not always the state this
+   * render is showing.
+   *
+   * `useReducer` stands where this does in most hooks, and it cannot be used here for one
+   * reason: it cannot answer its caller. `dispatch` returns nothing, the reducer runs later,
+   * and what it yields is state rather than a verdict — so a caller that needed to know what
+   * became of an edit had to compute a second opinion from the deck it happened to be
+   * holding, which is the deck as it was when that closure was made. Two edits in one turn
+   * then judged the second against the deck the first had already changed, and reported the
+   * result of a run the deck never made.
+   *
+   * Driving the store by hand fixes both halves at once. The reducer runs synchronously, so
+   * the state it produced — including the diff it derived and the entry it recorded — is
+   * handed straight back to the caller; and it is advanced here the moment it is produced,
+   * so the next action is reduced from it whether or not React has rendered in between.
+   * Every change to the deck goes through this, so two agent edits, a drag and an agent
+   * edit, and an undo and an agent edit all chain the same way.
+   */
+  const latest = useRef(state);
+  latest.current = state;
+
+  const commit = useCallback((next: DeckState) => {
+    latest.current = next;
+    setState(next);
+  }, []);
+
+  const dispatch = useCallback(
+    (action: DeckAction) => {
+      commit(deckReducer(latest.current, action));
+    },
+    [commit],
+  );
+
   const deck = activeDeck(state.library);
 
   useEffect(() => {
@@ -419,26 +493,37 @@ export function useDeck() {
   );
 
   /**
-   * Apply a whole resolved edit as one change, and report what became of it. It runs the
-   * same validators the drag path runs, refuses entirely rather than in part, and lands as a
+   * Apply a whole edit as one change, and report what became of it. It runs the same
+   * validators the drag path runs, refuses entirely rather than in part, and lands as a
    * single undo step and a single history entry under the given actor.
    *
-   * The verdict is reached here as well as in the reducer because `dispatch` cannot answer
-   * its caller: the reducer runs later and yields state, not a verdict. Both run the very
-   * same pure closure over the very same deck, so what is reported is what the reducer
-   * reaches — the reducer stays the authority on the deck, and this is only its report. The
-   * caller needs it because a refused edit that nobody was told about becomes a durable
-   * claim somewhere else that the edit happened.
+   * The edit is resolved by `prepare` against the deck the verdict is reached against, and
+   * the verdict is the one run that happened — there is no second opinion to keep in step,
+   * and nothing here is captured from an earlier render. What comes back is the record the
+   * log now holds, which is what anything durable describing the edit has to be written
+   * from: the caller needs it because a refused edit nobody was told about becomes a lasting
+   * claim somewhere else that the edit happened, and an edit described from the request
+   * rather than from the record names cards the deck did not move.
    */
   const applyEdit = useCallback(
-    (edit: DeckEdit, actor: DeckHistoryActor): DeckEditOutcome => {
-      const result = deckEditMutation(edit)(deck);
-      dispatch({ type: "apply_edit", edit, actor });
-      return result && "error" in result
-        ? { applied: false, reason: result.error }
-        : { applied: true };
+    (prepare: DeckEditPlanner, actor: DeckHistoryActor): DeckEditOutcome => {
+      const current = latest.current;
+      const plan = prepare(activeDeck(current.library));
+      if ("error" in plan) {
+        // The deck was never asked, so it announces nothing: this refusal happened before
+        // the edit got as far as the deck. Reported all the same, because the caller is
+        // then the only place it can be recorded.
+        return { applied: false, reason: plan.error };
+      }
+      const { state: next, outcome } = commitMutation(
+        current,
+        deckEditMutation(plan),
+        { actor, reason: plan.reason },
+      );
+      commit(next);
+      return outcome;
     },
-    [deck],
+    [commit],
   );
 
   const createDeck = useCallback(() => {
@@ -474,6 +559,23 @@ export function useDeck() {
   const canUndo = useMemo(
     () => planUndo(deck, editLogFor(state.editLogs, deck.id))?.ok === true,
     [deck, state.editLogs],
+  );
+
+  /**
+   * The id of the deck's newest recorded edit, which is the one and only edit `undo` reverses.
+   *
+   * Read out of the log at every render rather than remembered from the last edit made, so it
+   * follows whatever the deck actually did last — the agent's edit, a drag that came after it,
+   * or the edit before the one an undo just popped. Anything offering to reverse a *particular*
+   * edit compares against this: an offer attached by position promises the reversal of the
+   * newest thing on screen and delivers the reversal of the newest thing in the log, and those
+   * are the same thing only until they are not.
+   */
+  const lastRecordedEditId = useMemo(
+    () =>
+      editLogFor(state.editLogs, deck.id).sessions.at(-1)?.edits.at(-1)?.id ??
+      null,
+    [deck.id, state.editLogs],
   );
 
   const statistics = useMemo(() => {
@@ -542,6 +644,7 @@ export function useDeck() {
     announcement: state.announcement,
     announcementTone: state.announcementTone,
     canUndo,
+    lastRecordedEditId,
     deletedDeckName: state.deletedDeck?.deck.name ?? null,
     statistics,
     addCard,
@@ -769,21 +872,43 @@ function deckReducer(state: DeckState, action: DeckAction): DeckState {
     };
   }
 
-  // An edit becomes the same kind of closure every mutator produces, so both arrive at the
-  // one derivation below and a whole edit is one entry in the log and one step of undo.
-  const mutation =
-    action.type === "apply_edit"
-      ? deckEditMutation(action.edit)
-      : action.mutation;
+  // A user's own change is one mutation with no stated intent, recorded against them. It
+  // reaches the same single derivation an agent edit does.
+  return commitMutation(state, action.mutation, { actor: "user" }).state;
+}
+
+/**
+ * Run one mutation against the state, and describe what it did.
+ *
+ * The one place the deck is diffed, for every mutation there is. It holds the deck before and
+ * the deck after, so the change is derived from what actually happened rather than from what a
+ * call site remembered to declare: the record is complete by construction, and a mutator added
+ * next year is recorded with no extra wiring at all.
+ *
+ * The outcome is that same derivation handed back rather than derived again, so the record in
+ * the log and the record the caller was given are one object and cannot come to disagree. That
+ * is the whole reason the outcome is produced here instead of beside the call: a second run
+ * over a second deck is exactly how a transcript came to describe an edit that never happened.
+ */
+function commitMutation(
+  state: DeckState,
+  mutation: DeckMutation,
+  record: { actor: DeckHistoryActor; reason?: string },
+): { state: DeckState; outcome: DeckEditOutcome } {
+  const current = activeDeck(state.library);
   const result = mutation(current);
   if (!result) {
-    return state;
+    // Nothing to do and nothing to say: a mutation that declines is not a refusal.
+    return { state, outcome: { applied: true, recorded: null } };
   }
   if ("error" in result) {
     return {
-      ...state,
-      announcement: result.error,
-      announcementTone: "error",
+      state: {
+        ...state,
+        announcement: result.error,
+        announcementTone: "error",
+      },
+      outcome: { applied: false, reason: result.error },
     };
   }
   const updatedDeck = {
@@ -791,35 +916,31 @@ function deckReducer(state: DeckState, action: DeckAction): DeckState {
     updated_at: new Date().toISOString(),
   };
 
-  // The one place the deck is diffed, for every mutation there is. The reducer already holds
-  // the deck before and the deck after, so the change is derived from what actually happened
-  // rather than from what a call site remembered to declare: the record is complete by
-  // construction, and a mutator added next year is recorded with no extra wiring at all.
   const { diff, payloads } = deriveDeckDiff(current, updatedDeck);
   const log = editLogFor(state.editLogs, current.id);
+  const editId = createLocalId("edit");
   const entry: DeckEditEntry = {
-    id: createLocalId("edit"),
-    // The reducer's own stamp, so the edit's time and the deck's `updated_at` cannot disagree.
+    id: editId,
+    // Stamped from the deck, so the edit's time and the deck's `updated_at` cannot disagree.
     at: updatedDeck.updated_at,
     ...diff,
-    ...(action.type === "apply_edit" && action.edit.reason
-      ? { reason: action.edit.reason }
-      : {}),
+    ...(record.reason ? { reason: record.reason } : {}),
   };
   const appended = appendToHistory(log, {
     entry,
     payloads,
-    actor: action.type === "apply_edit" ? action.actor : "user",
+    actor: record.actor,
     newSessionId: createLocalId("session"),
   });
   // `appendToHistory` hands back the very object it was given when the diff was empty, so
   // reference identity is how a mutation that changed nothing but `updated_at` is recognised
   // — no second derivation and no empty entry in the log.
+  const changedNothing = appended === log;
   return {
-    ...state,
-    library: replaceDeck(state.library, updatedDeck),
-    editLogs:
-      appended === log
+    state: {
+      ...state,
+      library: replaceDeck(state.library, updatedDeck),
+      editLogs: changedNothing
         ? state.editLogs
         : {
             ...state.editLogs,
@@ -829,8 +950,16 @@ function deckReducer(state: DeckState, action: DeckAction): DeckState {
               DECK_HISTORY_PAYLOAD_CAP,
             ),
           },
-    announcement: result.announcement,
-    announcementTone: "status",
+      announcement: result.announcement,
+      announcementTone: "status",
+    },
+    // No entry means nothing happened, and the empty diff is what says so. Reporting the
+    // diff anyway would hand out a record of an edit with no cards in it, which whatever
+    // describes it would have to guess at — and guessing is what it is being told not to do.
+    outcome: {
+      applied: true,
+      recorded: changedNothing ? null : { editId, diff },
+    },
   };
 }
 
@@ -897,7 +1026,8 @@ interface DeckEditChangeResult {
 }
 
 /**
- * Turn a resolved edit into the closure the reducer already knows how to run.
+ * Turn a resolved edit into the same kind of closure every other mutator produces, so an
+ * agent edit and a drag arrive at one derivation and one history entry.
  *
  * Changes are folded onto a working deck in order and the whole edit is refused the moment
  * one of them is, so the working deck is discarded and the real one is never touched. A
