@@ -23,7 +23,7 @@ from pydantic_settings import (
 )
 
 from mtg_deck_builder import __version__
-from mtg_deck_builder.domain.agent_chat import CardDetail
+from mtg_deck_builder.domain.agent_chat import MAX_HISTORY_SESSIONS, CardDetail
 
 _http_url_adapter = TypeAdapter(AnyHttpUrl)
 _project_config_file = Path(__file__).resolve().parents[3] / "config.yaml"
@@ -280,9 +280,9 @@ ReasoningEffort = Literal["none", "minimal", "low", "medium", "high", "xhigh", "
 
 
 class DeckAgentToolSettings(BaseModel):
-    """What the deck agent may read, and how hard it may work at reading it.
+    """What the deck agent may read and change, and how hard it may work at it.
 
-    The three tool descriptions live here rather than in code because they are prompt
+    Every tool description lives here rather than in code because they are prompt
     text: they are the only thing telling the model when each tool is worth calling,
     and they have to stay editable next to the system prompt that frames them.
     """
@@ -308,14 +308,29 @@ class DeckAgentToolSettings(BaseModel):
     # bound and the runtime bound cannot disagree.
     search_cards_default_max_results: Annotated[int, Field(ge=1, le=60)] = 12
     search_cards_hard_max_results: Annotated[int, Field(ge=1, le=60)] = 60
+    # How many recorded sessions `read_history` reads when the model names no limit,
+    # and the ceiling it may raise that to. The ceiling also bounds what the tool will
+    # read of a longer posted history, so it must not exceed the request contract's own
+    # `MAX_HISTORY_SESSIONS` — the schema bound the model reads and the runtime bound
+    # cannot be allowed to disagree.
+    read_history_default_sessions: Annotated[
+        int, Field(ge=1, le=MAX_HISTORY_SESSIONS)
+    ] = 10
+    history_max_sessions: Annotated[int, Field(ge=1, le=MAX_HISTORY_SESSIONS)] = (
+        MAX_HISTORY_SESSIONS
+    )
     read_deck_description: str = "List the open deck by card type."
     see_cards_description: str = "Look up details for named cards."
     search_cards_description: str = "Search the local card catalog."
+    edit_deck_description: str = "Change what the open deck holds."
+    read_history_description: str = "Read the open deck's recorded edits."
 
     @field_validator(
         "read_deck_description",
         "see_cards_description",
         "search_cards_description",
+        "edit_deck_description",
+        "read_history_description",
     )
     @classmethod
     def description_must_not_be_blank(cls, value: str) -> str:
@@ -338,6 +353,14 @@ class DeckAgentToolSettings(BaseModel):
             raise ValueError(
                 "search_cards_default_max_results must not exceed "
                 "search_cards_hard_max_results"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def history_bounds_must_agree(self) -> "DeckAgentToolSettings":
+        if self.read_history_default_sessions > self.history_max_sessions:
+            raise ValueError(
+                "read_history_default_sessions must not exceed history_max_sessions"
             )
         return self
 

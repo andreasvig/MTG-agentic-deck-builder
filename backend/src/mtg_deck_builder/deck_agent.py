@@ -1,9 +1,16 @@
 """Conversational deck agent behind the right-hand chat panel.
 
 The agent holds no server-side session: its entire input is the transcript the
-browser posts back on every turn, plus whatever its two read-only tools look up
-while answering. So one turn is a bounded loop — ask, run any tools the model
-asked for, ask again with the results — that always ends in prose.
+browser posts back on every turn, together with the open deck and its recorded
+history, plus whatever its tools look up while answering. So one turn is a bounded
+loop — ask, run any tools the model asked for, ask again with the results — that
+always ends in prose.
+
+One tool changes something. `edit_deck` cannot mutate anything here either, because
+the deck lives in the browser; it returns a resolved edit, which this loop emits as
+its own stream event the moment the call finishes. Nothing has changed until the
+browser applies it, which is why the edit travels beside the tool line rather than
+with the finished answer.
 """
 
 from __future__ import annotations
@@ -25,6 +32,8 @@ from mtg_deck_builder.domain import (
 )
 from mtg_deck_builder.domain.agent_chat import (
     MAX_TOOL_PAYLOAD_CHARS,
+    DeckAgentDeckEdit,
+    DeckAgentDeckEditEvent,
     DeckAgentDoneEvent,
     DeckAgentStreamEvent,
     DeckAgentTextEvent,
@@ -45,6 +54,7 @@ _BRACED_NAME = re.compile(r"\{([^{}\n]{1,200})\}")
 
 TextEmitter = Callable[[str], Awaitable[None]]
 ToolEmitter = Callable[[DeckAgentToolCall], Awaitable[None]]
+EditEmitter = Callable[[DeckAgentDeckEdit], Awaitable[None]]
 
 
 class DeckAgentUnavailable(RuntimeError):
@@ -109,8 +119,16 @@ class DeckAgentService:
         async def emit_tool(call: DeckAgentToolCall) -> None:
             await events.put(DeckAgentToolEvent(call=call))
 
+        async def emit_edit(edit: DeckAgentDeckEdit) -> None:
+            await events.put(DeckAgentDeckEditEvent(edit=edit))
+
         turn = asyncio.create_task(
-            self._run(request, emit_text=emit_text, emit_tool=emit_tool)
+            self._run(
+                request,
+                emit_text=emit_text,
+                emit_tool=emit_tool,
+                emit_edit=emit_edit,
+            )
         )
         try:
             while True:
@@ -136,6 +154,7 @@ class DeckAgentService:
         *,
         emit_text: TextEmitter | None,
         emit_tool: ToolEmitter | None = None,
+        emit_edit: EditEmitter | None = None,
     ) -> DeckAgentChatReply:
         """Answer one turn, reporting progress to whichever emitters were given."""
 
@@ -170,7 +189,14 @@ class DeckAgentService:
             assert toolbox is not None  # implied by a non-empty request list
             conversation.append(_assistant_tool_message(message, requests))
             for call_id, name, arguments in requests:
-                outcome = await toolbox.run(name, arguments, deck=request.deck)
+                outcome = await toolbox.run(
+                    name,
+                    arguments,
+                    deck=request.deck,
+                    # Posted with the turn exactly as the deck is, and for the same
+                    # reason: the backend holds neither.
+                    history=request.history,
+                )
                 performed.append(
                     DeckAgentToolCall(
                         name=str(name),
@@ -192,6 +218,12 @@ class DeckAgentService:
                     # Sent now rather than with the answer: the point of showing a
                     # call is knowing what the agent is doing while it does it.
                     await emit_tool(performed[-1])
+                if outcome.ok and outcome.edit is not None and emit_edit is not None:
+                    # After the tool line and before the next round, because the tool
+                    # result the model is about to read says the edit has happened —
+                    # and nothing has happened until the browser acts on this. A failed
+                    # call carries no edit, so nothing is applied for one.
+                    await emit_edit(outcome.edit)
                 conversation.append(
                     {
                         "role": "tool",

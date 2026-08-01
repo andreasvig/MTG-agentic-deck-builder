@@ -1,10 +1,20 @@
-"""The deck agent's access to local card data: its three tools, and name resolution.
+"""The deck agent's access to local card data: its five tools, and name resolution.
 
-No tool can change anything. `read_deck` is answered entirely from the deck
-snapshot the browser posted with the turn — the backend holds no deck — while
-`see_cards` and `search_cards` read the same local catalog, Tagger sidecar and
-EDHREC cache the interface itself reads, so the agent and the user cannot be
-looking at different data.
+`read_deck` and `read_history` are answered entirely from what the browser posted
+with the turn — the backend holds no deck and no history of one — while `see_cards`
+and `search_cards` read the same local catalog, Tagger sidecar and EDHREC cache the
+interface itself reads, so the agent and the user cannot be looking at different
+data.
+
+`edit_deck` cannot mutate anything either, for the same reason: it resolves a change
+against the posted snapshot and emits it, and the browser applies it as one undo
+step. What that buys is a result that can be *accurate* rather than proposed — the
+deck as it was is in the request, so the tool can say what the change did to it.
+Everything it declines to block, it reports: colour identity, singleton and the
+hundred-card bound are warnings here because they are warnings on the board too, and
+an agent held to a stricter rule than the drag target is inconsistent in a way the
+user cannot see. Command-zone legality and group existence stay in
+`frontend/src/domain/deck.ts`, unduplicated.
 
 `search_cards` is the search agent's own engine with the filters moved: the
 interface owns the immutable half for a panel search, and here the model owns all
@@ -17,6 +27,7 @@ and text costs a fraction of the tokens for a hundred-card deck.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import date, datetime
 from decimal import Decimal
 from typing import Annotated, Any, get_args
 from uuid import UUID
@@ -40,7 +51,18 @@ from mtg_deck_builder.domain import (
     EdhrecDeckTheme,
     LocalCardSearchRequest,
 )
-from mtg_deck_builder.domain.agent_chat import DeckAgentModel
+from mtg_deck_builder.domain.agent_chat import (
+    CardToken,
+    DeckAgentDeckEdit,
+    DeckAgentDeckEditChange,
+    DeckAgentDeckHistory,
+    DeckAgentDeckHistoryChange,
+    DeckAgentDeckSession,
+    DeckAgentModel,
+    DeckEditChange,
+    EditDeckArguments,
+    ReadHistoryArguments,
+)
 from mtg_deck_builder.edhrec_catalog import (
     EdhrecCatalogUnavailable,
     EdhrecCommanderRanking,
@@ -52,6 +74,8 @@ from mtg_deck_builder.tagger_catalog import SQLiteTaggerCatalog, TaggerCatalogUn
 READ_DECK = "read_deck"
 SEE_CARDS = "see_cards"
 SEARCH_CARDS = "search_cards"
+EDIT_DECK = "edit_deck"
+READ_HISTORY = "read_history"
 
 # The type that names each card's section of the deck list. Order is precedence, not
 # display: a card is filed under the first type its type line mentions, so an
@@ -154,10 +178,34 @@ if _MISSING_FROM_DETAIL_ORDER:
         f"see_cards details missing from the render order: {sorted(_MISSING_FROM_DETAIL_ORDER)}"
     )
 
-CardToken = Annotated[
-    str,
-    StringConstraints(strip_whitespace=True, min_length=1, max_length=200),
-]
+# How the two deck sections read in prose. `command_zone` is a field name, and history
+# is read by a model that will repeat whatever it is shown.
+_SECTION_NAMES = {"command_zone": "command zone", "mainboard": "mainboard"}
+
+# What the history calls each actor. The reader of that text is the agent, so the agent
+# is `Me`: naming itself in the third person is how it comes to describe its own edits
+# as somebody else's.
+_ACTOR_LABELS = {"user": "You", "agent": "Me"}
+
+# A minus sign, not a hyphen: it is the character that pairs with `+` down the left of a
+# diff, and a hyphen reads as punctuation there. Spelled as an escape and used through
+# these names because ruff flags the literal glyph as ambiguous everywhere it appears.
+_REMOVED = "\u2212"
+_TIME_RANGE = "\u2013"
+
+# How many of an edit's no-op changes are explained one by one before the rest are
+# merely counted. A hundred-change call that was entirely redundant needs to say so, not
+# to say so a hundred times.
+_MAX_REPORTED_NOOPS = 5
+
+# How big a Commander deck is, command zone included. Exceeded, it is reported as a
+# warning and the edit still applies: the board lets the user build a 103-card deck and
+# tells them so, and the agent must not be the stricter of the two.
+_COMMANDER_DECK_SIZE = 100
+
+# How many cards one edit names before the tool line stops listing them, matching
+# `see_cards`' own line. The rest are counted.
+_SIGNATURE_NAMED_CARDS = 3
 
 # EDHREC's own theme slugs, as the commander context advertises them.
 EdhrecThemeSlug = Annotated[
@@ -204,12 +252,19 @@ _SIGNATURE_LIMIT = 200
 
 @dataclass(frozen=True)
 class ToolOutcome:
-    """One executed tool call: what the model reads, and what the chat shows."""
+    """One executed tool call: what the model reads, and what the chat shows.
+
+    `edit` is the one thing a tool result can carry beyond text, and only
+    `edit_deck` ever sets it. It is absent on every failure and absent when the call
+    changed nothing, so a caller can treat its presence as "there is something for the
+    browser to apply" without re-deriving that from the content.
+    """
 
     signature: str
     content: str
     ok: bool = True
     detail: str | None = None
+    edit: DeckAgentDeckEdit | None = None
 
 
 class ReadDeckArguments(DeckAgentModel):
@@ -310,9 +365,15 @@ class _SearchCommander:
 
 @dataclass(frozen=True)
 class _DeckEntry:
-    """One resolved deck card: the snapshot's placement plus catalog truth."""
+    """One resolved deck card: the snapshot's placement plus catalog truth.
+
+    `scryfall_id` is the printing the *snapshot* named, which is not necessarily the
+    printing the catalog would choose today. An edit has to travel with the browser's
+    own id or the applier looks for an entry the deck does not have.
+    """
 
     card: CardSearchResult
+    scryfall_id: UUID
     quantity: int
     section: str
     group: str | None
@@ -402,6 +463,22 @@ class DeckAgentToolbox:
                     # cost the search agent an outright provider rejection.
                 },
             },
+            {
+                "type": "function",
+                "function": {
+                    "name": EDIT_DECK,
+                    "description": self._settings.edit_deck_description,
+                    "parameters": provider_tool_schema(EditDeckArguments),
+                },
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": READ_HISTORY,
+                    "description": self._settings.read_history_description,
+                    "parameters": provider_tool_schema(ReadHistoryArguments),
+                },
+            },
         ]
         if self._local_tool is not None:
             definitions.append(
@@ -422,6 +499,7 @@ class DeckAgentToolbox:
         arguments: object,
         *,
         deck: DeckAgentDeckSnapshot | None,
+        history: DeckAgentDeckHistory | None = None,
     ) -> ToolOutcome:
         """Execute one tool call, returning text for the model either way."""
 
@@ -435,7 +513,7 @@ class DeckAgentToolbox:
         try:
             if name == READ_DECK:
                 ReadDeckArguments.model_validate(arguments)
-                return await self._read_deck(deck)
+                return await self._read_deck(deck, history)
             if name == SEE_CARDS:
                 return await self._see_cards(
                     SeeCardsArguments.model_validate(arguments),
@@ -445,6 +523,17 @@ class DeckAgentToolbox:
                 return await self._search_cards(
                     SearchCardsArguments.model_validate(arguments),
                     deck,
+                )
+            if name == EDIT_DECK:
+                return await self._edit_deck(
+                    EditDeckArguments.model_validate(arguments),
+                    deck,
+                )
+            if name == READ_HISTORY:
+                return self._read_history(
+                    ReadHistoryArguments.model_validate(arguments),
+                    deck,
+                    history,
                 )
         except ValidationError as exc:
             return ToolOutcome(
@@ -467,7 +556,11 @@ class DeckAgentToolbox:
             detail="unknown tool",
         )
 
-    async def _read_deck(self, deck: DeckAgentDeckSnapshot | None) -> ToolOutcome:
+    async def _read_deck(
+        self,
+        deck: DeckAgentDeckSnapshot | None,
+        history: DeckAgentDeckHistory | None = None,
+    ) -> ToolOutcome:
         """List the open deck by card type, with names and short ids but no rules."""
 
         signature = f"{READ_DECK}()"
@@ -542,6 +635,16 @@ class DeckAgentToolbox:
             f"No card text here. Call {SEE_CARDS} with the names or short ids above "
             "for rules, prices, tags, inclusion rates or similar cards."
         )
+        # Only when there is a past to read. A pointer at an empty record would spend a
+        # tool round to learn nothing, and one at a client that posts no history would
+        # spend it to learn nothing twice.
+        recorded = _recorded_edit_count(history)
+        if recorded:
+            lines.append(
+                f"{recorded} earlier {'edit' if recorded == 1 else 'edits'} "
+                f"{'is' if recorded == 1 else 'are'} recorded; call {READ_HISTORY} to "
+                "see who changed what, when and why."
+            )
         return ToolOutcome(signature=signature, content="\n".join(lines))
 
     async def _see_cards(
@@ -592,6 +695,172 @@ class DeckAgentToolbox:
         if not lines:
             lines.append("Nothing to report.")
         return ToolOutcome(signature=signature, content="\n\n".join(lines))
+
+    async def _edit_deck(
+        self,
+        arguments: EditDeckArguments,
+        deck: DeckAgentDeckSnapshot | None,
+    ) -> ToolOutcome:
+        """Resolve one edit against the posted deck and say what it did to it.
+
+        Nothing is mutated here — the browser applies the emitted edit — but the deck
+        as it was is in the request, so the result is a statement rather than a
+        proposal. What it reports is what the model could not already know: which
+        tokens resolved, what the deck held before, which changes were therefore
+        no-ops, the resulting card count, and any warning the change introduced. The
+        quantities and the reason are still sitting in its own tool call.
+
+        Two things fail the whole call rather than part of it — a card that does not
+        resolve and a quantity outside 0-99 — because a half-applied edit records an
+        intent that did not happen, and that is the worst outcome available here.
+        Everything else is a warning: the board treats out-of-identity as a warning,
+        and an agent held to a stricter rule than the drag target is inconsistent in a
+        way the user cannot see.
+        """
+
+        tokens = [change.card for change in arguments.changes]
+        signature = _edit_deck_signature(tokens)
+        if deck is None:
+            return ToolOutcome(
+                signature=signature,
+                content=(
+                    "No deck is open, so there is nothing to edit. Ask the user which "
+                    "deck they want changed."
+                ),
+                ok=False,
+                detail="no deck open",
+            )
+
+        entries, _ = await self._resolve_deck(deck)
+        resolved = await self._resolve_token_cards(tokens, entries)
+        unknown = [
+            token
+            for token, card in zip(tokens, resolved, strict=True)
+            if card is None
+        ]
+        if unknown:
+            return ToolOutcome(
+                signature=signature,
+                content=(
+                    f"{'No card called' if len(unknown) == 1 else 'No cards called'} "
+                    f"{_quoted_list(unknown)}, so the deck was not changed at all. "
+                    "A card is named by its exact printed name, or by a short id from "
+                    f"{READ_DECK}."
+                ),
+                ok=False,
+                detail=f"unknown card: {unknown[0]}"[:120],
+            )
+
+        planned, collapsed = _planned_changes(arguments.changes, resolved, entries)
+        effective = [change for change in planned if change.effective]
+        # Counted from the snapshot rather than from the resolved entries, so a printing
+        # the catalog does not know still counts towards the deck's size. It is in the
+        # deck on screen whatever the catalog thinks.
+        before_total = sum(entry.quantity for entry in deck.cards)
+        after_total = before_total + sum(change.delta for change in effective)
+
+        commander = next(
+            (entry.card for entry in entries if entry.section == "command_zone"),
+            None,
+        )
+        warnings = _edit_warnings(
+            effective,
+            commander=commander,
+            after_total=after_total,
+            collapsed=collapsed,
+        )
+        content = "\n".join(
+            _edit_lines(
+                deck_name=deck.name,
+                planned=planned,
+                effective=effective,
+                after_total=after_total,
+                warnings=warnings,
+            )
+        )
+        if not effective:
+            # Nothing for the browser to apply, so nothing is emitted. An edit carrying
+            # no change would land in the history as an entry that changed nothing, and
+            # a retried call would then read as a second edit.
+            return ToolOutcome(signature=signature, content=content)
+        return ToolOutcome(
+            signature=signature,
+            content=content,
+            edit=DeckAgentDeckEdit(
+                deck_name=deck.name,
+                reason=arguments.reason,
+                changes=[change.emitted() for change in effective],
+            ),
+        )
+
+    def _read_history(
+        self,
+        arguments: ReadHistoryArguments,
+        deck: DeckAgentDeckSnapshot | None,
+        history: DeckAgentDeckHistory | None,
+    ) -> ToolOutcome:
+        """Report the deck's recorded edits, newest session first.
+
+        Read from the request, like the deck itself: history lives in the browser
+        beside the deck, and the backend keeps neither.
+
+        The two empty cases are told apart on purpose. A client that posted no history
+        leaves the agent unable to say whether the deck has ever been changed; a deck
+        with an empty record has demonstrably not been changed since recording began.
+        The first is a gap in what can be seen and the second is a fact about the deck,
+        so they send the agent somewhere different — the same distinction `see_cards`
+        draws between a commander with no themes and a card that is not a commander.
+        """
+
+        limit = min(
+            arguments.limit or self._settings.read_history_default_sessions,
+            self._settings.history_max_sessions,
+        )
+        signature = _read_history_signature(limit)
+        subject = _quoted(deck.name) if deck is not None else "This deck"
+        if history is None:
+            return ToolOutcome(
+                signature=signature,
+                content=(
+                    "## History\n"
+                    "No history was posted with this turn, so there is none to read. "
+                    "That is this client not sending one, not a deck that has never "
+                    "been edited — from here you cannot tell which. Do not tell the "
+                    "user their deck has no past."
+                ),
+            )
+        sessions = list(history.sessions)
+        if not sessions:
+            return ToolOutcome(
+                signature=signature,
+                content=(
+                    "## History\n"
+                    f"{subject} has no recorded edits. Its history is being kept and "
+                    "it is empty, so nothing has changed since recording started."
+                ),
+            )
+
+        # Stored oldest first, read newest first: the recent past is what a question
+        # about "what did we change" is almost always about.
+        shown = sessions[::-1][:limit]
+        total = len(sessions)
+        counted = (
+            f"{total} {'session' if total == 1 else 'sessions'} recorded"
+            + (
+                f", showing the last {len(shown)}."
+                if len(shown) < total
+                else ", all of them below."
+            )
+        )
+        lines = ["## History", f"{subject} — {counted}"]
+        # Every session's clock time is printed as the browser sent it. A date is added
+        # only when a session did not happen on the same day as the newest one, so a
+        # bare `14:02` never silently means last Tuesday.
+        newest_day = shown[0].started_at.date()
+        for session in shown:
+            lines.append("")
+            lines.extend(_session_lines(session, newest_day=newest_day))
+        return ToolOutcome(signature=signature, content="\n".join(lines))
 
     async def _search_cards(
         self,
@@ -1022,6 +1291,7 @@ class DeckAgentToolbox:
             entries.append(
                 _DeckEntry(
                     card=card,
+                    scryfall_id=entry.scryfall_id,
                     quantity=entry.quantity,
                     section=entry.section,
                     group=entry.group,
@@ -1034,7 +1304,37 @@ class DeckAgentToolbox:
         tokens: list[str],
         entries: list[_DeckEntry],
     ) -> tuple[list[CardSearchResult], list[str]]:
-        """Resolve names, full ids and read_deck short ids to catalog cards."""
+        """Resolve tokens to cards, each card once, keeping what resolved to nothing.
+
+        The shape `see_cards` and `search_cards` want: a card asked for twice is
+        reported once, and the tokens that matched nothing come back to be named.
+        """
+
+        cards = await self._resolve_token_cards(tokens, entries)
+        resolved: list[CardSearchResult] = []
+        missing: list[str] = []
+        seen: set[UUID] = set()
+        for token, card in zip(tokens, cards, strict=True):
+            if card is None:
+                missing.append(token)
+                continue
+            if card.oracle_id in seen:
+                continue
+            seen.add(card.oracle_id)
+            resolved.append(card)
+        return resolved, missing
+
+    async def _resolve_token_cards(
+        self,
+        tokens: list[str],
+        entries: list[_DeckEntry],
+    ) -> list[CardSearchResult | None]:
+        """Resolve names, full ids and read_deck short ids, one result per token.
+
+        Aligned with the tokens given rather than deduplicated, because `edit_deck`
+        has to know *which* change a card belongs to — and a token that resolved to
+        nothing has to stay attached to the change that named it.
+        """
 
         if self._card_catalog is None:
             raise DeckAgentToolError("The local card catalog is unavailable.")
@@ -1058,9 +1358,7 @@ class DeckAgentToolbox:
             str(card.scryfall_id).casefold(): card.oracle_id for card in cards.values()
         }
 
-        resolved: list[CardSearchResult] = []
-        missing: list[str] = []
-        seen: set[UUID] = set()
+        resolved: list[CardSearchResult | None] = []
         for token in tokens:
             key = token.casefold()
             identity = _as_uuid(token)
@@ -1070,15 +1368,8 @@ class DeckAgentToolbox:
                 or (identity if identity in cards else None)
                 or by_scryfall.get(key)
             )
-            card = cards.get(oracle_id) if oracle_id is not None else None
-            if card is None:
-                missing.append(token)
-                continue
-            if card.oracle_id in seen:
-                continue
-            seen.add(card.oracle_id)
-            resolved.append(card)
-        return resolved, missing
+            resolved.append(cards.get(oracle_id) if oracle_id is not None else None)
+        return resolved
 
     async def _cards_by_oracle_id(self) -> dict[UUID, CardSearchResult]:
         """Index the catalog once per call.
@@ -1290,6 +1581,327 @@ def _cards(count: int) -> str:
     return "card" if count == 1 else "cards"
 
 
+def _copies(count: int) -> str:
+    return "copy" if count == 1 else "copies"
+
+
+@dataclass(frozen=True)
+class _PlannedChange:
+    """One resolved change: the count it wants, beside the count the deck held."""
+
+    card: CardSearchResult
+    scryfall_id: UUID
+    quantity: int
+    previous_quantity: int
+    group: str | None
+    previous_group: str | None
+
+    @property
+    def effective(self) -> bool:
+        """Report whether this actually changes the deck as posted.
+
+        A count the deck already holds changes nothing, and neither does a group the
+        card already sits in. Dropping those is what makes the tool idempotent: it
+        applies itself, so a model that retries the same call must not double-add.
+        """
+
+        moved = self.group is not None and self.group != self.previous_group
+        return self.quantity != self.previous_quantity or moved
+
+    @property
+    def delta(self) -> int:
+        return self.quantity - self.previous_quantity
+
+    def emitted(self) -> DeckAgentDeckEditChange:
+        """Project to the change the browser applies."""
+
+        return DeckAgentDeckEditChange(
+            scryfall_id=self.scryfall_id,
+            name=self.card.name,
+            quantity=self.quantity,
+            previous_quantity=self.previous_quantity,
+            group=self.group,
+            # Only an add needs the payload: `addCard` reads the card's colours and
+            # type line, and those are exactly what the browser cannot construct for a
+            # card it has never held.
+            card=self.card if self.delta > 0 else None,
+        )
+
+
+def _planned_changes(
+    changes: list[DeckEditChange],
+    resolved: list[CardSearchResult | None],
+    entries: list[_DeckEntry],
+) -> tuple[list[_PlannedChange], list[str]]:
+    """Pair every change with what the deck already holds, one change per card.
+
+    A card named twice in one call states two contradictory counts for it. The last
+    one wins, because applying both in order would make it win anyway, and the
+    collision is reported rather than refused: blocking it would be stricter than the
+    board, and applying both silently would leave the model's own arithmetic wrong.
+    """
+
+    held = {entry.card.oracle_id: entry for entry in entries}
+    planned: dict[UUID, _PlannedChange] = {}
+    collapsed: list[str] = []
+    for change, card in zip(changes, resolved, strict=True):
+        assert card is not None  # every token resolved before this is reached
+        if card.oracle_id in planned:
+            collapsed.append(card.name)
+        entry = held.get(card.oracle_id)
+        planned[card.oracle_id] = _PlannedChange(
+            card=card,
+            # The snapshot's printing when the deck holds one, because that is the entry
+            # the browser will look for. The catalog's own only for a card being added.
+            scryfall_id=entry.scryfall_id if entry is not None else card.scryfall_id,
+            quantity=change.quantity,
+            previous_quantity=entry.quantity if entry is not None else 0,
+            group=change.group,
+            previous_group=entry.group if entry is not None else None,
+        )
+    return list(planned.values()), collapsed
+
+
+def _edit_warnings(
+    changes: list[_PlannedChange],
+    *,
+    commander: CardSearchResult | None,
+    after_total: int,
+    collapsed: list[str],
+) -> list[str]:
+    """Name what the edit did that Commander frowns on, without refusing any of it.
+
+    Every one of these is a warning on the board too: the interface lets a card
+    outside the commander's identity be dragged in and says so, and it does not stop a
+    deck growing past a hundred cards. So this reports and still applies — an agent
+    that refused where the drag target allows would be inconsistent in a way the user
+    cannot see. Command-zone legality and whether a group exists stay in
+    `frontend/src/domain/deck.ts`, which is the one authority on both.
+    """
+
+    warnings: list[str] = []
+    if collapsed:
+        warnings.append(
+            f"{_quoted_list(list(dict.fromkeys(collapsed)))} was named more than once, "
+            "so only the last count for it was used."
+        )
+    for change in changes:
+        if change.delta <= 0 or commander is None:
+            continue
+        outside = [
+            color
+            for color in change.card.color_identity
+            if color not in commander.color_identity
+        ]
+        if outside:
+            warnings.append(
+                f"{_quoted(change.card.name)} needs {_identity_symbols(outside)}, "
+                f"which is outside {commander.name}'s "
+                f"{_identity_symbols(commander.color_identity)} identity. It is in the "
+                "deck; the deck is now illegal."
+            )
+    for change in changes:
+        if change.quantity > 1 and not _is_basic_land(change.card):
+            warnings.append(
+                f"{_quoted(change.card.name)} is now at {change.quantity} copies, and "
+                "Commander is singleton outside basic lands."
+            )
+    if after_total > _COMMANDER_DECK_SIZE:
+        over = after_total - _COMMANDER_DECK_SIZE
+        warnings.append(
+            f"The deck is at {after_total} cards, {over} over the "
+            f"{_COMMANDER_DECK_SIZE} a Commander deck holds."
+        )
+    return warnings
+
+
+def _is_basic_land(card: CardSearchResult) -> bool:
+    """Report whether extra copies of this card are legal in a singleton deck."""
+
+    return "Basic" in card.type_line and "Land" in card.type_line
+
+
+def _edit_lines(
+    *,
+    deck_name: str,
+    planned: list[_PlannedChange],
+    effective: list[_PlannedChange],
+    after_total: int,
+    warnings: list[str],
+) -> list[str]:
+    """Render one edit: what it did, what it did not do, and what it broke.
+
+    Short on purpose. The counts and the reason are still sitting in the model's own
+    tool call, so echoing them back costs tokens to say what it already said. What it
+    could not know is what the deck held before, and therefore which of its changes
+    were no-ops, what the deck now holds, and which warnings the change introduced.
+    """
+
+    lines = ["## Edit"]
+    if effective:
+        added = sum(change.delta for change in effective if change.delta > 0)
+        removed = -sum(change.delta for change in effective if change.delta < 0)
+        moved = sum(1 for change in effective if change.delta == 0)
+        parts = [
+            *([f"{added} added"] if added else []),
+            *([f"{removed} removed"] if removed else []),
+            *([f"{moved} moved"] if moved else []),
+        ]
+        lines.append(
+            f"Applied to {_quoted(deck_name)}: {', '.join(parts)}, {after_total} "
+            f"{_cards(after_total)} now."
+        )
+        lines.extend(f"  {_change_line(change)}" for change in effective)
+    else:
+        lines.append(
+            f"Nothing changed in {_quoted(deck_name)} — the deck was already exactly as "
+            f"you asked for it. It still has {after_total} {_cards(after_total)}."
+        )
+    lines.extend(
+        _noop_sentences([change for change in planned if not change.effective])
+    )
+    if warnings:
+        lines.append("")
+        lines.append("Warnings, and the edit was applied anyway:")
+        lines.extend(f"  {warning}" for warning in warnings)
+    return lines
+
+
+def _change_line(change: _PlannedChange) -> str:
+    """Render one applied change as a player would write a diff line."""
+
+    name = change.card.name
+    if change.quantity == 0:
+        return f"{_REMOVED} {name} (was {change.previous_quantity})"
+    if change.previous_quantity == 0:
+        line = f"+ {name} ({change.quantity})"
+    elif change.quantity > change.previous_quantity:
+        line = f"+ {name} ({change.previous_quantity} → {change.quantity})"
+    elif change.quantity < change.previous_quantity:
+        line = f"{_REMOVED} {name} ({change.previous_quantity} → {change.quantity})"
+    else:
+        return f"{name} → {change.group}"
+    if change.group is not None and change.group != change.previous_group:
+        line += f"  [group: {change.group}]"
+    return line
+
+
+def _noop_sentences(noops: list[_PlannedChange]) -> list[str]:
+    """Say which changes did nothing, and why, without listing a hundred of them."""
+
+    if not noops:
+        return []
+    shown = noops[:_MAX_REPORTED_NOOPS]
+    lines = [_noop_sentence(change) for change in shown]
+    remaining = len(noops) - len(shown)
+    if remaining:
+        lines.append(f"{remaining} more of the changes did nothing either.")
+    return lines
+
+
+def _noop_sentence(change: _PlannedChange) -> str:
+    if change.previous_quantity == 0:
+        return (
+            f"{_quoted(change.card.name)} is not in the deck, so there was nothing to "
+            "remove."
+        )
+    placement = f' in "{change.previous_group}"' if change.previous_group else ""
+    return (
+        f"{_quoted(change.card.name)} was already in the deck at "
+        f"{change.previous_quantity} {_copies(change.previous_quantity)}{placement}, so "
+        "that change did nothing."
+    )
+
+
+def _recorded_edit_count(history: DeckAgentDeckHistory | None) -> int:
+    """Count the edits the posted history holds, absent history counting as none."""
+
+    if history is None:
+        return 0
+    return sum(len(session.edits) for session in history.sessions)
+
+
+def _session_lines(session: DeckAgentDeckSession, *, newest_day: date) -> list[str]:
+    """Render one recorded session: who, when, how much, and what moved.
+
+    `You` and `Me` rather than `user` and `agent`, because the reader of this text *is*
+    the agent. Printing its own edits under a third-person label is how it comes to
+    describe its own work as somebody else's.
+    """
+
+    changes = [change for edit in session.edits for change in edit.cards]
+    reasons = list(dict.fromkeys(edit.reason for edit in session.edits if edit.reason))
+    header = (
+        f"{_ACTOR_LABELS[session.actor]}, "
+        f"{_session_time(session, newest_day=newest_day)} "
+        f"({len(changes)} {'change' if len(changes) == 1 else 'changes'})"
+    )
+    # One reason for the whole session is the ordinary case, and it belongs on the line
+    # naming the session. Several means the edits disagree about intent, so each keeps
+    # its own rather than one of them speaking for the rest.
+    if len(reasons) == 1:
+        header += f" — {_quoted(reasons[0])}"
+    lines = [header]
+    for edit in session.edits:
+        rendered = ", ".join(_history_change_text(change) for change in edit.cards)
+        if not rendered:
+            rendered = "no card changes recorded"
+        if edit.reason is not None and len(reasons) > 1:
+            rendered += f" — {_quoted(edit.reason)}"
+        lines.append(f"  {rendered}")
+    return lines
+
+
+def _session_time(session: DeckAgentDeckSession, *, newest_day: date) -> str:
+    """Print the clock face the user saw, dating it only when it was another day.
+
+    The browser sends each time in its own offset, so this prints it as sent rather
+    than converting: the point is agreement with what was on screen. A day is named
+    whenever the session did not happen on the newest one's, because a bare `14:02`
+    that silently means last Tuesday is worse than no time at all.
+    """
+
+    start = session.started_at
+    stamp = (
+        start.strftime("%H:%M")
+        if start.date() == newest_day
+        else start.strftime("%Y-%m-%d %H:%M")
+    )
+    if _is_later(session.ended_at, start):
+        stamp += f"{_TIME_RANGE}{session.ended_at.strftime('%H:%M')}"
+    return stamp
+
+
+def _is_later(end: datetime, start: datetime) -> bool:
+    """Compare two posted timestamps, treating an incomparable pair as one moment.
+
+    A client that sends one of them with an offset and the other without would
+    otherwise raise, and a session's clock is not worth failing an answered turn over.
+    """
+
+    try:
+        return end > start
+    except TypeError:
+        return False
+
+
+def _history_change_text(change: DeckAgentDeckHistoryChange) -> str:
+    """Render one recorded card change in the shortest form that stays unambiguous."""
+
+    before, after = change.before, change.after
+    if after is None or after.quantity == 0:
+        return f"{_REMOVED} {change.name}"
+    if before is None or before.quantity == 0:
+        return f"+ {change.name}"
+    if after.quantity != before.quantity:
+        return f"{change.name} {before.quantity} → {after.quantity}"
+    if after.section != before.section:
+        return f"{change.name} → {_SECTION_NAMES[after.section]}"
+    if after.group != before.group:
+        return f"{change.name} → {after.group or 'no group'}"
+    return change.name
+
+
 def _identity_lines(card: CardSearchResult) -> list[str]:
     """Name the card and its types as separate labelled fields.
 
@@ -1397,10 +2009,7 @@ def _commander_lines(
         return []
     lines: list[str] = []
     if restricted:
-        identity = (
-            "".join(f"{{{color}}}" for color in commander.card.color_identity)
-            or "colorless"
-        )
+        identity = _identity_symbols(commander.card.color_identity)
         lines.append(f"Cards outside {commander.card.name}'s {identity} identity were removed.")
     if commander.note:
         lines.append(commander.note)
@@ -1471,6 +2080,12 @@ def _evidence_lines(
     return lines
 
 
+def _identity_symbols(colors: list[str] | tuple[str, ...]) -> str:
+    """Write a colour identity the way the interface draws it, or name its absence."""
+
+    return "".join(f"{{{color}}}" for color in colors) or "colorless"
+
+
 def _quoted(value: str) -> str:
     return f'"{value}"'
 
@@ -1519,7 +2134,33 @@ def _signature(name: object, arguments: dict[str, Any]) -> str:
         return _bounded(
             f"{SEARCH_CARDS}({_elided(str(intent)) if intent else 'filters only'})"
         )
+    if name == EDIT_DECK:
+        return _edit_deck_signature(_raw_edit_tokens(arguments.get("changes")))
+    if name == READ_HISTORY:
+        limit = arguments.get("limit")
+        return _bounded(
+            f"{READ_HISTORY}({limit} sessions)"
+            if isinstance(limit, int)
+            else f"{READ_HISTORY}(?)"
+        )
     return _bounded(f"{name}(…)")
+
+
+def _raw_edit_tokens(changes: object) -> list[str]:
+    """Read the card tokens out of arguments that may not have validated.
+
+    The tool line is shown for a failed call too — a rejected `quantity` is exactly
+    the call worth being able to read — so this takes whatever arrived and names what
+    it can.
+    """
+
+    if not isinstance(changes, list):
+        return []
+    return [
+        str(change["card"])
+        for change in changes
+        if isinstance(change, dict) and change.get("card") is not None
+    ]
 
 
 def _bounded(signature: str) -> str:
@@ -1577,6 +2218,28 @@ def _see_cards_signature(
     if dropped:
         signature += f" — {dropped} not read"
     return _bounded(signature)
+
+
+def _edit_deck_signature(tokens: list[str]) -> str:
+    """Render the edit the way the chat shows it: how many cards, and which of them.
+
+    Clamped like every other tool line, and here it is not a formality: a hundred
+    changes naming two-hundred-character cards is a valid call, and a signature that
+    long would fail `ShortLabel` validation and take down a turn that had already
+    changed the deck.
+    """
+
+    shown = ", ".join(tokens[:_SIGNATURE_NAMED_CARDS])
+    if len(tokens) > _SIGNATURE_NAMED_CARDS:
+        shown += f", +{len(tokens) - _SIGNATURE_NAMED_CARDS} more"
+    label = f"{len(tokens)} {'change' if len(tokens) == 1 else 'changes'}"
+    return _bounded(f"{EDIT_DECK}({label} · {shown})" if shown else f"{EDIT_DECK}({label})")
+
+
+def _read_history_signature(limit: int) -> str:
+    """Render the history read the way the chat shows it: how far back it looked."""
+
+    return _bounded(f"{READ_HISTORY}(last {limit} sessions)")
 
 
 def _first_error(exc: ValidationError) -> str:

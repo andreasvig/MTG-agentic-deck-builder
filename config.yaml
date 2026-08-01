@@ -310,9 +310,15 @@ agent:
     # the schema the model reads and the runtime bound cannot disagree.
     search_cards_default_max_results: 12
     search_cards_hard_max_results: 60
+    # Sessions per read_history call, and the ceiling it may raise that to. Ten is a
+    # whole evening of editing. The ceiling also bounds how far into a longer posted
+    # history the tool will read, and it must not exceed the 50 the request contract
+    # accepts, so the schema the model reads and the runtime bound cannot disagree.
+    read_history_default_sessions: 10
+    history_max_sessions: 50
 
-    # All three descriptions are prompt text: they are the only thing telling the
-    # model when a tool is worth calling, so they live here beside the system prompt.
+    # Every description is prompt text: they are the only thing telling the model when
+    # a tool is worth calling, so they live here beside the system prompt.
     read_deck_description: |
       List the deck that is open right now. Every card appears under its primary
       type — Commander, Creature, Artifact, Enchantment, Instant, Sorcery,
@@ -352,6 +358,80 @@ agent:
           on a commander, not on a list of cards, since each one is a separate lookup.
         - legality — whether the card is legal in Commander
       Defaults to rules when you ask for nothing in particular.
+
+    edit_deck_description: |
+      Change what the open deck holds. This is the only tool that changes anything,
+      and the change is made the moment the call returns: there is nothing to confirm
+      and nothing waiting on the user.
+
+      ## Changes
+
+      `changes` is a list with one entry per card, and every entry states the number of
+      copies you want the deck to hold **afterwards** rather than an operation to
+      perform.
+
+      - `card` — the card's exact printed name, or a short id from read_deck.
+      - `quantity` — the copy count you want when the edit is done. `0` removes the
+        card entirely. There is no default and no such thing as omitting it: a change
+        without a quantity is a rejected call, not a removal.
+      - `group` — the custom group the card should sit in afterwards. Omit it to leave
+        placement alone, which is what an ordinary add or cut wants; naming it is how a
+        card is moved. The group has to be one that already exists.
+
+      `reason` covers the whole call and is recorded in the deck's history, where it is
+      the only thing that makes an old edit make sense. Write the intent rather than
+      the list of cards: "swapping the weakest ramp for two rocks" earns its place,
+      "added Mind Stone, removed Wayfarer's Bauble" does not.
+
+      ## Examples
+
+      Add a card the deck does not have:
+      `{"changes": [{"card": "Sol Ring", "quantity": 1}], "reason": "the best rock in the format"}`
+
+      Cut a card:
+      `{"changes": [{"card": "Wayfarer's Bauble", "quantity": 0}], "reason": "too slow for a deck this fast"}`
+
+      Swap one card for another — one call, two changes, one reason:
+      `{"changes": [{"card": "Mind Stone", "quantity": 1}, {"card": "Wayfarer's Bauble", "quantity": 0}], "reason": "a faster rock in the same slot"}`
+
+      Move a card into an existing group, leaving its count alone:
+      `{"changes": [{"card": "Arcane Signet", "quantity": 1, "group": "Ramp"}], "reason": "filing the rocks together"}`
+
+      Change how many copies of a basic land the deck runs, which is the one card a
+      count above 1 is legal for:
+      `{"changes": [{"card": "Forest", "quantity": 12}], "reason": "one more land for this curve"}`
+
+      ## Reading the result
+
+      It reports what you could not already know: the printed name each card resolved
+      to, the count the deck held before, which of your changes therefore did nothing,
+      how many cards the deck holds now, and any warning the edit introduced. Your own
+      quantities and your reason are not repeated back, because they are still in this
+      tool call.
+
+      A change the deck already satisfied is dropped and says so, so calling the same
+      edit twice cannot add a card twice.
+
+      Only two things stop an edit: a card that does not resolve, and a quantity
+      outside 0 to 99. Either fails the whole call and changes nothing at all, so a
+      swap can never half happen. Everything else — a card outside the commander's
+      colour identity, a second copy of a nonbasic card, a deck over 100 cards — is
+      applied and reported as a warning, exactly as the board itself treats it.
+    read_history_description: |
+      Read what has already been done to this deck: who changed what, when, and why.
+      Reach for it when the user refers to an earlier change — "what did we take out?",
+      "why is that in there?", "put that back" — and when you want to know whether
+      something has been tried already.
+
+      Edits are grouped into sessions, one actor per session, newest first. `You` is
+      the user and `Me` is you: an edit you made is recorded like any other. Only your
+      own edits carry a reason, because a card dragged across the board states no
+      intent.
+
+      `limit` is how many of the most recent sessions to read, from 1 to 50. It
+      defaults to 10, which is more editing than an evening usually holds.
+
+      This is the record, not the deck. What the deck holds right now is read_deck.
 
     # The field reference for search_cards. Deliberately the same shape as
     # `search.agentic.system_prompt`'s `# Tools` section, because it describes the
@@ -526,13 +606,15 @@ agent:
 
     # What you can see
 
-    This conversation, and three read-only tools:
+    This conversation, and five tools:
 
     - `read_deck()` — the deck that is open, grouped by card type. Names and short ids, no card text.
     - `see_cards(cards, details)` — the details of specific cards: rules text, prices, Tagger gameplay tags, related cards grouped by how they relate (Tagger upgrades, similar cards, variants and the rest, plus EDHREC's similar list), EDHREC inclusion rate for this commander, Commander legality.
     - `search_cards(…)` — the whole local catalog, filtered and ordered by you. This is how you find cards that are neither in the deck nor named in the conversation.
+    - `edit_deck(changes, reason)` — change what the deck holds. The only tool that changes anything.
+    - `read_history(limit)` — what has already been done to this deck: who changed what, when, and why.
 
-    All three only read. You cannot add, remove or move a card: you can find one and recommend it, and the user puts it in the deck.
+    The first three only read. `edit_deck` is the one that acts, and it acts immediately.
 
     # Using the tools
 
@@ -546,6 +628,12 @@ agent:
     - Card text you quote must come from `see_cards` or `search_cards`. Everything you recall unaided can be wrong, so either look it up or say you are going from memory.
     - When a tool reports that something is unavailable, say so plainly and answer the part you can.
     - You have few tool rounds per turn. A wasted call is a call you do not get back, so read a tool's whole result before deciding you need another.
+
+    # Editing the deck
+
+    - State the count you want, not the operation.
+    - Call `read_deck()` in the same turn before you edit. What you read in an earlier turn is a snapshot of an earlier deck: the user has had the board in front of them since, so a count you remember from two turns ago is the count it used to hold. And never add a card you have not seen in a tool result this turn, exactly as you would never recommend one.
+    - The edit has already happened when the result comes back. Do not ask whether to make a change you have just made, and do not say you have made one before the call. When the result names a warning — a card outside the colour identity, a second copy of a nonbasic card, a deck over 100 — say so plainly in your answer, because the user cannot see the tool result.
 
     # Searching for cards
 

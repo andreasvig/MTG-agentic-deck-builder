@@ -20,7 +20,18 @@ from mtg_deck_builder.domain import (
     DeckAgentDeckSnapshot,
     DeckAgentMessage,
 )
-from mtg_deck_builder.domain.agent_chat import MAX_TOOL_PAYLOAD_CHARS
+from mtg_deck_builder.domain.agent_chat import (
+    MAX_HISTORY_EDITS,
+    MAX_HISTORY_SESSIONS,
+    MAX_TOOL_PAYLOAD_CHARS,
+    DeckAgentDeckEdit,
+    DeckAgentDeckEditChange,
+    DeckAgentDeckHistory,
+    DeckAgentDeckHistoryChange,
+    DeckAgentDeckHistoryEdit,
+    DeckAgentDeckPlacement,
+    DeckAgentDeckSession,
+)
 from mtg_deck_builder.main import create_app
 from mtg_deck_builder.providers.openrouter import OpenRouterClient, OpenRouterError
 
@@ -316,6 +327,45 @@ def test_settings_load_the_repository_agent_yaml() -> None:
         assert detail in settings.agent.tools.see_cards_description
 
 
+def test_the_prompt_teaches_the_three_rules_that_make_editing_safe() -> None:
+    settings = Settings()
+    prompt = settings.agent.system_prompt
+
+    assert "# Editing the deck" in prompt
+    section = prompt.split("# Editing the deck", 1)[1].split("\n# ", 1)[0]
+    # Declarative, not imperative: the count you want, never the operation. Stated
+    # bare on purpose — a reason the model can satisfy while still breaking the rule
+    # reads as permission, and that is how one search_cards rule doubled its calls.
+    assert "State the count you want, not the operation." in section
+    # Read in the same turn. The justification has to fail exactly when the rule is
+    # broken, which is why it is the per-turn snapshot and not "do not guess".
+    assert "in the same turn before you edit" in section
+    assert "snapshot of an earlier deck" in section
+    # An auto-applying tool has two ways to lie about when it acted.
+    assert "already happened when the result comes back" in section
+    assert "the user cannot see the tool result" in section
+
+
+def test_every_new_field_of_edit_deck_has_a_worked_example() -> None:
+    description = Settings().agent.tools.edit_deck_description
+    # Unwrapped, because the prose is hard-wrapped in the YAML and a sentence a test
+    # cares about straddles two lines of it.
+    prose = " ".join(description.split())
+
+    # A field with no example reads as dead: `edhrec_theme` was built correctly and
+    # went unused until the prompt showed one.
+    assert '"changes": [{"card": "Sol Ring", "quantity": 1}]' in description
+    # The cut, which is the whole reason `quantity` is required and 0 is meaningful.
+    assert '{"card": "Wayfarer\'s Bauble", "quantity": 0}' in description
+    # `group`, which is otherwise invisible: it is the only way to move a card.
+    assert '"group": "Ramp"' in description
+    # And the swap, because one intent is one call rather than two.
+    assert description.count('"reason"') >= 5
+    assert "`0` removes the card entirely" in prose
+    for setting in ("limit", "1 to 50", "defaults to 10"):
+        assert setting in Settings().agent.tools.read_history_description
+
+
 def test_agent_settings_reject_a_blank_prompt_and_an_unknown_effort() -> None:
     with pytest.raises(ValidationError):
         DeckAgentSettings(system_prompt="   ")
@@ -328,12 +378,22 @@ def test_agent_settings_reject_a_blank_prompt_and_an_unknown_effort() -> None:
 class StubToolbox:
     """Answer every tool call with fixed text, recording what was asked."""
 
-    def __init__(self, *, enabled: bool = True, content: str | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        enabled: bool = True,
+        content: str | None = None,
+        edit: DeckAgentDeckEdit | None = None,
+        ok: bool = True,
+    ) -> None:
         self.enabled = enabled
         self.content = content
         self.calls: list[tuple[object, object]] = []
         self.decks: list[Any] = []
+        self.histories: list[Any] = []
         self.resolved_names: list[list[str]] = []
+        self._edit = edit
+        self._ok = ok
 
     def definitions(self) -> list[dict[str, Any]]:
         return [
@@ -341,12 +401,22 @@ class StubToolbox:
             {"type": "function", "function": {"name": "see_cards", "parameters": {}}},
         ]
 
-    async def run(self, name: object, arguments: object, *, deck: Any) -> Any:
+    async def run(
+        self,
+        name: object,
+        arguments: object,
+        *,
+        deck: Any,
+        history: Any = None,
+    ) -> Any:
         self.calls.append((name, arguments))
         self.decks.append(deck)
+        self.histories.append(history)
         return ToolOutcome(
             signature=f"{name}()",
             content=self.content if self.content is not None else f"{name} said something.",
+            ok=self._ok,
+            edit=self._edit,
         )
 
     async def oracle_ids_for_names(self, names: list[str]) -> dict[str, UUID]:
@@ -509,7 +579,14 @@ def test_tools_are_not_advertised_when_the_toolbox_is_disabled() -> None:
 
 def test_a_failed_tool_is_reported_without_failing_the_turn() -> None:
     class FailingToolbox(StubToolbox):
-        async def run(self, name: object, arguments: object, *, deck: Any) -> Any:
+        async def run(
+            self,
+            name: object,
+            arguments: object,
+            *,
+            deck: Any,
+            history: Any = None,
+        ) -> Any:
             self.calls.append((name, arguments))
             return ToolOutcome(
                 signature="read_deck()",
@@ -603,6 +680,166 @@ def test_deck_snapshot_contract_bounds_what_a_client_may_post() -> None:
             DeckAgentDeckSnapshot(name="Deck", cards=[invalid])
     with pytest.raises(ValidationError):
         DeckAgentDeckSnapshot(name="   ", cards=[])
+
+
+def _session(edits: int = 1) -> DeckAgentDeckSession:
+    return DeckAgentDeckSession(
+        actor="user",
+        started_at="2026-08-01T14:02:00+02:00",
+        ended_at="2026-08-01T14:06:00+02:00",
+        edits=[
+            DeckAgentDeckHistoryEdit(
+                at="2026-08-01T14:02:00+02:00",
+                cards=[
+                    DeckAgentDeckHistoryChange(
+                        name="Sol Ring",
+                        after=DeckAgentDeckPlacement(quantity=1, section="mainboard"),
+                    )
+                ],
+            )
+            for _ in range(edits)
+        ],
+    )
+
+
+def test_history_contract_bounds_what_a_client_may_post() -> None:
+    # Optional, like the deck: a client that records no history still chats, and the
+    # tool reports which of the two it is rather than pretending the deck has no past.
+    assert DeckAgentChatRequest(
+        messages=[DeckAgentMessage(role="user", content="Hi")]
+    ).history is None
+    inside = DeckAgentChatRequest(
+        messages=[DeckAgentMessage(role="user", content="Hi")],
+        history=DeckAgentDeckHistory(sessions=[_session()] * MAX_HISTORY_SESSIONS),
+    )
+    assert inside.history is not None
+    assert len(inside.history.sessions) == MAX_HISTORY_SESSIONS
+
+    with pytest.raises(ValidationError):
+        DeckAgentDeckHistory(sessions=[_session()] * (MAX_HISTORY_SESSIONS + 1))
+    # Both bounds are needed: fifty sessions of ten edits is a body worth carrying and
+    # fifty sessions of five hundred edits is not, so the total is bounded too.
+    with pytest.raises(ValidationError):
+        DeckAgentDeckHistory(
+            sessions=[_session(edits=MAX_HISTORY_EDITS // 4) for _ in range(5)]
+        )
+    # A change that carries neither a before nor an after records nothing at all.
+    with pytest.raises(ValidationError):
+        DeckAgentDeckHistoryChange(name="Sol Ring")
+
+
+def test_the_open_deck_and_its_history_both_reach_the_tools() -> None:
+    client = StubModelClient(
+        [_tool_call_response("read_deck"), _answer_response("Two rocks went in.")]
+    )
+    toolbox = StubToolbox()
+    deck = DeckAgentDeckSnapshot(name="Gruul Stompy", cards=[])
+    posted = DeckAgentDeckHistory(sessions=[_session()])
+    service = DeckAgentService(
+        model_client=client, settings=_settings(), toolbox=toolbox
+    )
+
+    asyncio.run(
+        service.chat(
+            DeckAgentChatRequest(
+                messages=[DeckAgentMessage(role="user", content="What changed?")],
+                deck=deck,
+                history=posted,
+            )
+        )
+    )
+
+    # The backend holds neither, so both are posted with the turn and threaded through
+    # to whichever tool asks for them.
+    assert toolbox.decks == [deck]
+    assert toolbox.histories == [posted]
+
+
+def _an_edit() -> DeckAgentDeckEdit:
+    return DeckAgentDeckEdit(
+        deck_name="Gruul Stompy",
+        reason="one more rock",
+        changes=[
+            DeckAgentDeckEditChange(
+                scryfall_id=UUID("aaaaaaaa-2222-4222-8222-222222222222"),
+                name="Sol Ring",
+                quantity=0,
+                previous_quantity=1,
+            )
+        ],
+    )
+
+
+def test_a_deck_edit_travels_as_its_own_event_beside_the_tool_line() -> None:
+    client = StubStreamingClient(
+        [[_tool_chunk("edit_deck", "{}")], _text_chunks("Done — Sol Ring is out.")]
+    )
+    service = DeckAgentService(
+        model_client=client,
+        settings=_settings(),
+        toolbox=StubToolbox(edit=_an_edit()),
+    )
+
+    events = _collect(_request("Cut the weakest rock."), service)
+
+    # Beside the tool line rather than with the answer: nothing has changed in the
+    # browser until it acts on this, and the result the model is about to read already
+    # says the edit happened.
+    assert [type(event).__name__ for event in events] == [
+        "DeckAgentToolEvent",
+        "DeckAgentDeckEditEvent",
+        "DeckAgentTextEvent",
+        "DeckAgentDoneEvent",
+    ]
+    assert events[1].type == "deck_edit"
+    assert events[1].edit.changes[0].name == "Sol Ring"
+
+
+def test_no_deck_edit_event_for_a_turn_that_changed_nothing_or_failed() -> None:
+    def kinds(toolbox: StubToolbox) -> list[str]:
+        client = StubStreamingClient(
+            [[_tool_chunk("edit_deck", "{}")], _text_chunks("Nothing to do.")]
+        )
+        service = DeckAgentService(
+            model_client=client, settings=_settings(), toolbox=toolbox
+        )
+        return [
+            type(event).__name__
+            for event in _collect(_request("Cut the weakest rock."), service)
+        ]
+
+    # A tool that carried no edit changed nothing, and a failed call changed nothing
+    # either — applying an edit for one would leave history recording an intent that
+    # did not happen.
+    assert "DeckAgentDeckEditEvent" not in kinds(StubToolbox())
+    assert "DeckAgentDeckEditEvent" not in kinds(StubToolbox(edit=_an_edit(), ok=False))
+
+
+def test_the_stream_route_frames_a_deck_edit_as_its_own_event() -> None:
+    client = StubStreamingClient(
+        [[_tool_chunk("edit_deck", "{}")], _text_chunks("Sol Ring is out.")]
+    )
+    with TestClient(create_app()) as http:
+        http.app.state.deck_agent = DeckAgentService(
+            model_client=client,
+            settings=_settings(),
+            toolbox=StubToolbox(edit=_an_edit()),
+        )
+        with http.stream(
+            "POST",
+            "/api/v1/agent/chat/stream",
+            json={"messages": [{"role": "user", "content": "Cut a rock."}]},
+        ) as response:
+            assert response.status_code == 200
+            events = _read_sse(response.iter_lines())
+
+    assert [event["type"] for event in events] == ["tool", "deck_edit", "text", "done"]
+    edit = events[1]["edit"]
+    assert edit["reason"] == "one more rock"
+    assert edit["changes"][0]["previous_quantity"] == 1
+    # Serialized without `exclude_none`, so an absent payload stays visibly null rather
+    # than becoming a field the browser has to guess about.
+    assert edit["changes"][0]["card"] is None
 
 
 def test_a_debug_turn_carries_each_tool_call_arguments_and_result() -> None:

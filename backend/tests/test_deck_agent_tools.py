@@ -1,16 +1,20 @@
 import asyncio
 import re
 from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import UUID
 
 import pytest
+from pydantic import ValidationError
 
 from mtg_deck_builder.agentic_card_search import LocalCardSearchTool
 from mtg_deck_builder.card_catalog import CardSearchUnavailable
 from mtg_deck_builder.config import DeckAgentToolSettings
 from mtg_deck_builder.deck_agent_tools import (
+    EDIT_DECK,
     READ_DECK,
+    READ_HISTORY,
     SEARCH_CARDS,
     SEE_CARDS,
     DeckAgentToolbox,
@@ -24,9 +28,18 @@ from mtg_deck_builder.domain import (
     CardTag,
     DeckAgentDeckCard,
     DeckAgentDeckSnapshot,
+    DeckAgentToolCall,
     EdhrecDeckTheme,
     LocalCardSearchRequest,
     RelatedOracleCard,
+)
+from mtg_deck_builder.domain.agent_chat import (
+    DeckAgentDeckHistory,
+    DeckAgentDeckHistoryChange,
+    DeckAgentDeckHistoryEdit,
+    DeckAgentDeckPlacement,
+    DeckAgentDeckSession,
+    EditDeckArguments,
 )
 from mtg_deck_builder.edhrec_catalog import (
     EdhrecAssociation,
@@ -816,11 +829,11 @@ def test_tools_report_themselves_disabled_without_a_catalog_or_by_config() -> No
     )
 
 
-def test_definitions_advertise_both_tools_without_claiming_strict() -> None:
+def test_definitions_advertise_every_tool_without_claiming_strict() -> None:
     definitions = make_toolbox().definitions()
 
     names = [definition["function"]["name"] for definition in definitions]
-    assert names == [READ_DECK, SEE_CARDS]
+    assert names == [READ_DECK, SEE_CARDS, EDIT_DECK, READ_HISTORY]
     for definition in definitions:
         # Strict mode requires every property in `required`; `details` is optional,
         # and claiming strict anyway once cost an outright provider rejection.
@@ -828,6 +841,14 @@ def test_definitions_advertise_both_tools_without_claiming_strict() -> None:
         assert definition["function"]["parameters"]["type"] == "object"
     see_cards = definitions[1]["function"]["parameters"]
     assert see_cards["properties"]["cards"]["type"] == "array"
+    edit_deck = definitions[2]["function"]["parameters"]
+    # `quantity` has to be advertised as required, because a missing one coerced to
+    # zero deletes a card. Absent must be impossible rather than merely discouraged.
+    changes = edit_deck["properties"]["changes"]
+    assert changes["type"] == "array"
+    assert edit_deck["required"] == ["changes", "reason"]
+    change = edit_deck["$defs"]["DeckEditChange"]
+    assert sorted(change["required"]) == ["card", "quantity"]
 
 
 def test_default_details_must_not_repeat() -> None:
@@ -1573,14 +1594,21 @@ def test_search_cards_is_advertised_only_when_it_can_run() -> None:
     without = make_toolbox().definitions()
     with_engine = make_search_toolbox().definitions()
 
-    assert [item["function"]["name"] for item in without] == [READ_DECK, SEE_CARDS]
+    assert [item["function"]["name"] for item in without] == [
+        READ_DECK,
+        SEE_CARDS,
+        EDIT_DECK,
+        READ_HISTORY,
+    ]
     assert [item["function"]["name"] for item in with_engine] == [
         READ_DECK,
         SEE_CARDS,
+        EDIT_DECK,
+        READ_HISTORY,
         SEARCH_CARDS,
     ]
-    schema = with_engine[2]["function"]["parameters"]
-    assert "strict" not in with_engine[2]["function"]
+    schema = with_engine[-1]["function"]["parameters"]
+    assert "strict" not in with_engine[-1]["function"]
     assert "commander" in schema["properties"]
     assert "semantic_sort" in schema["properties"]
 
@@ -1632,3 +1660,600 @@ def test_search_result_bounds_must_agree() -> None:
             search_cards_default_max_results=30,
             search_cards_hard_max_results=12,
         )
+
+
+# --------------------------------------------------------------------------------
+# edit_deck and read_history
+#
+# Their own card set, for one reason the other sets cannot give: a commander with a
+# real colour identity and a card outside it, because the whole point of D6 is that an
+# out-of-identity add *succeeds*. A basic land is here too — it is the one card extra
+# copies of which are legal, so it is what tells the singleton warning apart from a
+# warning about every quantity above one.
+# --------------------------------------------------------------------------------
+
+EDIT_GHALTA = UUID("f0000000-1111-4111-8111-111111111111")
+EDIT_SOL_RING = UUID("f0000000-2222-4222-8222-222222222222")
+EDIT_SIGNET = UUID("f0000000-3333-4333-8333-333333333333")
+EDIT_BAUBLE = UUID("f0000000-4444-4444-8444-444444444444")
+EDIT_GROWTH = UUID("f0000000-5555-4555-8555-555555555555")
+EDIT_BOLT = UUID("f0000000-6666-4666-8666-666666666666")
+EDIT_FOREST = UUID("f0000000-7777-4777-8777-777777777777")
+
+for _index, _oracle_id in enumerate(
+    (
+        EDIT_GHALTA,
+        EDIT_SOL_RING,
+        EDIT_SIGNET,
+        EDIT_BAUBLE,
+        EDIT_GROWTH,
+        EDIT_BOLT,
+        EDIT_FOREST,
+    )
+):
+    PRINTING[_oracle_id] = UUID(f"ffffffff-{_index}000-4000-8000-000000000000")
+
+EDIT_CARDS = {
+    EDIT_GHALTA: make_card(
+        EDIT_GHALTA,
+        "Ghalta, Primal Hunger",
+        "Legendary Creature — Elder Dinosaur",
+        mana_value=12,
+        color_identity=["G"],
+    ),
+    EDIT_SOL_RING: make_card(EDIT_SOL_RING, "Sol Ring", "Artifact"),
+    EDIT_SIGNET: make_card(EDIT_SIGNET, "Arcane Signet", "Artifact"),
+    EDIT_BAUBLE: make_card(EDIT_BAUBLE, "Wayfarer's Bauble", "Artifact"),
+    EDIT_GROWTH: make_card(
+        EDIT_GROWTH, "Rampant Growth", "Sorcery", color_identity=["G"]
+    ),
+    # Outside a mono-green commander's identity, which the board warns about and does
+    # not block. The agent must behave the same way.
+    EDIT_BOLT: make_card(
+        EDIT_BOLT, "Lightning Bolt", "Instant", color_identity=["R"]
+    ),
+    EDIT_FOREST: make_card(
+        EDIT_FOREST, "Forest", "Basic Land — Forest", color_identity=["G"]
+    ),
+}
+
+
+def make_edit_toolbox(**settings: Any) -> DeckAgentToolbox:
+    return make_toolbox(card_catalog=StubCardCatalog(cards=EDIT_CARDS), **settings)
+
+
+def make_edit_deck(*, commander: bool = True, forests: int = 3) -> DeckAgentDeckSnapshot:
+    """A small Gruul Stompy: a commander, three rocks-and-ramp, and some Forests."""
+
+    cards = [
+        DeckAgentDeckCard(
+            scryfall_id=PRINTING[EDIT_SIGNET],
+            quantity=1,
+            section="mainboard",
+            group="Ramp",
+        ),
+        DeckAgentDeckCard(
+            scryfall_id=PRINTING[EDIT_BAUBLE], quantity=1, section="mainboard"
+        ),
+        DeckAgentDeckCard(
+            scryfall_id=PRINTING[EDIT_GROWTH], quantity=1, section="mainboard"
+        ),
+        DeckAgentDeckCard(
+            scryfall_id=PRINTING[EDIT_FOREST], quantity=forests, section="mainboard"
+        ),
+    ]
+    if commander:
+        cards.insert(
+            0,
+            DeckAgentDeckCard(
+                scryfall_id=PRINTING[EDIT_GHALTA],
+                quantity=1,
+                section="command_zone",
+            ),
+        )
+    return DeckAgentDeckSnapshot(name="Gruul Stompy", cards=cards)
+
+
+# Distinguishes "this test did not name a deck" from "this test named None on
+# purpose", which is the case D5 is about.
+_UNSET: Any = object()
+
+# The exact glyphs the renderer writes: a minus sign that pairs with `+` down the left
+# of a diff, and an en dash between two clock times. Spelled as escapes because ruff
+# flags either literal as an ambiguous character wherever it appears.
+REMOVED = "\u2212"
+TIME_RANGE = "\u2013"
+
+
+def edit(
+    arguments: Any,
+    *,
+    deck: Any = _UNSET,
+    toolbox: DeckAgentToolbox | None = None,
+) -> Any:
+    return run(
+        toolbox if toolbox is not None else make_edit_toolbox(),
+        EDIT_DECK,
+        arguments,
+        make_edit_deck() if deck is _UNSET else deck,
+    )
+
+
+def test_edit_deck_reports_an_add_and_a_removal_against_the_deck_as_posted() -> None:
+    outcome = edit(
+        {
+            "changes": [
+                {"card": "Sol Ring", "quantity": 1},
+                {"card": "Wayfarer's Bauble", "quantity": 0},
+            ],
+            "reason": "swapping the weakest rock for the best one",
+        }
+    )
+
+    assert outcome.ok is True
+    assert outcome.content.splitlines()[0] == "## Edit"
+    # The deck held seven cards; one in and one out leaves seven.
+    assert 'Applied to "Gruul Stompy": 1 added, 1 removed, 7 cards now.' in outcome.content
+    assert "  + Sol Ring (1)" in outcome.content
+    # A removal states the count that was there, which is the thing the model could
+    # not have known and the thing an undo needs.
+    assert f"  {REMOVED} Wayfarer's Bauble (was 1)" in outcome.content
+    assert outcome.edit is not None
+    assert [
+        (change.name, change.quantity, change.previous_quantity)
+        for change in outcome.edit.changes
+    ] == [("Sol Ring", 1, 0), ("Wayfarer's Bauble", 0, 1)]
+
+
+def test_a_change_the_deck_already_satisfies_did_nothing_and_is_not_emitted() -> None:
+    first = edit(
+        {
+            "changes": [
+                {"card": "Sol Ring", "quantity": 1},
+                {"card": "Arcane Signet", "quantity": 1},
+            ],
+            "reason": "one more rock",
+        }
+    )
+
+    assert (
+        '"Arcane Signet" was already in the deck at 1 copy in "Ramp", so that change '
+        "did nothing." in first.content
+    )
+    assert first.content.count("+ ") == 1
+    # The emitted edit carries no change for it, which is what stops a retried call
+    # from double-adding a card the tool applies by itself.
+    assert first.edit is not None
+    assert [change.name for change in first.edit.changes] == ["Sol Ring"]
+
+    second = edit(
+        {"changes": [{"card": "Arcane Signet", "quantity": 1}], "reason": "one more rock"}
+    )
+
+    # Nothing at all to apply, so nothing is emitted: an edit carrying no change would
+    # land in the history as an entry that changed nothing.
+    assert second.ok is True
+    assert second.edit is None
+    assert "Nothing changed in \"Gruul Stompy\"" in second.content
+
+
+def test_an_unresolvable_card_changes_nothing_and_emits_no_edit() -> None:
+    outcome = edit(
+        {
+            "changes": [
+                {"card": "Sol Ring", "quantity": 1},
+                {"card": "Blightsteel Colossus", "quantity": 1},
+            ],
+            "reason": "two more rocks",
+        }
+    )
+
+    # The whole call fails rather than the one change: a half-applied edit records an
+    # intent that did not happen.
+    assert outcome.ok is False
+    assert 'No card called "Blightsteel Colossus"' in outcome.content
+    assert "not changed at all" in outcome.content
+    assert outcome.edit is None
+
+
+def test_a_quantity_outside_the_bounds_or_absent_fails_validation() -> None:
+    over = edit(
+        {"changes": [{"card": "Sol Ring", "quantity": 100}], "reason": "a hundred rings"}
+    )
+    absent = edit({"changes": [{"card": "Sol Ring"}], "reason": "some rings"})
+
+    for outcome in (over, absent):
+        assert outcome.ok is False
+        assert outcome.detail == "invalid arguments"
+        assert outcome.edit is None
+    assert "quantity" in over.content
+    assert "quantity" in absent.content
+    # Required rather than defaulted, because coercing an absent quantity to zero
+    # would delete the card the model was trying to add.
+    with pytest.raises(ValidationError):
+        EditDeckArguments.model_validate(
+            {"changes": [{"card": "Sol Ring"}], "reason": "some rings"}
+        )
+    with pytest.raises(ValidationError):
+        EditDeckArguments.model_validate({"changes": [], "reason": "nothing"})
+
+
+def test_an_edit_with_no_deck_open_is_a_failed_call_rather_than_an_exception() -> None:
+    outcome = edit(
+        {"changes": [{"card": "Sol Ring", "quantity": 1}], "reason": "a rock"},
+        deck=None,
+    )
+
+    assert outcome.ok is False
+    assert outcome.detail == "no deck open"
+    assert "No deck is open" in outcome.content
+    assert outcome.edit is None
+
+
+def test_an_add_outside_the_commanders_identity_succeeds_and_names_the_violation() -> None:
+    outcome = edit(
+        {"changes": [{"card": "Lightning Bolt", "quantity": 1}], "reason": "removal"}
+    )
+
+    # The board treats out-of-identity as a warning rather than a block, and an agent
+    # held to a stricter rule than the drag target is inconsistent invisibly.
+    assert outcome.ok is True
+    assert outcome.edit is not None
+    assert [change.name for change in outcome.edit.changes] == ["Lightning Bolt"]
+    assert "Warnings, and the edit was applied anyway:" in outcome.content
+    assert (
+        '"Lightning Bolt" needs {R}, which is outside Ghalta, Primal Hunger\'s {G} '
+        "identity." in outcome.content
+    )
+
+
+def test_singleton_and_the_hundred_card_bound_are_warnings_too() -> None:
+    outcome = edit(
+        {
+            "changes": [
+                {"card": "Sol Ring", "quantity": 2},
+                {"card": "Forest", "quantity": 96},
+            ],
+            "reason": "filling it out",
+        }
+    )
+
+    assert outcome.ok is True
+    assert (
+        '"Sol Ring" is now at 2 copies, and Commander is singleton outside basic lands.'
+        in outcome.content
+    )
+    # A basic land is the exemption, so 96 Forests draw no singleton warning at all.
+    assert '"Forest" is now at' not in outcome.content
+    assert "The deck is at 102 cards, 2 over the 100 a Commander deck holds." in outcome.content
+
+
+def test_the_edit_result_does_not_echo_the_callers_own_arguments() -> None:
+    toolbox = make_edit_toolbox()
+    deck = make_edit_deck()
+    # Take the handle the agent was actually given, so the token it sent differs from
+    # the printed name the result comes back with.
+    listing = run(toolbox, READ_DECK, {}, deck)
+    line = next(line for line in listing.content.splitlines() if "Arcane Signet" in line)
+    short_id = line.split("[", 1)[1].split("]", 1)[0]
+
+    outcome = edit(
+        {
+            "changes": [{"card": short_id, "quantity": 0}],
+            "reason": "cutting the weakest rock",
+        },
+        toolbox=toolbox,
+        deck=deck,
+    )
+
+    assert outcome.ok is True
+    # The reason and the token are both still sitting in the model's own tool call,
+    # so repeating either costs tokens to say what it already said.
+    assert "cutting the weakest rock" not in outcome.content
+    assert short_id not in outcome.content
+    assert f"  {REMOVED} Arcane Signet (was 1)" in outcome.content
+
+
+def test_a_group_only_change_reads_as_a_move_and_keeps_the_count() -> None:
+    outcome = edit(
+        {
+            "changes": [{"card": "Arcane Signet", "quantity": 1, "group": "Rocks"}],
+            "reason": "filing it with the rocks",
+        }
+    )
+
+    assert outcome.ok is True
+    assert 'Applied to "Gruul Stompy": 1 moved, 7 cards now.' in outcome.content
+    assert "  Arcane Signet → Rocks" in outcome.content
+    assert outcome.edit is not None
+    change = outcome.edit.changes[0]
+    assert (change.quantity, change.previous_quantity, change.group) == (1, 1, "Rocks")
+    # A move needs no payload: the browser already holds the card it is moving.
+    assert change.card is None
+
+
+def test_the_emitted_edit_carries_the_deck_printing_and_a_payload_for_every_add() -> None:
+    outcome = edit(
+        {
+            "changes": [
+                {"card": "Sol Ring", "quantity": 1, "group": "Ramp"},
+                {"card": "Rampant Growth", "quantity": 0},
+            ],
+            "reason": "rock over ramp spell",
+        }
+    )
+
+    assert outcome.edit is not None
+    assert outcome.edit.deck_name == "Gruul Stompy"
+    assert outcome.edit.reason == "rock over ramp spell"
+    added, removed = outcome.edit.changes
+    # `addCard` reads the card's colours and type line, and the browser cannot build a
+    # CardSearchResult for a card it has never held.
+    assert added.card is not None
+    assert added.card.name == "Sol Ring"
+    assert added.scryfall_id == PRINTING[EDIT_SOL_RING]
+    assert added.group == "Ramp"
+    # The removal travels with the printing the *snapshot* named, because that is the
+    # entry the browser will look for.
+    assert removed.card is None
+    assert removed.scryfall_id == PRINTING[EDIT_GROWTH]
+
+
+def test_a_card_named_twice_in_one_edit_uses_the_last_count_and_says_so() -> None:
+    outcome = edit(
+        {
+            "changes": [
+                {"card": "Sol Ring", "quantity": 1},
+                {"card": "sol ring", "quantity": 0},
+            ],
+            "reason": "make up your mind",
+        }
+    )
+
+    assert outcome.ok is True
+    assert (
+        '"Sol Ring" was named more than once, so only the last count for it was used.'
+        in outcome.content
+    )
+    # Quantity 0 for a card that was not there is a no-op, so the last count wins and
+    # nothing is applied.
+    assert outcome.edit is None
+
+
+def test_a_hundred_change_edit_cannot_overflow_the_tool_line() -> None:
+    outcome = edit(
+        {
+            "changes": [
+                {"card": f"{index:03d} " + "a" * 196, "quantity": 1}
+                for index in range(100)
+            ],
+            "reason": "a" * 200,
+        }
+    )
+
+    # `DeckAgentToolCall.signature` is a 200-character field and the model chooses what
+    # goes inside a signature, so this is the check that a hundred-change edit cannot
+    # take down a turn that had already changed the deck.
+    assert len(outcome.signature) <= 200
+    assert outcome.signature.startswith("edit_deck(100 changes")
+    call = DeckAgentToolCall(name=EDIT_DECK, signature=outcome.signature, ok=outcome.ok)
+    assert call.signature == outcome.signature
+
+
+# --------------------------------------------------------------------------------
+# read_history
+#
+# The times are fixed and carry an offset, because the tool prints the clock face the
+# browser sent rather than converting it: agreement with what the user saw on screen is
+# the whole point of showing a time at all.
+# --------------------------------------------------------------------------------
+
+HISTORY_DAY = datetime(2026, 8, 1, tzinfo=UTC)
+
+
+def at(hour: int, minute: int) -> datetime:
+    return HISTORY_DAY.replace(hour=hour, minute=minute)
+
+
+def placement(quantity: int, *, section: str = "mainboard", group: str | None = None) -> Any:
+    return DeckAgentDeckPlacement(quantity=quantity, section=section, group=group)
+
+
+def added(name: str, quantity: int = 1) -> Any:
+    return DeckAgentDeckHistoryChange(name=name, after=placement(quantity))
+
+
+def removed(name: str, quantity: int = 1) -> Any:
+    return DeckAgentDeckHistoryChange(name=name, before=placement(quantity))
+
+
+def make_history() -> DeckAgentDeckHistory:
+    """Four sessions, alternating actor, the last of them a move rather than a swap."""
+
+    return DeckAgentDeckHistory(
+        sessions=[
+            DeckAgentDeckSession(
+                actor="user",
+                started_at=at(13, 10),
+                ended_at=at(13, 12),
+                edits=[
+                    DeckAgentDeckHistoryEdit(at=at(13, 10), cards=[added("Sol Ring")])
+                ],
+            ),
+            DeckAgentDeckSession(
+                actor="user",
+                started_at=at(14, 2),
+                ended_at=at(14, 6),
+                edits=[
+                    DeckAgentDeckHistoryEdit(
+                        at=at(14, 2),
+                        cards=[added("Arcane Signet"), removed("Rampant Growth")],
+                    ),
+                    DeckAgentDeckHistoryEdit(
+                        at=at(14, 6), cards=[added("Command Tower")]
+                    ),
+                ],
+            ),
+            DeckAgentDeckSession(
+                actor="agent",
+                started_at=at(14, 11),
+                ended_at=at(14, 11),
+                edits=[
+                    DeckAgentDeckHistoryEdit(
+                        at=at(14, 11),
+                        reason="swapping the weakest ramp for two rocks",
+                        cards=[added("Mind Stone"), removed("Wayfarer's Bauble")],
+                    )
+                ],
+            ),
+            DeckAgentDeckSession(
+                actor="user",
+                started_at=at(14, 24),
+                ended_at=at(14, 24),
+                edits=[
+                    DeckAgentDeckHistoryEdit(
+                        at=at(14, 24),
+                        cards=[
+                            DeckAgentDeckHistoryChange(
+                                name="Ghalta, Primal Hunger",
+                                before=placement(1),
+                                after=placement(1, section="command_zone"),
+                            )
+                        ],
+                    )
+                ],
+            ),
+        ]
+    )
+
+
+def history(
+    arguments: Any = None,
+    *,
+    posted: Any = _UNSET,
+    deck: Any = _UNSET,
+    toolbox: DeckAgentToolbox | None = None,
+) -> Any:
+    box = toolbox if toolbox is not None else make_edit_toolbox()
+    return asyncio.run(
+        box.run(
+            READ_HISTORY,
+            {} if arguments is None else arguments,
+            deck=make_edit_deck() if deck is _UNSET else deck,
+            history=make_history() if posted is _UNSET else posted,
+        )
+    )
+
+
+def test_read_history_renders_newest_first_as_you_and_me() -> None:
+    outcome = history({"limit": 3})
+
+    assert outcome.ok is True
+    assert outcome.signature == "read_history(last 3 sessions)"
+    assert outcome.content == "\n".join(
+        [
+            "## History",
+            '"Gruul Stompy" — 4 sessions recorded, showing the last 3.',
+            "",
+            "You, 14:24 (1 change)",
+            "  Ghalta, Primal Hunger → command zone",
+            "",
+            'Me, 14:11 (2 changes) — "swapping the weakest ramp for two rocks"',
+            f"  + Mind Stone, {REMOVED} Wayfarer's Bauble",
+            "",
+            f"You, 14:02{TIME_RANGE}14:06 (3 changes)",
+            f"  + Arcane Signet, {REMOVED} Rampant Growth",
+            "  + Command Tower",
+        ]
+    )
+    # The reader of this text is the agent, so the agent is `Me`. Naming itself in the
+    # third person is how it comes to describe its own edits as somebody else's.
+    assert "agent" not in outcome.content
+    assert "user" not in outcome.content
+
+
+def test_read_history_honours_the_limit_and_the_configured_default() -> None:
+    one = history({"limit": 1})
+    default = history()
+    small_default = history(toolbox=make_edit_toolbox(read_history_default_sessions=2))
+    clamped = history(
+        {"limit": 50},
+        toolbox=make_edit_toolbox(
+            read_history_default_sessions=1, history_max_sessions=1
+        ),
+    )
+
+    assert one.content.count("You,") + one.content.count("Me,") == 1
+    assert "showing the last 1." in one.content
+    # Ten by default and only four exist, so all of them arrive — and the header says
+    # which of the two it is, because "these are all of them" and "these are the last
+    # three of many" lead somewhere different.
+    assert "4 sessions recorded, all of them below." in default.content
+    assert default.content.count("You,") + default.content.count("Me,") == 4
+    assert "showing the last 2." in small_default.content
+    # The configured ceiling clamps a limit the model asked for, so the schema bound
+    # and the runtime bound cannot disagree about how far back it can see.
+    assert "showing the last 1." in clamped.content
+    assert clamped.signature == "read_history(last 1 sessions)"
+
+
+def test_history_that_was_never_posted_is_not_a_deck_that_was_never_edited() -> None:
+    absent = history(posted=None)
+    empty = history(posted=DeckAgentDeckHistory())
+
+    # Both are honest and they lead somewhere different, so they must not read alike.
+    assert absent.ok is True
+    assert "No history was posted with this turn" in absent.content
+    assert "not a deck that has never been edited" in absent.content
+    assert empty.ok is True
+    assert '"Gruul Stompy" has no recorded edits.' in empty.content
+    assert "nothing has changed since recording started" in empty.content
+    assert "No history was posted" not in empty.content
+
+
+def test_a_session_from_another_day_is_dated_rather_than_only_timed() -> None:
+    yesterday = DeckAgentDeckSession(
+        actor="user",
+        started_at=at(9, 30) - timedelta(days=1),
+        ended_at=at(9, 30) - timedelta(days=1),
+        edits=[DeckAgentDeckHistoryEdit(at=at(9, 30), cards=[added("Sol Ring")])],
+    )
+    posted = DeckAgentDeckHistory(sessions=[yesterday, *make_history().sessions])
+
+    outcome = history(posted=posted)
+
+    # A bare `09:30` that silently means yesterday is worse than no time at all.
+    assert "You, 2026-07-31 09:30 (1 change)" in outcome.content
+    assert "You, 14:24 (1 change)" in outcome.content
+
+
+def test_read_history_does_not_echo_the_callers_own_arguments() -> None:
+    outcome = history({"limit": 2})
+
+    # What it could not know: how many sessions exist, and therefore whether it has
+    # seen all of them. Its own limit is still sitting in its tool call.
+    assert "limit" not in outcome.content
+    assert "4 sessions recorded, showing the last 2." in outcome.content
+
+
+def test_read_deck_points_at_read_history_only_when_there_is_history() -> None:
+    toolbox = make_edit_toolbox()
+    deck = make_edit_deck()
+
+    with_history = asyncio.run(toolbox.run(READ_DECK, {}, deck=deck, history=make_history()))
+    absent = asyncio.run(toolbox.run(READ_DECK, {}, deck=deck, history=None))
+    empty = asyncio.run(
+        toolbox.run(READ_DECK, {}, deck=deck, history=DeckAgentDeckHistory())
+    )
+
+    # Five recorded edits across four sessions.
+    assert "5 earlier edits are recorded; call read_history" in with_history.content
+    # A pointer at an empty record, or at a client that posts none, spends a tool round
+    # to learn nothing.
+    assert "read_history" not in absent.content
+    assert "read_history" not in empty.content
+
+
+def test_history_bounds_must_agree() -> None:
+    with pytest.raises(ValueError):
+        DeckAgentToolSettings(read_history_default_sessions=20, history_max_sessions=10)

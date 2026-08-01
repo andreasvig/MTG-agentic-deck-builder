@@ -1,11 +1,17 @@
 """Strict contracts for the conversational deck agent."""
 
+from datetime import datetime
 from typing import Annotated, Literal
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, model_validator
 
+from mtg_deck_builder.domain.cards import CardSearchResult
+
 DeckAgentRole = Literal["user", "assistant"]
+
+DeckAgentActor = Literal["user", "agent"]
+"""Who made one edit. The history is only worth an actor if both appear in it."""
 
 MessageText = Annotated[
     str,
@@ -29,6 +35,43 @@ than no diagnostic.
 ToolPayloadText = Annotated[str, StringConstraints(max_length=MAX_TOOL_PAYLOAD_CHARS)]
 
 DeckSection = Literal["command_zone", "mainboard"]
+
+CardToken = Annotated[
+    str,
+    StringConstraints(strip_whitespace=True, min_length=1, max_length=200),
+]
+"""How the model names one card: its exact printed name, or a `read_deck` short id.
+
+One type for every tool that takes a card, so `see_cards`, `search_cards` and
+`edit_deck` cannot come to disagree about what naming a card means — they all
+resolve a token through the same resolver against the same catalog.
+"""
+
+MAX_EDIT_CHANGES = 100
+"""How many cards one `edit_deck` call may change.
+
+A hundred is a whole deck replaced at once, which is the largest edit that is not a
+mistake, and it bounds both the emitted event and the history entry it becomes.
+"""
+
+MAX_HISTORY_EDIT_CARDS = 250
+"""How many card changes one *recorded* edit may carry.
+
+Deliberately looser than `MAX_EDIT_CHANGES`, which bounds what the agent may ask for.
+The browser records what actually happened, and replacing a whole deck in one step is
+a hundred cards out and a hundred in — a bound of a hundred here would fail the whole
+chat turn over a history entry the user made legitimately.
+"""
+
+MAX_HISTORY_SESSIONS = 50
+MAX_HISTORY_EDITS = 500
+"""How much recorded history one turn may post.
+
+Both bounds are needed: fifty sessions of ten edits each is a request body worth
+carrying, and fifty sessions of five hundred edits each is not. The browser prunes
+oldest-first to stay inside them, keeping identity, counts and reasons for what it
+drops the payload of.
+"""
 
 CardDetail = Literal[
     "rules",
@@ -89,6 +132,132 @@ class DeckAgentDeckSnapshot(DeckAgentModel):
     )
 
 
+class DeckEditChange(DeckAgentModel):
+    """One card the model wants the deck to hold differently.
+
+    Declarative on purpose: it states the copy count it wants *afterwards* rather
+    than an operation to perform. Add is `quantity: 1`, cut is `quantity: 0`, a move
+    is the same quantity with a new group, and a swap is two of these. That collapses
+    the four verbs a discriminated union would need — along with their conditionally
+    required fields, which is the shape a model malforms — and it makes the call
+    idempotent, which matters because the edit applies itself and a retry must not
+    double-add.
+
+    `quantity` is required and `0` is meaningful, so absent is impossible. That is
+    deliberate: coercing a missing quantity to zero would delete a card.
+    """
+
+    card: CardToken
+    quantity: Annotated[int, Field(ge=0, le=99)]
+    # Where the card should sit on screen. Absent leaves placement alone, which is
+    # what an ordinary add or cut wants — naming a group is how a card is moved.
+    group: ShortLabel | None = None
+
+
+class EditDeckArguments(DeckAgentModel):
+    """One edit to the open deck: what it should hold, and why."""
+
+    changes: Annotated[
+        list[DeckEditChange],
+        Field(min_length=1, max_length=MAX_EDIT_CHANGES),
+    ]
+    # Per call rather than per card, because one intent usually covers a whole swap.
+    # It is the field that makes the history worth reading a week later.
+    reason: ShortLabel
+
+
+class ReadHistoryArguments(DeckAgentModel):
+    """How much of the deck's recorded past to read, newest first."""
+
+    # Absent means the configured default, exactly as `search_cards.max_results`
+    # does: the number lives in `config.yaml` beside the tool description that
+    # advertises it, so the two cannot disagree.
+    limit: Annotated[int, Field(ge=1, le=MAX_HISTORY_SESSIONS)] | None = None
+
+
+class DeckAgentDeckPlacement(DeckAgentModel):
+    """Where one card sat, and how many copies, at one moment."""
+
+    quantity: Annotated[int, Field(ge=0, le=99)]
+    section: DeckSection
+    group: ShortLabel | None = None
+
+
+class DeckAgentDeckHistoryChange(DeckAgentModel):
+    """What one recorded edit did to one card.
+
+    The name travels denormalised so history reads without the catalog: an edit made
+    a month ago must still be readable after a card has been renamed or a printing
+    has left the local data.
+    """
+
+    name: ShortLabel
+    # `None` on the left means the card was not in the deck; `None` on the right
+    # means it was removed. Both absent would record nothing at all.
+    before: DeckAgentDeckPlacement | None = None
+    after: DeckAgentDeckPlacement | None = None
+
+    @model_validator(mode="after")
+    def a_change_must_change_something(self) -> "DeckAgentDeckHistoryChange":
+        if self.before is None and self.after is None:
+            raise ValueError("a history change must carry a before, an after, or both")
+        return self
+
+
+class DeckAgentDeckHistoryEdit(DeckAgentModel):
+    """One recorded edit: when it happened, why, and what it moved."""
+
+    at: datetime
+    # Only an agent edit has one — a card dragged across the board states no intent.
+    reason: ShortLabel | None = None
+    # Allowed to be empty rather than required: the browser also records renames and
+    # group changes, and an edit that carried neither a card change nor a reason
+    # must not fail a whole chat turn over a field this tool does not read.
+    cards: Annotated[
+        list[DeckAgentDeckHistoryChange],
+        Field(max_length=MAX_HISTORY_EDIT_CARDS),
+    ] = Field(default_factory=list)
+
+
+class DeckAgentDeckSession(DeckAgentModel):
+    """A stretch of editing by one actor, as the browser grouped it.
+
+    `actor` sits on the session rather than on the edit, so an agent edit can never
+    join a user's session and the question "who did this" has one answer per block.
+    """
+
+    actor: DeckAgentActor
+    started_at: datetime
+    ended_at: datetime
+    edits: Annotated[
+        list[DeckAgentDeckHistoryEdit],
+        Field(max_length=MAX_HISTORY_EDITS),
+    ] = Field(default_factory=list)
+
+
+class DeckAgentDeckHistory(DeckAgentModel):
+    """The open deck's recorded past, oldest session first.
+
+    Posted with the turn exactly as the deck snapshot is, and for the same reason:
+    the backend holds no deck and therefore no history of one. It costs request body
+    on every turn and model context only when `read_history` runs.
+    """
+
+    sessions: Annotated[
+        list[DeckAgentDeckSession],
+        Field(max_length=MAX_HISTORY_SESSIONS),
+    ] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def edits_must_stay_inside_the_budget(self) -> "DeckAgentDeckHistory":
+        total = sum(len(session.edits) for session in self.sessions)
+        if total > MAX_HISTORY_EDITS:
+            raise ValueError(
+                f"history must carry at most {MAX_HISTORY_EDITS} edits in total"
+            )
+        return self
+
+
 class DeckAgentChatRequest(DeckAgentModel):
     """One chat turn, carrying the whole transcript the browser holds.
 
@@ -101,6 +270,11 @@ class DeckAgentChatRequest(DeckAgentModel):
     # Optional so a client that has no deck open — or an older one — still chats.
     # The tools report the absence rather than pretending the deck is empty.
     deck: DeckAgentDeckSnapshot | None = None
+    # The same deal as the deck: optional, because a client that records no history —
+    # or an older one — still chats. `read_history` reports which of the two it is,
+    # since "no history was posted" and "this deck has never been edited" send the
+    # agent somewhere different.
+    history: DeckAgentDeckHistory | None = None
     # Ask for each tool call's arguments and result alongside the answer, for the
     # expandable view in the chat. Off by default: a `read_deck` result is kilobytes
     # of text nobody is looking at unless debug mode is on.
@@ -183,6 +357,63 @@ class DeckAgentToolEvent(DeckAgentModel):
     call: DeckAgentToolCall
 
 
+class DeckAgentDeckEditChange(DeckAgentModel):
+    """One card change, resolved against the deck the browser posted.
+
+    This is the applied form of a `DeckEditChange`: the token is now a printing, the
+    count the deck held is stated beside the count it should hold, and a card being
+    added arrives with the catalog entry the browser could not have built. Only
+    changes that actually change something are here — a `quantity` the deck already
+    holds is dropped before the edit is emitted, so a retried call cannot double-add.
+    """
+
+    scryfall_id: UUID
+    name: ShortLabel
+    # The count the deck should hold afterwards, and the count it held when the turn
+    # started. `quantity: 0` removes the card.
+    quantity: Annotated[int, Field(ge=0, le=99)]
+    previous_quantity: Annotated[int, Field(ge=0, le=99)]
+    group: ShortLabel | None = None
+    # Present exactly when this change adds copies, because `addCard` needs the whole
+    # card — its colours and type line are what the identity and command-zone
+    # validators read — and the browser has never seen a card it does not hold.
+    card: CardSearchResult | None = None
+
+    @model_validator(mode="after")
+    def an_added_card_must_carry_its_payload(self) -> "DeckAgentDeckEditChange":
+        if self.quantity > self.previous_quantity and self.card is None:
+            raise ValueError("a change that adds copies must carry the card it adds")
+        return self
+
+
+class DeckAgentDeckEdit(DeckAgentModel):
+    """An edit the agent made, resolved and ready for the browser to apply.
+
+    The backend holds no deck, so this is the whole of what `edit_deck` produces: it
+    computed the change against the posted snapshot and the browser applies it as one
+    undo step. The same shape `card_links` already uses — the backend resolves, the
+    frontend acts.
+    """
+
+    deck_name: ShortLabel
+    reason: ShortLabel
+    changes: Annotated[
+        list[DeckAgentDeckEditChange],
+        Field(min_length=1, max_length=MAX_EDIT_CHANGES),
+    ]
+
+
+class DeckAgentDeckEditEvent(DeckAgentModel):
+    """An edit the agent just made, sent the moment the tool finished.
+
+    Nothing has changed in the browser until it acts on this, which is why the tool
+    result the model reads and this event have to travel together.
+    """
+
+    type: Literal["deck_edit"] = "deck_edit"
+    edit: DeckAgentDeckEdit
+
+
 class DeckAgentDoneEvent(DeckAgentModel):
     """The finished turn, carrying the same reply the plain JSON route returns."""
 
@@ -203,5 +434,9 @@ class DeckAgentErrorEvent(DeckAgentModel):
 
 
 DeckAgentStreamEvent = (
-    DeckAgentTextEvent | DeckAgentToolEvent | DeckAgentDoneEvent | DeckAgentErrorEvent
+    DeckAgentTextEvent
+    | DeckAgentToolEvent
+    | DeckAgentDeckEditEvent
+    | DeckAgentDoneEvent
+    | DeckAgentErrorEvent
 )
