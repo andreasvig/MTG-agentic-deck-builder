@@ -45,7 +45,6 @@ describe("card search dialog", () => {
             },
             quantity: 1,
             section: "command_zone",
-            categories: ["command_zone"],
           },
         ]}
         client={{ getHealth: vi.fn(), searchCards }}
@@ -98,7 +97,6 @@ describe("card search dialog", () => {
             },
             quantity: 1,
             section: "command_zone",
-            categories: ["command_zone"],
           },
         ]}
         client={{
@@ -756,7 +754,6 @@ describe("card search dialog", () => {
             },
             quantity: 1,
             section: "command_zone",
-            categories: ["command_zone"],
           },
         ]}
         client={{ getHealth: vi.fn(), searchCards }}

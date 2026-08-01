@@ -1,6 +1,6 @@
 # ADR 0005: Custom Groups, Derived Types, And Modal Inspection
 
-- Status: Accepted
+- Status: Grouping decisions superseded by [ADR 0037](0037-one-placement-axis-and-a-commander-the-agent-can-set.md); the rest accepted
 - Date: 2026-07-23
 
 ## Context

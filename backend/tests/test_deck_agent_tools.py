@@ -360,10 +360,7 @@ def make_toolbox(
 def make_deck(*, commander: bool = True) -> DeckAgentDeckSnapshot:
     cards = [
         DeckAgentDeckCard(
-            scryfall_id=PRINTING[SOL_RING],
-            quantity=1,
-            section="mainboard",
-            group="Ramp",
+            scryfall_id=PRINTING[SOL_RING], quantity=1, section="mainboard"
         ),
         DeckAgentDeckCard(
             scryfall_id=PRINTING[FOREST], quantity=1, section="mainboard"
@@ -400,8 +397,10 @@ def test_read_deck_groups_by_primary_type_without_card_text() -> None:
     assert "Land (1)" in outcome.content
     assert "Ancient Den" in outcome.content
     assert "Artifact (1)" in outcome.content
-    # The custom group the card sits in is part of how the user sees the deck.
-    assert "[group: Ramp]" in outcome.content
+    # No placement suffix on a card line. The `Commander` heading is the only placement
+    # there is, and it already says which cards are in it.
+    assert "[group:" not in outcome.content
+    assert "[zone:" not in outcome.content
     # The whole point of read_deck is that it is cheap: no rules text.
     assert "Add {C}{C}" not in outcome.content
     assert "Trample" not in outcome.content
@@ -1739,10 +1738,7 @@ def make_edit_deck(*, commander: bool = True, forests: int = 3) -> DeckAgentDeck
 
     cards = [
         DeckAgentDeckCard(
-            scryfall_id=PRINTING[EDIT_SIGNET],
-            quantity=1,
-            section="mainboard",
-            group="Ramp",
+            scryfall_id=PRINTING[EDIT_SIGNET], quantity=1, section="mainboard"
         ),
         DeckAgentDeckCard(
             scryfall_id=PRINTING[EDIT_BAUBLE], quantity=1, section="mainboard"
@@ -1829,8 +1825,8 @@ def test_a_change_the_deck_already_satisfies_did_nothing_and_is_not_emitted() ->
     )
 
     assert (
-        '"Arcane Signet" was already in the deck at 1 copy in "Ramp", so that change '
-        "did nothing." in first.content
+        '"Arcane Signet" was already in the deck at 1 copy, so that change did nothing.'
+        in first.content
     )
     assert first.content.count("+ ") == 1
     # The emitted edit carries no change for it, which is what stops a retried call
@@ -1975,29 +1971,64 @@ def test_the_edit_result_does_not_echo_the_callers_own_arguments() -> None:
     assert f"  {REMOVED} Arcane Signet (was 1)" in outcome.content
 
 
-def test_a_group_only_change_reads_as_a_move_and_keeps_the_count() -> None:
+def test_a_zone_only_change_reads_as_a_move_and_keeps_the_count() -> None:
     outcome = edit(
         {
-            "changes": [{"card": "Arcane Signet", "quantity": 1, "group": "Rocks"}],
-            "reason": "filing it with the rocks",
+            "changes": [
+                {"card": "Arcane Signet", "quantity": 1, "zone": "commander"}
+            ],
+            "reason": "the only legend I have",
         }
     )
 
     assert outcome.ok is True
     assert 'Applied to "Gruul Stompy": 1 moved, 7 cards now.' in outcome.content
-    assert "  Arcane Signet → Rocks" in outcome.content
+    assert "  Arcane Signet → command zone" in outcome.content
     assert outcome.edit is not None
     change = outcome.edit.changes[0]
-    assert (change.quantity, change.previous_quantity, change.group) == (1, 1, "Rocks")
+    # The model's word resolves to the browser's own, in one place, so nothing downstream
+    # has to know both vocabularies.
+    assert (change.quantity, change.previous_quantity, change.section) == (
+        1,
+        1,
+        "command_zone",
+    )
     # A move needs no payload: the browser already holds the card it is moving.
     assert change.card is None
+
+
+def test_a_zone_the_schema_does_not_know_is_a_rejected_call() -> None:
+    outcome = edit(
+        {
+            "changes": [{"card": "Arcane Signet", "quantity": 1, "zone": "sideboard"}],
+            "reason": "somewhere else entirely",
+        }
+    )
+
+    # An enum rather than a label: a zone the schema does not know fails the call instead
+    # of resolving to the mainboard, which would take a commander out of the command zone
+    # on a change that meant to put it somewhere else.
+    assert outcome.ok is False
+    assert outcome.edit is None
+    assert "zone" in outcome.content
+
+
+def test_an_absent_zone_is_not_the_deck_and_travels_as_absent() -> None:
+    outcome = edit(
+        {"changes": [{"card": "Ghalta, Primal Hunger", "quantity": 0}], "reason": "cut"}
+    )
+
+    assert outcome.edit is not None
+    # `None`, not `"mainboard"`. The browser reads absent as "leave placement alone", so a
+    # section filled in here would be a placement the model never asked for.
+    assert outcome.edit.changes[0].section is None
 
 
 def test_the_emitted_edit_carries_the_deck_printing_and_a_payload_for_every_add() -> None:
     outcome = edit(
         {
             "changes": [
-                {"card": "Sol Ring", "quantity": 1, "group": "Ramp"},
+                {"card": "Sol Ring", "quantity": 1, "zone": "deck"},
                 {"card": "Rampant Growth", "quantity": 0},
             ],
             "reason": "rock over ramp spell",
@@ -2013,7 +2044,7 @@ def test_the_emitted_edit_carries_the_deck_printing_and_a_payload_for_every_add(
     assert added.card is not None
     assert added.card.name == "Sol Ring"
     assert added.scryfall_id == PRINTING[EDIT_SOL_RING]
-    assert added.group == "Ramp"
+    assert added.section == "mainboard"
     # The removal travels with the printing the *snapshot* named, because that is the
     # entry the browser will look for. Only pinned properly by the test below — here the
     # snapshot and the catalog name the same printing, so this cannot tell them apart.
@@ -2120,8 +2151,8 @@ def at(hour: int, minute: int) -> datetime:
     return HISTORY_DAY.replace(hour=hour, minute=minute)
 
 
-def placement(quantity: int, *, section: str = "mainboard", group: str | None = None) -> Any:
-    return DeckAgentDeckPlacement(quantity=quantity, section=section, group=group)
+def placement(quantity: int, *, section: str = "mainboard") -> Any:
+    return DeckAgentDeckPlacement(quantity=quantity, section=section)
 
 
 def added(name: str, quantity: int = 1) -> Any:

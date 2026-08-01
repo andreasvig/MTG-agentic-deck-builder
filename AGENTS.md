@@ -67,11 +67,13 @@ Do not change these without an explicit product decision and ADR update:
 - The application is local-first, private, single-user, and Commander-focused.
 - The first screen is the working deck editor, not a marketing page.
 - Card search is one unified workflow. Do not restore a separate Quick Add.
-- Grouping modes are `Custom` and derived `Card types`.
-- New editor sessions default to derived `Card types`; `Custom` is the
-  explicitly selected editable mode.
-- Custom groups begin with permanent Command zone and Not assigned groups.
-- Cards may be moved only in Custom grouping. Card-type grouping is derived.
+- There is one grouping mode: derived `Card types`, with the Command zone above it.
+  User-created custom groups were removed in ADR 0037 — do not restore them, and do
+  not add a grouping control.
+- A card's placement is its `DeckSection`, and the command zone is the only
+  placement an edit can change. A card type is derived from the card.
+- Drag and drop moves a card in or out of the command zone. Dropping on a card-type
+  heading means "in the deck", because that is the only thing it can mean.
 - There is no standalone maybeboard in the active editor model.
 - Card details open in a centered dialog, not a permanent right inspector.
 - The right side of the workspace belongs to the deck agent. It is a chat panel on
@@ -287,10 +289,13 @@ When the `CardSearchPage` contract changes, update all of:
   collapse the storage and posted caps into one symbol.
 - A deleted deck's history is archived with the deck and restored with it, the same
   discipline `DeletedDeckSnapshot` already applies to the deck itself.
-- Custom-group placement stores one primary group ID in `categories[0]`.
-- Command-zone placement uses `section="command_zone"` and the fixed
-  `command_zone` group ID.
-- Unknown, deleted, legacy, or maybeboard placement migrates to Not assigned.
+- Placement is `section`, one of `command_zone` or `mainboard`, and nothing else.
+- A stored deck written before ADR 0037 carries `custom_groups` and a per-card
+  `categories` array. Both are read, dropped, and never written again; no card is
+  lost, only where it was filed. Legacy and maybeboard placement becomes `mainboard`.
+- A stored *history* written before ADR 0037 keeps `categories` inside its placements
+  and a `groups` array on its diffs. Both are ignored rather than rejected, so an old
+  log stays readable and its card changes stay replayable.
 
 Do not add a second deck-persistence path without a migration plan. The future
 backend deck store must treat browser-local state as importable legacy data.

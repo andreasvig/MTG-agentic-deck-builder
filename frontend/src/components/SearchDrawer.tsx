@@ -35,9 +35,8 @@ import {
   formatEuro,
   getCardPrice,
 } from "../domain/card";
-import type { DeckCardEntry } from "../domain/deck";
+import type { DeckCardEntry, DeckSection } from "../domain/deck";
 import {
-  COMMAND_ZONE_GROUP_ID,
   getCommanderColorIdentity,
   isWithinCommanderColorIdentity,
 } from "../domain/deck";
@@ -77,13 +76,13 @@ const EMPTY_TAG_FILTERS: CardTagFilter[] = [];
 interface SearchDrawerProps {
   initialQuery?: string;
   initialTags?: CardTagFilter[];
-  targetGroupId?: string;
+  targetSection?: DeckSection;
   targetLabel?: string;
   entries: DeckCardEntry[];
   client?: ApiClient;
   suspended?: boolean;
   debugEnabled?: boolean;
-  onAdd: (card: CardSearchResult, targetGroupId?: string) => void;
+  onAdd: (card: CardSearchResult, targetSection?: DeckSection) => void;
   onOpenCard?: (card: CardSearchResult) => void;
   onSetQuantity: (scryfallId: string, quantity: number) => void;
   onClose: () => void;
@@ -92,7 +91,7 @@ interface SearchDrawerProps {
 export function SearchDrawer({
   initialQuery = "",
   initialTags = EMPTY_TAG_FILTERS,
-  targetGroupId,
+  targetSection,
   targetLabel,
   entries,
   client = apiClient,
@@ -1327,7 +1326,7 @@ export function SearchDrawer({
                     const titleConfidenceScore =
                       state.page?.title_confidence_scores[card.scryfall_id];
                     const colorIdentityWarning =
-                      targetGroupId !== COMMAND_ZONE_GROUP_ID &&
+                      targetSection !== "command_zone" &&
                       !isWithinCommanderColorIdentity(
                         card,
                         commanderColorIdentity,
@@ -1406,7 +1405,7 @@ export function SearchDrawer({
                                 className="add-printing-button"
                                 type="button"
                                 aria-label={`Add ${card.name} to deck`}
-                                onClick={() => onAdd(card, targetGroupId)}
+                                onClick={() => onAdd(card, targetSection)}
                               >
                                 <CirclePlus aria-hidden="true" size={16} />
                                 Add

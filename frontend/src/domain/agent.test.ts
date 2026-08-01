@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { solRing } from "../test/fixtures";
-import { UNASSIGNED_GROUP_ID } from "./deck";
+import type { DeckSection } from "./deck";
 import type { DeckAgentChat, DeckAgentTranscriptEntry } from "./agent";
 import {
   isRefusedDeckEdit,
@@ -317,6 +317,14 @@ describe("agent deck edits", () => {
         changes: [{ ...(good[0] as object), card: undefined }],
       },
       { ...deckEditEvent(), changes: [{ ...(good[0] as object), card: { name: "Sol Ring" } }] },
+      // A section outside the two the deck has. Refused rather than read as "not the
+      // command zone", because that reading would take the user's commander out of it on
+      // an edit whose placement field was garbage.
+      {
+        ...deckEditEvent(),
+        changes: [{ ...(good[0] as object), section: "sideboard" }],
+      },
+      { ...deckEditEvent(), changes: [{ ...(good[0] as object), section: 7 }] },
     ];
 
     for (const candidate of malformed) {
@@ -333,17 +341,35 @@ describe("agent deck edits", () => {
     ).toBeNull();
   });
 
+  it("reads a section the deck knows, and treats an absent one as no placement at all", () => {
+    const changes = deckEditEvent().changes as unknown[];
+
+    const commander = readDeckAgentDeckEdit({
+      ...deckEditEvent(),
+      changes: [{ ...(changes[0] as object), section: "command_zone" }],
+    });
+    expect(commander?.changes[0].section).toBe("command_zone");
+
+    // Absent stays absent through the reader. The applier reads that as "leave placement
+    // alone", and a `mainboard` filled in here would be a placement nobody asked for.
+    const plain = readDeckAgentDeckEdit(deckEditEvent());
+    expect(plain?.changes[0]).not.toHaveProperty("section");
+    expect(
+      readDeckAgentDeckEdit({
+        ...deckEditEvent(),
+        changes: [{ ...(changes[0] as object), section: null }],
+      })?.changes[0],
+    ).not.toHaveProperty("section");
+  });
+
   it("counts copies in and copies out, and a move as neither", () => {
     const diff: DeckDiff = {
       summary: "+2 / −4",
       cards: [
         recordedChange("Sol Ring", null, placed(2)),
         recordedChange("Rampant Growth", placed(2), null),
-        recordedChange(
-          "Arcane Signet",
-          placed(1, ["group-ramp"]),
-          placed(1, ["group-rocks"]),
-        ),
+        // Same count, new section: a card made the commander is neither in nor out.
+        recordedChange("Arcane Signet", placed(1), placed(1, "command_zone")),
         // The deck held three copies and ended with one. Two copies out, which no request
         // could have said: the one that produced this asked for a quantity of 1 while
         // believing the deck held 1, and is therefore a request for nothing at all.
@@ -405,9 +431,9 @@ describe("agent deck edits", () => {
 /** One side of a recorded change. `index` is a position hint the summary never reads. */
 function placed(
   quantity: number,
-  categories: string[] = [UNASSIGNED_GROUP_ID],
+  section: DeckSection = "mainboard",
 ): DeckCardPlacement {
-  return { quantity, section: "mainboard", categories, index: 0 };
+  return { quantity, section, index: 0 };
 }
 
 /** One recorded card change, in the shape the browser writes to storage. */
@@ -473,11 +499,11 @@ describe("posted deck history", () => {
           recordedChange(
             "Sol Ring",
             null,
-            { quantity: 2, section: "mainboard", categories: ["group-ramp"], index: 4 },
+            { quantity: 2, section: "mainboard", index: 4 },
           ),
           recordedChange(
             "Rampant Growth",
-            { quantity: 1, section: "mainboard", categories: ["unassigned"], index: 1 },
+            { quantity: 1, section: "mainboard", index: 1 },
             null,
           ),
         ],
@@ -485,9 +511,7 @@ describe("posted deck history", () => {
       ),
     ]);
 
-    expect(
-      toDeckAgentHistory(raw, "deck-a", [{ id: "group-ramp", name: "Ramp" }]),
-    ).toEqual({
+    expect(toDeckAgentHistory(raw, "deck-a")).toEqual({
       sessions: [
         {
           actor: "agent",
@@ -500,13 +524,12 @@ describe("posted deck history", () => {
               cards: [
                 {
                   name: "Sol Ring",
-                  // No `before`: the card was not in the deck. The group travels as the
-                  // name on screen, never the id the deck files it under.
-                  after: { quantity: 2, section: "mainboard", group: "Ramp" },
+                  // No `before`: the card was not in the deck. A placement is a count and
+                  // a section — `index` is a restoration hint and does not travel.
+                  after: { quantity: 2, section: "mainboard" },
                 },
                 {
                   name: "Rampant Growth",
-                  // Unfiled, so no group at all rather than the internal placeholder.
                   before: { quantity: 1, section: "mainboard" },
                 },
               ],
@@ -521,7 +544,6 @@ describe("posted deck history", () => {
     const change = recordedChange("Sol Ring", null, {
       quantity: 1,
       section: "mainboard",
-      categories: ["unassigned"],
       index: 0,
     });
     const raw = storedHistory(
@@ -530,7 +552,7 @@ describe("posted deck history", () => {
       ),
     );
 
-    const posted = toDeckAgentHistory(raw, "deck-a", []);
+    const posted = toDeckAgentHistory(raw, "deck-a");
 
     // A request over the bound is refused whole, which would fail the chat turn rather
     // than the history — so the browser prunes before it asks.
@@ -550,7 +572,6 @@ describe("posted deck history", () => {
     const change = recordedChange("Sol Ring", null, {
       quantity: 1,
       section: "mainboard",
-      categories: ["unassigned"],
       index: 0,
     });
     const busy = recordedSession(1, "user", [change]);
@@ -570,14 +591,13 @@ describe("posted deck history", () => {
           recordedChange(`Card ${index}`, null, {
             quantity: 1,
             section: "mainboard",
-            categories: ["unassigned"],
             index,
           }),
         ),
       },
     ];
 
-    const posted = toDeckAgentHistory(storedHistory([busy, wide]), "deck-a", []);
+    const posted = toDeckAgentHistory(storedHistory([busy, wide]), "deck-a");
 
     // The session cap alone would let fifty sessions of six hundred edits through, and
     // a request over either bound is refused whole — which fails the chat turn rather
@@ -596,7 +616,6 @@ describe("posted deck history", () => {
     const change = recordedChange("N".repeat(400), null, {
       quantity: 1,
       section: "mainboard",
-      categories: ["unassigned"],
       index: 0,
     });
     const session = recordedSession(1, "agent", []);
@@ -610,7 +629,7 @@ describe("posted deck history", () => {
       },
     ];
 
-    const posted = toDeckAgentHistory(storedHistory([session]), "deck-a", []);
+    const posted = toDeckAgentHistory(storedHistory([session]), "deck-a");
     const edit = posted.sessions[0].edits[0];
 
     // `ShortLabel` is 200 characters and a request over it is refused whole, so an
@@ -628,7 +647,6 @@ describe("posted deck history", () => {
     const good = recordedChange("Sol Ring", null, {
       quantity: 1,
       section: "mainboard",
-      categories: ["unassigned"],
       index: 0,
     });
     const session = recordedSession(1, "user", []);
@@ -656,7 +674,7 @@ describe("posted deck history", () => {
       },
     ];
 
-    const posted = toDeckAgentHistory(storedHistory([session]), "deck-a", []);
+    const posted = toDeckAgentHistory(storedHistory([session]), "deck-a");
 
     expect(posted.sessions[0].edits[0].cards.map((card) => card.name)).toEqual([
       "Sol Ring",
@@ -664,16 +682,12 @@ describe("posted deck history", () => {
   });
 
   it("reads an absent, unreadable or unrecorded history as nothing recorded", () => {
-    expect(toDeckAgentHistory(null, "deck-a", [])).toEqual({ sessions: [] });
-    expect(toDeckAgentHistory("{oh no", "deck-a", [])).toEqual({ sessions: [] });
-    expect(toDeckAgentHistory("[]", "deck-a", [])).toEqual({ sessions: [] });
+    expect(toDeckAgentHistory(null, "deck-a")).toEqual({ sessions: [] });
+    expect(toDeckAgentHistory("{oh no", "deck-a")).toEqual({ sessions: [] });
+    expect(toDeckAgentHistory("[]", "deck-a")).toEqual({ sessions: [] });
     // Another deck's log is not this deck's history.
     expect(
-      toDeckAgentHistory(
-        storedHistory([recordedSession(1, "user", [])]),
-        "deck-b",
-        [],
-      ),
+      toDeckAgentHistory(storedHistory([recordedSession(1, "user", [])]), "deck-b"),
     ).toEqual({ sessions: [] });
   });
 });

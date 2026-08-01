@@ -4,18 +4,17 @@ import type { CardSearchResult } from "./card";
 import type { DeckCardEntry, DeckSection } from "./deck";
 import {
   canShareCommandZone,
-  COMMAND_ZONE_GROUP_ID,
   createDeckLibrary,
   createEmptyDeck,
   getColorIdentityWarnings,
   getCommandZoneProblem,
   getCommanderColorIdentity,
-  groupIdForEntry,
+  isDeckSection,
   isWithinCommanderColorIdentity,
   parseStoredDeck,
   parseStoredDeckLibrary,
-  placementForGroup,
-  UNASSIGNED_GROUP_ID,
+  sectionForLabel,
+  sectionLabel,
   validateCommandZoneAddition,
 } from "./deck";
 import { counterspell, ghalta, solRing } from "../test/fixtures";
@@ -29,14 +28,14 @@ describe("deck domain", () => {
     expect(parseStoredDeck('{"name":"Incomplete"}', fallback)).toBe(fallback);
   });
 
-  it("migrates fixed categories and maybeboard cards to Not assigned", () => {
+  it("opens a deck saved with custom groups, keeping every card and dropping the groups", () => {
     const legacy = createEmptyDeck(new Date("2026-01-01T00:00:00Z"));
     const legacyValue = {
       ...legacy,
-      custom_groups: undefined,
+      custom_groups: [{ id: "group-ramp", name: "Ramp" }],
       cards: [
         { ...makeEntry(ghalta, "command_zone"), categories: ["command_zone"] },
-        { ...makeEntry(solRing, "mainboard"), categories: ["other_spells"] },
+        { ...makeEntry(solRing, "mainboard"), categories: ["group-ramp"] },
         {
           ...makeEntry(counterspell, "mainboard"),
           section: "maybeboard",
@@ -47,28 +46,57 @@ describe("deck domain", () => {
 
     const migrated = parseStoredDeck(JSON.stringify(legacyValue));
 
-    expect(migrated.custom_groups).toEqual([]);
-    expect(migrated.cards[0]?.categories).toEqual([COMMAND_ZONE_GROUP_ID]);
-    expect(migrated.cards[1]?.categories).toEqual([UNASSIGNED_GROUP_ID]);
-    expect(migrated.cards[2]).toMatchObject({
-      section: "mainboard",
-      categories: [UNASSIGNED_GROUP_ID],
-    });
+    // The one placement that survived is the command zone. Nothing is dropped from the
+    // deck itself: a group was where a card was filed, never whether the deck held it.
+    expect(migrated.cards.map((entry) => entry.card.name)).toEqual([
+      ghalta.name,
+      solRing.name,
+      counterspell.name,
+    ]);
+    expect(migrated.cards.map((entry) => entry.section)).toEqual([
+      "command_zone",
+      "mainboard",
+      "mainboard",
+    ]);
+    // Neither field is written again, so neither may come back on a stored deck.
+    for (const entry of migrated.cards) {
+      expect(entry).not.toHaveProperty("categories");
+    }
+    expect(migrated).not.toHaveProperty("custom_groups");
   });
 
-  it("maps command-zone and custom-group placements", () => {
-    expect(placementForGroup(COMMAND_ZONE_GROUP_ID)).toEqual({
-      section: "command_zone",
-      categories: [COMMAND_ZONE_GROUP_ID],
-    });
-    expect(placementForGroup(UNASSIGNED_GROUP_ID)).toEqual({
-      section: "mainboard",
-      categories: [UNASSIGNED_GROUP_ID],
-    });
-    expect(placementForGroup("group-ramp")).toEqual({
-      section: "mainboard",
-      categories: ["group-ramp"],
-    });
+  it("round-trips a deck this build wrote, which carries no categories at all", () => {
+    const deck = createEmptyDeck(new Date("2026-01-01T00:00:00Z"));
+    const written = {
+      ...deck,
+      cards: [makeEntry(ghalta, "command_zone"), makeEntry(solRing, "mainboard")],
+    };
+    const fallback = createEmptyDeck(new Date("2026-02-02T00:00:00Z"));
+
+    const parsed = parseStoredDeck(JSON.stringify(written), fallback);
+
+    // Not the fallback: an entry validator that still required `categories` would
+    // reject every deck saved from here on and silently hand back an empty one.
+    expect(parsed).not.toBe(fallback);
+    expect(parsed.cards).toHaveLength(2);
+  });
+
+  it("names each section once, for the board, the inspector and the agent", () => {
+    expect(sectionLabel("command_zone")).toBe("Command zone");
+    expect(sectionLabel("mainboard")).toBe("Deck");
+
+    // The label the snapshot sends has to resolve back to the section it came from,
+    // whatever case it comes back in.
+    expect(sectionForLabel("Command zone")).toBe("command_zone");
+    expect(sectionForLabel("  command ZONE ")).toBe("command_zone");
+    expect(sectionForLabel("Deck")).toBe("mainboard");
+    expect(sectionForLabel("Ramp")).toBeUndefined();
+    expect(sectionForLabel("")).toBeUndefined();
+
+    expect(isDeckSection("command_zone")).toBe(true);
+    expect(isDeckSection("mainboard")).toBe(true);
+    expect(isDeckSection("maybeboard")).toBe(false);
+    expect(isDeckSection(undefined)).toBe(false);
   });
 
   it("parses a persisted deck library and repairs a missing active id", () => {
@@ -93,16 +121,6 @@ describe("deck domain", () => {
 
     expect(parsed.active_deck_id).toBe(first.id);
     expect(parsed.decks.map((deck) => deck.name)).toEqual(["First", "Second"]);
-  });
-
-  it("resolves only persisted custom groups for mainboard cards", () => {
-    const entry = makeEntry(solRing, "mainboard");
-    entry.categories = ["group-ramp"];
-
-    expect(
-      groupIdForEntry(entry, [{ id: "group-ramp", name: "Ramp" }]),
-    ).toBe("group-ramp");
-    expect(groupIdForEntry(entry, [])).toBe(UNASSIGNED_GROUP_ID);
   });
 
   it("validates cards against the union of command-zone color identities", () => {
@@ -242,10 +260,6 @@ function makeEntry(
     },
     quantity: 1,
     section,
-    categories:
-      section === "command_zone"
-        ? [COMMAND_ZONE_GROUP_ID]
-        : [UNASSIGNED_GROUP_ID],
   };
 }
 

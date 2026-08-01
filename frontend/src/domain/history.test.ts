@@ -1,12 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import type { CardSearchResult } from "./card";
-import type { Deck, DeckCardEntry } from "./deck";
-import {
-  COMMAND_ZONE_GROUP_ID,
-  placementForGroup,
-  UNASSIGNED_GROUP_ID,
-} from "./deck";
+import type { Deck, DeckCardEntry, DeckSection } from "./deck";
 import type {
   DeckDiff,
   DeckDiffApplyFailure,
@@ -39,7 +34,11 @@ const SESSION_START = "2026-08-01T14:00:00.000Z";
 /**
  * Every mutable field of `Deck` gets a row here, because the derivation is only complete
  * for the fields it is asked about: a field with no row would stop being undone and no
- * assertion would notice. Adding a twelfth axis is one line.
+ * assertion would notice. Adding another axis is one line.
+ *
+ * There are three such fields now — a card's quantity, a card's section, and the deck
+ * name — plus the two ways the card list itself can change. The rows for custom groups
+ * went with the groups: there is no second placement axis left to derive.
  */
 const diffCases: { label: string; before: Deck; after: Deck }[] = [
   {
@@ -47,7 +46,7 @@ const diffCases: { label: string; before: Deck; after: Deck }[] = [
     before: baseDeck(),
     after: edited((deck) => ({
       ...deck,
-      cards: [...deck.cards, makeEntry(gamble, UNASSIGNED_GROUP_ID)],
+      cards: [...deck.cards, makeEntry(gamble, "mainboard")],
     })),
   },
   {
@@ -55,7 +54,7 @@ const diffCases: { label: string; before: Deck; after: Deck }[] = [
     before: baseDeck(),
     after: edited((deck) => ({
       ...deck,
-      cards: [makeEntry(gamble, UNASSIGNED_GROUP_ID), ...deck.cards],
+      cards: [makeEntry(gamble, "mainboard"), ...deck.cards],
     })),
   },
   {
@@ -76,61 +75,18 @@ const diffCases: { label: string; before: Deck; after: Deck }[] = [
     ),
   },
   {
-    label: "a section move",
+    label: "a commander leaving the command zone",
     before: baseDeck(),
     after: edited((deck) =>
-      withEntry(deck, ghalta.scryfall_id, {
-        ...placementForGroup(UNASSIGNED_GROUP_ID),
-      }),
+      withEntry(deck, ghalta.scryfall_id, { section: "mainboard" }),
     ),
   },
   {
-    label: "a group move",
+    label: "a card becoming the commander",
     before: baseDeck(),
     after: edited((deck) =>
-      withEntry(deck, solRing.scryfall_id, {
-        ...placementForGroup(UNASSIGNED_GROUP_ID),
-      }),
+      withEntry(deck, counterspell.scryfall_id, { section: "command_zone" }),
     ),
-  },
-  {
-    label: "a category change",
-    before: baseDeck(),
-    after: edited((deck) =>
-      withEntry(deck, solRing.scryfall_id, {
-        categories: ["group-ramp", "group-secondary"],
-      }),
-    ),
-  },
-  {
-    label: "a created group holding a moved card",
-    before: baseDeck(),
-    after: edited((deck) =>
-      withEntry(
-        {
-          ...deck,
-          custom_groups: [...deck.custom_groups, { id: "group-draw", name: "Draw" }],
-        },
-        counterspell.scryfall_id,
-        { ...placementForGroup("group-draw") },
-      ),
-    ),
-  },
-  {
-    label: "a renamed group",
-    before: baseDeck(),
-    after: edited((deck) => ({
-      ...deck,
-      custom_groups: [{ id: "group-ramp", name: "Ramp package" }],
-    })),
-  },
-  {
-    label: "a group inserted ahead of the existing one",
-    before: baseDeck(),
-    after: edited((deck) => ({
-      ...deck,
-      custom_groups: [{ id: "group-draw", name: "Draw" }, ...deck.custom_groups],
-    })),
   },
   {
     label: "a deck rename",
@@ -145,19 +101,15 @@ const diffCases: { label: string; before: Deck; after: Deck }[] = [
         {
           ...deck,
           name: "Naya Beats",
-          custom_groups: [
-            { id: "group-draw", name: "Draw" },
-            { id: "group-ramp", name: "Ramp package" },
-          ],
           cards: [
             ...deck.cards.filter(
               (entry) => entry.card.scryfall_id !== solRing.scryfall_id,
             ),
-            makeEntry(gamble, UNASSIGNED_GROUP_ID, 2),
+            makeEntry(gamble, "mainboard", 2),
           ],
         },
         counterspell.scryfall_id,
-        { ...placementForGroup("group-draw"), quantity: 4 },
+        { section: "command_zone", quantity: 1 },
       ),
     ),
   },
@@ -193,7 +145,7 @@ describe("deck history derivation", () => {
 
   it("derives one change for one edit to a hundred-card deck", () => {
     const cards = Array.from({ length: 100 }, (_, index) =>
-      makeEntry(printing(index), UNASSIGNED_GROUP_ID),
+      makeEntry(printing(index), "mainboard"),
     );
     const before = { ...baseDeck(), cards };
     const after = {
@@ -209,7 +161,6 @@ describe("deck history derivation", () => {
     // it was rather than at the end.
     expect(diff.cards).toHaveLength(1);
     expect(diff.cards[0]?.scryfall_id).toBe("printing-40");
-    expect(diff.groups).toBeUndefined();
     expect(diff.name).toBeUndefined();
     expect(
       applied(applyDeckDiff(after, invertDeckDiff(stamp(diff)), payloads)),
@@ -224,7 +175,7 @@ describe("deck history derivation", () => {
         ...deck.cards.filter(
           (entry) => entry.card.scryfall_id !== solRing.scryfall_id,
         ),
-        makeEntry(gamble, UNASSIGNED_GROUP_ID),
+        makeEntry(gamble, "mainboard"),
       ],
     }));
 
@@ -267,12 +218,7 @@ describe("deck history derivation", () => {
       oracle_id: solRing.oracle_id,
       scryfall_id: solRing.scryfall_id,
       name: "Sol Ring",
-      before: {
-        quantity: 1,
-        section: "mainboard",
-        categories: ["group-ramp"],
-        index: 1,
-      },
+      before: { quantity: 1, section: "mainboard", index: 1 },
       after: null,
     });
     expect(payloads).toEqual({ [solRing.scryfall_id]: solRing });
@@ -305,9 +251,7 @@ describe("deck history application", () => {
   it("applies a placement change with no pooled payload at all", () => {
     const before = baseDeck();
     const after = edited((deck) =>
-      withEntry(deck, solRing.scryfall_id, {
-        ...placementForGroup(UNASSIGNED_GROUP_ID),
-      }),
+      withEntry(deck, solRing.scryfall_id, { section: "command_zone" }),
     );
     const { diff, payloads } = deriveDeckDiff(before, after);
 
@@ -316,10 +260,10 @@ describe("deck history application", () => {
     // when a card genuinely has to be rebuilt.
     const moved = applied(applyDeckDiff(before, stamp(diff), {}));
 
-    expect(moved.cards[1]?.categories).toEqual([UNASSIGNED_GROUP_ID]);
+    expect(moved.cards[1]?.section).toBe("command_zone");
     expect(moved.cards[1]?.card.details).toBe(solRing);
     // And it is not *pooled* either, which is a separate claim from not being consulted:
-    // pooling a payload for every quantity change, section move and category change would
+    // pooling a payload for every quantity change and every section move would
     // spend kilobytes of quota per edit that no replay ever reads. Nothing asserted this
     // until Phase 2's audit went looking for the mutant that survives without it.
     expect(payloads).toEqual({});
@@ -329,7 +273,7 @@ describe("deck history application", () => {
     const before = baseDeck();
     const after = edited((deck) => ({
       ...deck,
-      cards: [...deck.cards, makeEntry(gamble, UNASSIGNED_GROUP_ID)],
+      cards: [...deck.cards, makeEntry(gamble, "mainboard")],
     }));
     const { diff, payloads } = deriveDeckDiff(before, after);
     const entry = stamp(diff);
@@ -474,7 +418,7 @@ describe("deck history pruning", () => {
     expect(
       refused(
         applyDeckDiff(
-          { ...baseDeck(), cards: [], custom_groups: [] },
+          { ...baseDeck(), cards: [] },
           oldest,
           pruned.cards,
         ),
@@ -520,6 +464,69 @@ describe("stored deck history", () => {
       ),
     ).toEqual(written);
   });
+
+  it("keeps a log written before custom groups were removed readable and replayable", () => {
+    // Exactly what the old writer produced: `categories` inside each placement, and a
+    // `groups` array on the diff. The storage key is deliberately not bumped, so this is
+    // the log a real deck opens with — and rejecting it would cost the user their undo
+    // depth for nothing.
+    const legacy = {
+      deck_id: "deck-1",
+      sessions: [
+        {
+          id: "session-old",
+          actor: "user",
+          started_at: CREATED_AT,
+          ended_at: CREATED_AT,
+          edits: [
+            {
+              id: "edit-old",
+              at: CREATED_AT,
+              summary: "+1 · +Sol Ring",
+              cards: [
+                {
+                  oracle_id: solRing.oracle_id,
+                  scryfall_id: solRing.scryfall_id,
+                  name: "Sol Ring",
+                  before: null,
+                  after: {
+                    quantity: 1,
+                    section: "mainboard",
+                    categories: ["group-ramp"],
+                    index: 0,
+                  },
+                },
+              ],
+              groups: [
+                {
+                  id: "group-ramp",
+                  before: null,
+                  after: { name: "Ramp", index: 0 },
+                },
+              ],
+            },
+          ],
+        },
+      ],
+      cards: { [solRing.scryfall_id]: solRing },
+    };
+
+    const parsed = parseDeckHistory(legacy, createDeckHistory("deck-1"));
+
+    expect(parsed.sessions).toHaveLength(1);
+    const entry = parsed.sessions[0].edits[0];
+    expect(entry.summary).toBe("+1 · +Sol Ring");
+
+    // The card change still replays, forwards and backwards. The group the card was filed
+    // in is dropped rather than restored, because there is nowhere left to put it.
+    const empty: Deck = { ...baseDeck(), cards: [] };
+    const forward = applied(applyDeckDiff(empty, entry, parsed.cards));
+    expect(forward.cards.map((card) => card.card.name)).toEqual(["Sol Ring"]);
+    expect(forward.cards[0]).not.toHaveProperty("categories");
+    expect(
+      applied(applyDeckDiff(forward, invertDeckDiff(entry), parsed.cards)).cards,
+    ).toEqual([]);
+  });
 });
 
 function baseDeck(): Deck {
@@ -528,11 +535,10 @@ function baseDeck(): Deck {
     name: "Gruul Stompy",
     format: "commander",
     cards: [
-      makeEntry(ghalta, COMMAND_ZONE_GROUP_ID),
-      makeEntry(solRing, "group-ramp"),
-      makeEntry(counterspell, UNASSIGNED_GROUP_ID),
+      makeEntry(ghalta, "command_zone"),
+      makeEntry(solRing, "mainboard"),
+      makeEntry(counterspell, "mainboard"),
     ],
-    custom_groups: [{ id: "group-ramp", name: "Ramp" }],
     created_at: CREATED_AT,
     updated_at: BEFORE_UPDATED_AT,
   };
@@ -545,7 +551,7 @@ function edited(change: (deck: Deck) => Deck): Deck {
 
 function makeEntry(
   card: CardSearchResult,
-  groupId: string,
+  section: DeckSection,
   quantity = 1,
 ): DeckCardEntry {
   return {
@@ -556,7 +562,7 @@ function makeEntry(
       details: card,
     },
     quantity,
-    ...placementForGroup(groupId),
+    section,
   };
 }
 
@@ -597,7 +603,7 @@ function additionDiff(): DeckDiffDerivation {
     before,
     edited((deck) => ({
       ...deck,
-      cards: [...deck.cards, makeEntry(gamble, UNASSIGNED_GROUP_ID)],
+      cards: [...deck.cards, makeEntry(gamble, "mainboard")],
     })),
   );
 }
@@ -618,12 +624,12 @@ function seededHistory(actor: DeckHistoryActor, at: string): DeckHistory {
  */
 function additionHistory(): DeckHistory {
   let history = createDeckHistory("deck-1");
-  let deck: Deck = { ...baseDeck(), cards: [], custom_groups: [] };
+  let deck: Deck = { ...baseDeck(), cards: [] };
   [solRing, ghalta, counterspell, gamble].forEach((card, index) => {
     const after: Deck = {
       ...deck,
       updated_at: atSeconds(index * 3600),
-      cards: [...deck.cards, makeEntry(card, UNASSIGNED_GROUP_ID)],
+      cards: [...deck.cards, makeEntry(card, "mainboard")],
     };
     const { diff, payloads } = deriveDeckDiff(deck, after);
     history = appendToHistory(history, {

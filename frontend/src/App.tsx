@@ -20,12 +20,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { CardInspector } from "./components/CardInspector";
 import { DeckAgentPanel } from "./components/DeckAgentPanel";
-import {
-  DeckBoard,
-  type GroupMode,
-  type SortMode,
-  type ViewMode,
-} from "./components/DeckBoard";
+import { DeckBoard, type SortMode, type ViewMode } from "./components/DeckBoard";
 import { DeleteDeckDialog } from "./components/DeleteDeckDialog";
 import { SearchDrawer } from "./components/SearchDrawer";
 import type { CardSearchResult, CardTagFilter } from "./domain/card";
@@ -37,13 +32,7 @@ import {
   toDeckAgentHistory,
   toDeckSnapshot,
 } from "./domain/agent";
-import type { Deck, DeckCustomGroup } from "./domain/deck";
-import {
-  COMMAND_ZONE_GROUP_ID,
-  UNASSIGNED_GROUP_ID,
-  groupIdForEntry,
-  groupName,
-} from "./domain/deck";
+import type { Deck, DeckSection } from "./domain/deck";
 import { DECK_HISTORY_STORAGE_KEY } from "./domain/history";
 import { useBackendHealth } from "./hooks/useBackendHealth";
 import { useDebugMode } from "./hooks/useDebugMode";
@@ -55,7 +44,7 @@ import "./styles.css";
 
 interface SearchRequest {
   id: number;
-  targetGroupId?: string;
+  targetSection?: DeckSection;
   targetLabel?: string;
   initialQuery?: string;
   initialTags?: CardTagFilter[];
@@ -76,7 +65,6 @@ function App() {
     setQuantity,
     removeCard,
     moveCard,
-    addCustomGroup,
     renameDeck,
     createDeck,
     selectDeck,
@@ -89,7 +77,6 @@ function App() {
   const [debugEnabled, setDebugEnabled] = useDebugMode();
   const isMobile = useMediaQuery("(max-width: 860px)");
   const [view, setView] = useState<ViewMode>("visual");
-  const [group, setGroup] = useState<GroupMode>("type");
   const [sort, setSort] = useState<SortMode>("alphabet");
   const [navigationOpen, setNavigationOpen] = useState(false);
   const [searchRequest, setSearchRequest] = useState<SearchRequest | null>(null);
@@ -100,14 +87,8 @@ function App() {
   // What the deck agent's tools read. Rebuilt from the deck rather than held
   // separately, so a card added mid-conversation is visible on the next question.
   const deckSnapshot = useMemo(
-    () =>
-      toDeckSnapshot(deck.name, deck.cards, (entry) => {
-        const groupId = groupIdForEntry(entry, deck.custom_groups);
-        return groupId === UNASSIGNED_GROUP_ID
-          ? undefined
-          : groupName(groupId, deck.custom_groups);
-      }),
-    [deck.cards, deck.custom_groups, deck.name],
+    () => toDeckSnapshot(deck.name, deck.cards),
+    [deck.cards, deck.name],
   );
 
   /**
@@ -173,8 +154,8 @@ function App() {
     } catch {
       // A deck whose history cannot be read is a deck with none to post.
     }
-    return toDeckAgentHistory(raw, deck.id, deck.custom_groups);
-  }, [deck.custom_groups, deck.id]);
+    return toDeckAgentHistory(raw, deck.id);
+  }, [deck.id]);
 
   const [deckNameDraft, setDeckNameDraft] = useState(deck.name);
   const returnFocus = useRef<HTMLElement | null>(null);
@@ -191,7 +172,7 @@ function App() {
 
   const openSearch = useCallback(
     (
-      targetGroupId?: string,
+      targetSection?: DeckSection,
       targetLabel?: string,
       initialQuery?: string,
       initialTags?: CardTagFilter[],
@@ -205,7 +186,7 @@ function App() {
       }
       setSearchRequest({
         id: nextSearchRequestId.current++,
-        targetGroupId,
+        targetSection,
         targetLabel,
         initialQuery,
         initialTags,
@@ -586,17 +567,6 @@ function App() {
             </button>
           </div>
           <label className="select-control">
-            <span>Group</span>
-            <select
-              aria-label="Group cards"
-              value={group}
-              onChange={(event) => setGroup(event.target.value as GroupMode)}
-            >
-              <option value="custom">Custom</option>
-              <option value="type">Card types</option>
-            </select>
-          </label>
-          <label className="select-control">
             <span>Sort</span>
             <select
               aria-label="Sort cards"
@@ -669,14 +639,11 @@ function App() {
             ) : null}
             <DeckBoard
               entries={deck.cards}
-              customGroups={deck.custom_groups}
               view={view}
-              group={group}
               sort={sort}
               singletonWarnings={statistics.singletonWarnings}
               colorIdentityWarnings={statistics.colorIdentityWarnings}
               onSearch={openSearch}
-              onAddCustomGroup={addCustomGroup}
               onSelect={setSelectedCard}
               onSetQuantity={setQuantity}
               onMove={moveCard}
@@ -736,13 +703,7 @@ function App() {
       <CardInspector
         card={selectedCard}
         quantity={selectedEntry?.quantity ?? 0}
-        groupId={
-          selectedEntry
-            ? groupIdForEntry(selectedEntry, deck.custom_groups)
-            : undefined
-        }
-        customGroups={deck.custom_groups}
-        showCustomGroupControl={group === "custom"}
+        section={selectedEntry?.section}
         singletonWarning={
           selectedCard
             ? statistics.singletonWarnings.has(selectedCard.oracle_id)
@@ -768,7 +729,7 @@ function App() {
           key={searchRequest.id}
           initialQuery={searchRequest.initialQuery}
           initialTags={searchRequest.initialTags}
-          targetGroupId={searchRequest.targetGroupId}
+          targetSection={searchRequest.targetSection}
           targetLabel={searchRequest.targetLabel}
           entries={deck.cards}
           suspended={selectedCard !== null}
@@ -824,17 +785,20 @@ function App() {
 /**
  * Translate a resolved agent edit into the deck's own typed edit, or refuse it whole.
  *
- * Two things have to be resolved here and nowhere else. A change that only cuts or
- * moves carries no card payload — it does not need to, because the deck already holds
- * the card — so the payload comes from the deck itself, and a card the deck cannot
- * produce one for refuses the entire edit rather than silently dropping that change.
- * And the group travels as the name on screen, which only the deck can turn back into
- * the id it files cards under.
+ * One thing has to be resolved here and nowhere else: a change that only cuts or moves
+ * carries no card payload — it does not need to, because the deck already holds the card —
+ * so the payload comes from the deck itself, and a card the deck cannot produce one for
+ * refuses the entire edit rather than silently dropping that change.
  *
- * Both readings are of `deck` as it is at the moment the edit is applied, which is why this
+ * That reading is of `deck` as it is at the moment the edit is applied, which is why this
  * takes it as an argument rather than closing over one: the printing a cut names may have
- * left the deck since the turn was sent, and the group a change names may have been created
- * by an earlier edit in the same turn.
+ * left the deck since the turn was sent.
+ *
+ * An absent `section` means "leave placement alone" and is passed through as absent. It is
+ * never read as the mainboard: the same field carries an ordinary quantity change on a card
+ * that happens to be the commander, so filling it in would take the user's commander out of
+ * the command zone on the next quantity edit — invisible in the tool result, and the deck's
+ * own validators would allow it.
  */
 function toDeckEdit(edit: DeckAgentDeckEdit, deck: Deck): DeckEdit | null {
   const changes: DeckEditChange[] = [];
@@ -846,49 +810,13 @@ function toDeckEdit(edit: DeckAgentDeckEdit, deck: Deck): DeckEdit | null {
     if (!card) {
       return null;
     }
-    // Absent means "leave placement alone", never "unfile it". The same field carries
-    // both an ordinary quantity change on a card the user filed in a group and a card
-    // that is genuinely unfiled, so writing a group unconditionally would quietly take
-    // every edited card out of the group the user put it in — invisible in the deck,
-    // cumulative across turns, and it destroys the user's work rather than the agent's.
-    const groupId =
-      change.group === undefined
-        ? undefined
-        : groupIdForName(change.group, deck.custom_groups);
     changes.push({
       card,
       quantity: change.quantity,
-      ...(groupId ? { groupId } : {}),
+      ...(change.section ? { section: change.section } : {}),
     });
   }
   return { reason: edit.reason, changes };
-}
-
-/**
- * The group id behind a name the agent used, or nothing when it names no known group.
- *
- * Nothing is the safe answer rather than the unassigned group: an unrecognised name is
- * the agent being wrong about where a card should sit, and leaving the card where the
- * user put it is the smaller mistake. The two permanent groups are matched by the
- * labels the board shows for them, because those are the labels the deck snapshot sent.
- */
-function groupIdForName(
-  name: string,
-  customGroups: DeckCustomGroup[],
-): string | undefined {
-  const wanted = name.trim().toLowerCase();
-  if (!wanted) {
-    return undefined;
-  }
-  if (wanted === groupName(COMMAND_ZONE_GROUP_ID, []).toLowerCase()) {
-    return COMMAND_ZONE_GROUP_ID;
-  }
-  if (wanted === groupName(UNASSIGNED_GROUP_ID, []).toLowerCase()) {
-    return UNASSIGNED_GROUP_ID;
-  }
-  return customGroups.find(
-    (group) => group.name.trim().toLowerCase() === wanted,
-  )?.id;
 }
 
 export default App;

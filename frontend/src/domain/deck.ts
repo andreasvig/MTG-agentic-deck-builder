@@ -7,22 +7,31 @@ export interface CardReference {
   details?: CardSearchResult;
 }
 
+/**
+ * Where a card sits, and the only axis a card can be moved along.
+ *
+ * There were once two axes: this one, and a user-defined group stored in a `categories`
+ * array. The groups are gone — the board groups by card type, which is derived from the
+ * card and cannot be edited — so a placement is a section and nothing else. Anything that
+ * used to pass a "group id" around passes one of these two values, because those are the
+ * only ids there ever were once the custom ones went.
+ */
 export type DeckSection = "command_zone" | "mainboard";
-
-export interface DeckCustomGroup {
-  id: string;
-  name: string;
-}
 
 export interface DeckCardEntry {
   card: CardReference;
   quantity: number;
   section: DeckSection;
-  categories: string[];
 }
 
+/**
+ * A stored entry may carry fields this build no longer models: `maybeboard` as a section,
+ * and the `categories` array that held a custom group id. Both are read, dropped and never
+ * written again, so a deck saved by an older build opens without them.
+ */
 type StoredDeckCardEntry = Omit<DeckCardEntry, "section"> & {
   section: DeckSection | "maybeboard";
+  categories?: unknown;
 };
 
 export interface Deck {
@@ -30,7 +39,6 @@ export interface Deck {
   name: string;
   format: "commander";
   cards: DeckCardEntry[];
-  custom_groups: DeckCustomGroup[];
   created_at: string;
   updated_at: string;
 }
@@ -45,51 +53,34 @@ export interface CommandZoneValidation {
   reason: string | null;
 }
 
-export const COMMAND_ZONE_GROUP_ID = "command_zone";
-export const UNASSIGNED_GROUP_ID = "unassigned";
+export const COMMAND_ZONE_SECTION: DeckSection = "command_zone";
+export const MAINBOARD_SECTION: DeckSection = "mainboard";
 export const DECK_STORAGE_KEY = "manabase.active-deck.v1";
 export const DECK_LIBRARY_STORAGE_KEY = "manabase.deck-library.v2";
 
-export function groupIdForEntry(
-  entry: DeckCardEntry,
-  customGroups: DeckCustomGroup[],
-): string {
-  if (entry.section === "command_zone") {
-    return COMMAND_ZONE_GROUP_ID;
-  }
-  const stored = entry.categories[0];
-  return customGroups.some((group) => group.id === stored)
-    ? stored
-    : UNASSIGNED_GROUP_ID;
+/**
+ * What a section is called wherever one is named — a board heading, the inspector's
+ * placement control, the deck snapshot the agent reads, and the label the agent may write
+ * back. One function so those cannot come to disagree: the agent is told a card is in the
+ * "Command zone" using the same string that resolves back to a section.
+ */
+export function sectionLabel(section: DeckSection): string {
+  return section === "command_zone" ? "Command zone" : "Deck";
 }
 
-export function groupName(
-  groupId: string,
-  customGroups: DeckCustomGroup[],
-): string {
-  if (groupId === COMMAND_ZONE_GROUP_ID) {
-    return "Command zone";
+/** The section behind a label, or nothing when it names neither. Matched case-insensitively. */
+export function sectionForLabel(label: string): DeckSection | undefined {
+  const wanted = label.trim().toLowerCase();
+  if (wanted === sectionLabel("command_zone").toLowerCase()) {
+    return "command_zone";
   }
-  if (groupId === UNASSIGNED_GROUP_ID) {
-    return "Not assigned";
-  }
-  return customGroups.find((group) => group.id === groupId)?.name ?? "Not assigned";
+  return wanted === sectionLabel("mainboard").toLowerCase()
+    ? "mainboard"
+    : undefined;
 }
 
-export function placementForGroup(groupId: string): {
-  section: DeckSection;
-  categories: string[];
-} {
-  if (groupId === COMMAND_ZONE_GROUP_ID) {
-    return {
-      section: "command_zone",
-      categories: [COMMAND_ZONE_GROUP_ID],
-    };
-  }
-  return {
-    section: "mainboard",
-    categories: [groupId || UNASSIGNED_GROUP_ID],
-  };
+export function isDeckSection(value: unknown): value is DeckSection {
+  return value === "command_zone" || value === "mainboard";
 }
 
 export function getCommanderColorIdentity(
@@ -282,7 +273,6 @@ export function createEmptyDeck(
     name,
     format: "commander",
     cards: [],
-    custom_groups: [],
     created_at: timestamp,
     updated_at: timestamp,
   };
@@ -344,37 +334,32 @@ export function parseStoredDeckLibrary(
   }
 }
 
+/**
+ * Bring a stored deck up to what this build models, dropping what it no longer does.
+ *
+ * A deck saved before custom groups were removed carries `custom_groups` and a `categories`
+ * array per card. Both are dropped here rather than migrated, because there is nowhere left
+ * to put them: the board groups by card type, so a stored group name has no display and no
+ * control. The cards themselves are untouched — only where a card was *filed* is lost, never
+ * whether the deck holds it — and the command zone, which is the one placement that survived,
+ * comes through as it always did.
+ */
 function normalizeDeck(value: Record<string, unknown>): Deck {
-  const storedGroups = Array.isArray(value.custom_groups)
-    ? value.custom_groups.filter(isCustomGroup)
-    : [];
-  const knownGroupIds = new Set(storedGroups.map((group) => group.id));
-  const cards = (value.cards as StoredDeckCardEntry[]).map((entry) => {
-    if (entry.section === "command_zone") {
-      return {
-        ...entry,
-        section: "command_zone" as const,
-        categories: [COMMAND_ZONE_GROUP_ID],
-      };
-    }
-    const storedGroup = entry.categories[0];
-    return {
+  const cards = (value.cards as StoredDeckCardEntry[]).map(
+    ({ categories: _categories, ...entry }) => ({
       ...entry,
-      section: "mainboard" as const,
-      categories: [
-        storedGroup && knownGroupIds.has(storedGroup)
-          ? storedGroup
-          : UNASSIGNED_GROUP_ID,
-      ],
-    };
-  });
+      section:
+        entry.section === "command_zone"
+          ? ("command_zone" as const)
+          : ("mainboard" as const),
+    }),
+  );
 
   return {
     id: value.id as string,
     name: value.name as string,
     format: "commander",
     cards,
-    custom_groups: storedGroups,
     created_at: value.created_at as string,
     updated_at: value.updated_at as string,
   };
@@ -391,10 +376,7 @@ function isDeckBase(value: unknown): value is Record<string, unknown> {
     typeof value.created_at === "string" &&
     typeof value.updated_at === "string" &&
     Array.isArray(value.cards) &&
-    value.cards.every(isDeckEntry) &&
-    (value.custom_groups === undefined ||
-      (Array.isArray(value.custom_groups) &&
-        value.custom_groups.every(isCustomGroup)))
+    value.cards.every(isDeckEntry)
   );
 }
 
@@ -409,21 +391,12 @@ function isDeckEntry(value: unknown): value is StoredDeckCardEntry {
     Number.isInteger(value.quantity) &&
     typeof value.quantity === "number" &&
     value.quantity > 0 &&
+    // `categories` is deliberately not checked. A deck this build writes has none, so
+    // requiring one would reject every deck saved from here on; a deck an older build wrote
+    // has one, and it is dropped rather than read.
     (value.section === "command_zone" ||
       value.section === "mainboard" ||
-      value.section === "maybeboard") &&
-    Array.isArray(value.categories) &&
-    value.categories.every((category) => typeof category === "string")
-  );
-}
-
-function isCustomGroup(value: unknown): value is DeckCustomGroup {
-  return (
-    isRecord(value) &&
-    typeof value.id === "string" &&
-    value.id.length > 0 &&
-    typeof value.name === "string" &&
-    value.name.trim().length > 0
+      value.section === "maybeboard")
   );
 }
 

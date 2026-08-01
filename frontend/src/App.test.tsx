@@ -4,13 +4,11 @@ import { StrictMode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import App from "./App";
-import type { Deck, DeckCardEntry } from "./domain/deck";
+import type { Deck, DeckCardEntry, DeckSection } from "./domain/deck";
 import {
-  COMMAND_ZONE_GROUP_ID,
   createEmptyDeck,
   DECK_LIBRARY_STORAGE_KEY,
   DECK_STORAGE_KEY,
-  UNASSIGNED_GROUP_ID,
 } from "./domain/deck";
 import { DECK_HISTORY_STORAGE_KEY } from "./domain/history";
 import type { CardSearchResult } from "./domain/card";
@@ -53,11 +51,16 @@ describe("deck workspace", () => {
     expect(
       screen.getByRole("heading", { name: "Command zone" }),
     ).toBeInTheDocument();
+    // The board groups by card type and nothing else: there is no grouping control to
+    // choose, no group to create, and no heading for cards that belong to no group.
     expect(
       screen.queryByRole("heading", { name: "Not assigned" }),
     ).not.toBeInTheDocument();
     expect(
       screen.queryByRole("button", { name: "Add custom group" }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("combobox", { name: "Group cards" }),
     ).not.toBeInTheDocument();
     expect(await screen.findByText("Card service online")).toBeInTheDocument();
     expect(
@@ -89,12 +92,6 @@ describe("deck workspace", () => {
     expect(
       screen.queryByRole("heading", { name: "Maybeboard" }),
     ).not.toBeInTheDocument();
-    expect(
-      screen.getByRole("combobox", { name: "Group cards" }),
-    ).toHaveValue("type");
-    expect(
-      screen.getByRole("option", { name: "Card types" }),
-    ).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Artifact" })).toBeInTheDocument();
     expect(screen.getByText("1 / 100")).toBeInTheDocument();
 
@@ -117,54 +114,52 @@ describe("deck workspace", () => {
     });
   });
 
-  it("keeps custom grouping explicit and manages multiple local decks", async () => {
+  it("makes a card the commander from the inspector and manages multiple local decks", async () => {
     const user = userEvent.setup();
+    vi.mocked(globalThis.fetch).mockImplementation((input) => {
+      const url = String(input);
+      if (url.includes("/cards/search")) {
+        return Promise.resolve(
+          Response.json(cardSearchPage([ghalta], "Ghalta"), { status: 200 }),
+        );
+      }
+      return Promise.resolve(Response.json(healthResponse, { status: 200 }));
+    });
     render(<App />);
-
-    await user.selectOptions(
-      screen.getByRole("combobox", { name: "Group cards" }),
-      "custom",
-    );
-    await user.click(
-      screen.getByRole("button", { name: "Add custom group" }),
-    );
-    await user.type(screen.getByRole("textbox", { name: "Group name" }), "Ramp");
-    await user.click(
-      screen.getByRole("button", { name: "Create custom group" }),
-    );
-    expect(screen.getByRole("heading", { name: "Ramp" })).toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "Add cards" }));
     await user.type(
       screen.getByRole("textbox", {
         name: "Search cards",
       }),
-      "Sol Ring",
+      "Ghalta",
     );
     await user.click(
-      await screen.findByRole("button", { name: "Add Sol Ring to deck" }),
+      await screen.findByRole("button", { name: "Add Ghalta, Primal Hunger to deck" }),
     );
     await user.keyboard("{Escape}");
-    await user.click(screen.getByRole("button", { name: "Inspect Sol Ring" }));
+    await user.click(
+      screen.getByRole("button", { name: "Inspect Ghalta, Primal Hunger" }),
+    );
     expect(
       screen.getByRole("dialog", { name: "Card details" }),
     ).toBeInTheDocument();
     expect(document.querySelector("main")).toHaveAttribute("inert");
     expect(screen.queryByText("Deck inspector")).not.toBeInTheDocument();
 
-    const customGroupSelect = screen.getByRole("combobox", {
-      name: "Move Sol Ring to custom group",
+    // The one placement control there is, and it is not conditional on anything: before
+    // custom groups were removed this select only appeared while the board grouped by
+    // custom group, which left the default view — now the only view — with no way to fill
+    // the command zone except a drag.
+    const placement = screen.getByRole("combobox", {
+      name: "Move Ghalta, Primal Hunger to another part of the deck",
     });
-    expect(customGroupSelect).toHaveValue(UNASSIGNED_GROUP_ID);
+    expect(placement).toHaveValue("mainboard");
     await user.selectOptions(
-      customGroupSelect,
-      screen.getByRole("option", { name: "Ramp" }),
+      placement,
+      screen.getByRole("option", { name: "Command zone" }),
     );
-    expect(
-      screen.getByRole("combobox", {
-        name: "Move Sol Ring to custom group",
-      }),
-    ).toHaveDisplayValue("Ramp");
+    expect(placement).toHaveDisplayValue("Command zone");
 
     await user.click(
       screen.getAllByRole("button", { name: "Close card inspector" })[1],
@@ -172,30 +167,21 @@ describe("deck workspace", () => {
     expect(
       screen.queryByRole("dialog", { name: "Card details" }),
     ).not.toBeInTheDocument();
+    // The card is under the command-zone heading now, and the deck's colour identity
+    // follows from it.
     expect(
-      screen.getByRole("button", { name: "Drag Sol Ring" }),
+      screen.getByRole("heading", { name: "Command zone" }).closest("header"),
+    ).toHaveTextContent("1 cards");
+    await waitFor(() => {
+      expect(window.localStorage.getItem(DECK_LIBRARY_STORAGE_KEY)).toContain(
+        '"section":"command_zone"',
+      );
+    });
+    // Drag is on in the only view there is, rather than only in a mode that no longer
+    // exists — it is how a card reaches the command zone without opening the inspector.
+    expect(
+      screen.getByRole("button", { name: "Drag Ghalta, Primal Hunger" }),
     ).toHaveAttribute("aria-roledescription", "draggable");
-
-    await user.selectOptions(
-      screen.getByRole("combobox", { name: "Group cards" }),
-      "type",
-    );
-    expect(screen.getByRole("heading", { name: "Artifact" })).toBeInTheDocument();
-    expect(
-      screen.queryByRole("button", { name: "Add custom group" }),
-    ).not.toBeInTheDocument();
-    expect(
-      screen.queryByRole("button", { name: "Drag Sol Ring" }),
-    ).not.toBeInTheDocument();
-    await user.click(screen.getByRole("button", { name: "Inspect Sol Ring" }));
-    expect(
-      screen.queryByRole("combobox", {
-        name: "Move Sol Ring to custom group",
-      }),
-    ).not.toBeInTheDocument();
-    await user.click(
-      screen.getAllByRole("button", { name: "Close card inspector" })[1],
-    );
 
     await user.click(screen.getByRole("button", { name: "Rename deck" }));
     const deckName = screen.getByRole("textbox", { name: "Deck name" });
@@ -220,9 +206,45 @@ describe("deck workspace", () => {
     expect(
       screen.getByRole("heading", { name: "Dinosaur Ramp" }),
     ).toBeInTheDocument();
+    // Switching back brings the deck's own cards and its own command zone with it.
     expect(
-      screen.getByRole("button", { name: "Inspect Sol Ring" }),
+      screen.getByRole("button", { name: "Inspect Ghalta, Primal Hunger" }),
     ).toBeInTheDocument();
+    expect(
+      screen.getByRole("heading", { name: "Command zone" }).closest("header"),
+    ).toHaveTextContent("1 cards");
+  });
+
+  it("renders a board holding a card with no cached details", () => {
+    // Not a hypothetical: `isDeckEntry` does not require `details`, so a deck written by an
+    // older build hydrates without it. The board's own group header prices every card under
+    // it, and it used to do that through a cast that hid the absence from the type checker —
+    // the same defect that was already found and fixed once inside the statistics memo.
+    const deck = createEmptyDeck(new Date("2026-01-01T00:00:00Z"));
+    deck.cards = [
+      {
+        card: {
+          oracle_id: solRing.oracle_id,
+          scryfall_id: solRing.scryfall_id,
+          name: solRing.name,
+        },
+        quantity: 2,
+        section: "mainboard",
+      },
+    ];
+    window.localStorage.setItem(DECK_STORAGE_KEY, JSON.stringify(deck));
+
+    render(<App />);
+
+    // The board is up, the card counts towards the deck, and its group prices at nothing
+    // rather than taking the render down.
+    expect(
+      screen.getByRole("heading", { name: "Command zone" }),
+    ).toBeInTheDocument();
+    expect(screen.getByText("2 / 100")).toBeInTheDocument();
+    expect(
+      screen.getByRole("heading", { name: "Other" }).closest("header"),
+    ).toHaveTextContent("2 cards");
   });
 
   it("confirms deck deletion, creates a safe fallback, and restores the deleted deck", async () => {
@@ -355,7 +377,6 @@ describe("deck workspace", () => {
         },
         quantity: 1,
         section: "mainboard",
-        categories: [UNASSIGNED_GROUP_ID],
       },
     ];
     window.localStorage.setItem(DECK_STORAGE_KEY, JSON.stringify(deck));
@@ -483,7 +504,6 @@ describe("deck workspace", () => {
         },
         quantity: 1,
         section: "command_zone",
-        categories: ["command_zone"],
       },
     ];
     window.localStorage.setItem(DECK_STORAGE_KEY, JSON.stringify(deck));
@@ -625,7 +645,7 @@ describe("agent deck edits", () => {
 
   function deckEntry(
     card: CardSearchResult,
-    groupId = UNASSIGNED_GROUP_ID,
+    section: DeckSection = "mainboard",
   ): DeckCardEntry {
     return {
       card: {
@@ -635,8 +655,7 @@ describe("agent deck edits", () => {
         details: card,
       },
       quantity: 1,
-      section: "mainboard",
-      categories: [groupId],
+      section,
     };
   }
 
@@ -808,7 +827,7 @@ describe("agent deck edits", () => {
   });
 
   it("posts the edit it just made as history, so read_history can read it", async () => {
-    seedDeck({ cards: [deckEntry(gamble, "group-ramp")], custom_groups: [{ id: "group-ramp", name: "Ramp" }] });
+    seedDeck({ cards: [deckEntry(gamble)] });
     const requests = serveAgentTurn([
       {
         type: "deck_edit",
@@ -821,7 +840,6 @@ describe("agent deck edits", () => {
               name: solRing.name,
               quantity: 1,
               previous_quantity: 0,
-              group: "Ramp",
               card: solRing,
             },
           ],
@@ -856,8 +874,7 @@ describe("agent deck edits", () => {
               cards: [
                 {
                   name: "Sol Ring",
-                  // The group travels as its name on screen, never the internal id.
-                  after: { quantity: 1, section: "mainboard", group: "Ramp" },
+                  after: { quantity: 1, section: "mainboard" },
                 },
               ],
             },
@@ -867,50 +884,81 @@ describe("agent deck edits", () => {
     });
   });
 
-  it("leaves a card's group alone when the agent only changes its quantity", async () => {
+  it("makes a card the commander when the agent asks for the command zone", async () => {
+    seedDeck({ cards: [] });
+    serveAgentTurn([
+      {
+        type: "deck_edit",
+        edit: {
+          deck_name: "Gruul Stompy",
+          reason: "This deck needs a commander.",
+          changes: [
+            {
+              scryfall_id: ghalta.scryfall_id,
+              name: ghalta.name,
+              quantity: 1,
+              previous_quantity: 0,
+              section: "command_zone",
+              card: ghalta,
+            },
+          ],
+        },
+      },
+      doneFrame("Ghalta leads the deck."),
+    ]);
+    render(<App />);
+
+    await ask("Pick me a commander");
+    expect(await screen.findByText("Ghalta leads the deck.")).toBeInTheDocument();
+
+    // The whole of what the user asked for: the agent could not do this at all before,
+    // because the tool contract described the placement field as a custom group that
+    // "has to be one that already exists" — and an empty command zone is not one.
+    expect(storedDeck().cards[0].section).toBe("command_zone");
+    expect(groupHeader("Command zone")).toHaveTextContent("1 cards");
+    expect(screen.getByText("Applied: +1 / −0")).toBeInTheDocument();
+    expect(storedHistorySessions()).toHaveLength(1);
+  });
+
+  it("leaves a commander in the command zone when the agent only changes its quantity", async () => {
+    // Two copies in the command zone is illegal and the board says so — `getCommandZoneProblem`
+    // reports it — but it is a state a stored deck can be in, and it is the one state where a
+    // quantity change reaches a card whose section the edit says nothing about.
     seedDeck({
-      cards: [deckEntry(gamble, "group-ramp")],
-      custom_groups: [{ id: "group-ramp", name: "Ramp" }],
+      cards: [{ ...deckEntry(ghalta, "command_zone"), quantity: 2 }],
     });
     serveAgentTurn([
       {
         type: "deck_edit",
         edit: {
           deck_name: "Gruul Stompy",
-          reason: "One more copy.",
+          reason: "One commander, one copy.",
           changes: [
-            // No `group` at all, which means "leave placement alone" and never
-            // "unfile it" — the same absence covers a card the user filed and a card
-            // that is genuinely unfiled.
+            // No `section` at all, which means "leave placement alone" and never "put it
+            // in the deck". Reading absent as the mainboard would take the user's
+            // commander out of the command zone on an edit that never mentioned it.
             {
-              scryfall_id: gamble.scryfall_id,
-              name: gamble.name,
-              quantity: 2,
-              previous_quantity: 1,
-              card: gamble,
+              scryfall_id: ghalta.scryfall_id,
+              name: ghalta.name,
+              quantity: 1,
+              previous_quantity: 2,
+              card: ghalta,
             },
           ],
         },
       },
-      doneFrame("Second copy added."),
+      doneFrame("Down to one copy."),
     ]);
     render(<App />);
 
-    await ask("Run two");
-    expect(await screen.findByText("Second copy added.")).toBeInTheDocument();
-    expect(screen.getByLabelText("2 Gamble in deck")).toBeInTheDocument();
+    await ask("Fix the command zone");
+    expect(await screen.findByText("Down to one copy.")).toBeInTheDocument();
 
-    // The quantity alone proves nothing: an applier that wrote the group unconditionally
-    // would pass that assertion while quietly taking the card out of the group the user
-    // put it in — invisible on the board's default view, and cumulative across turns.
-    expect(storedDeck().cards[0].categories).toEqual(["group-ramp"]);
-    await userEvent
-      .setup()
-      .selectOptions(screen.getByLabelText("Group cards"), "custom");
-    // Both copies are still in Ramp, and Not assigned — which is a permanent group and
-    // therefore always on screen — is still empty.
-    expect(groupHeader("Ramp")).toHaveTextContent("2 cards");
-    expect(groupHeader("Not assigned")).toHaveTextContent("0 cards");
+    // The quantity alone proves nothing: an applier that defaulted the section would pass
+    // that assertion while quietly emptying the command zone.
+    expect(storedDeck().cards[0].quantity).toBe(1);
+    expect(storedDeck().cards[0].section).toBe("command_zone");
+    expect(groupHeader("Command zone")).toHaveTextContent("1 cards");
   });
 
   it("renders an edit the deck refused as refused, keeping the undo on the one it took", async () => {
@@ -919,7 +967,6 @@ describe("agent deck edits", () => {
         {
           ...deckEntry(ghalta),
           section: "command_zone",
-          categories: [COMMAND_ZONE_GROUP_ID],
         },
       ],
     });
@@ -968,7 +1015,7 @@ describe("agent deck edits", () => {
               name: counterspell.name,
               quantity: 1,
               previous_quantity: 0,
-              group: "Command zone",
+              section: "command_zone",
               card: counterspell,
             },
           ],
@@ -1058,45 +1105,38 @@ describe("agent deck edits", () => {
   });
 
   it("claims a move only when the deck made one", async () => {
-    seedDeck({
-      cards: [deckEntry(gamble, "group-ramp")],
-      custom_groups: [
-        { id: "group-ramp", name: "Ramp" },
-        { id: "group-removal", name: "Removal" },
-      ],
-    });
+    seedDeck({ cards: [deckEntry(gamble)] });
     serveAgentTurn([
       {
         type: "deck_edit",
         edit: {
           deck_name: "Gruul Stompy",
-          reason: "Gamble is really removal.",
-          // Same quantity, and a group this deck does not have. The name is dropped rather
-          // than obeyed — which is correct, and leaves the change a no-op.
+          reason: "Gamble stays where it is.",
+          // Same quantity, and the section the card is already in. Nothing to do.
           changes: [
             {
               scryfall_id: gamble.scryfall_id,
               name: gamble.name,
               quantity: 1,
               previous_quantity: 1,
-              group: "Spot removal",
+              section: "mainboard",
               card: gamble,
             },
           ],
         },
       },
-      doneFrame("Filed under removal."),
+      doneFrame("Left alone."),
     ]);
     render(<App />);
 
-    await ask("File Gamble under removal");
-    expect(await screen.findByText("Filed under removal.")).toBeInTheDocument();
+    await ask("Leave Gamble alone");
+    expect(await screen.findByText("Left alone.")).toBeInTheDocument();
 
     // Nothing moved, so nothing is claimed. A `→ Gamble` line here would be a durable
-    // claim about a card that never left the group the user filed it in.
+    // claim about a card that never went anywhere.
     expect(screen.queryByText("→ Gamble")).not.toBeInTheDocument();
     expect(screen.queryByText(/^Applied:/)).not.toBeInTheDocument();
-    expect(storedDeck().cards[0].categories).toEqual(["group-ramp"]);
+    expect(storedDeck().cards[0].section).toBe("mainboard");
     expect(storedHistorySessions()).toEqual([]);
 
     serveAgentTurn([
@@ -1104,30 +1144,33 @@ describe("agent deck edits", () => {
         type: "deck_edit",
         edit: {
           deck_name: "Gruul Stompy",
-          reason: "Gamble is really removal.",
+          reason: "Gamble is the closest thing to a commander here.",
           changes: [
             {
               scryfall_id: gamble.scryfall_id,
               name: gamble.name,
               quantity: 1,
               previous_quantity: 1,
-              group: "Removal",
+              section: "command_zone",
               card: gamble,
             },
           ],
         },
       },
-      doneFrame("Moved to Removal."),
+      doneFrame("Moved to the command zone."),
     ]);
 
-    await ask("The group is called Removal");
-    expect(await screen.findByText("Moved to Removal.")).toBeInTheDocument();
+    await ask("Put Gamble in the command zone");
+    expect(
+      await screen.findByText("Moved to the command zone."),
+    ).toBeInTheDocument();
 
-    // The same shape of change, this time naming a group the deck has: it moves, it is
-    // recorded, and the block says so on its third line — the one no test rendered before.
+    // The same shape of change, this time naming the section the card is not in: it
+    // moves, it is recorded, and the block says so on its third line — the one no test
+    // rendered before.
     expect(screen.getByText("Applied: +0 / −0")).toBeInTheDocument();
     expect(screen.getByText("→ Gamble")).toBeInTheDocument();
-    expect(storedDeck().cards[0].categories).toEqual(["group-removal"]);
+    expect(storedDeck().cards[0].section).toBe("command_zone");
     expect(storedHistorySessions()).toHaveLength(1);
     expect(screen.getByRole("button", { name: "Undo" })).toBeInTheDocument();
   });
@@ -1175,7 +1218,7 @@ describe("agent deck edits", () => {
             name: card.name,
             quantity: 1,
             previous_quantity: 0,
-            group: "Command zone",
+            section: "command_zone",
             card,
           },
         ],

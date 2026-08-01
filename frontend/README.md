@@ -71,26 +71,24 @@ operations for:
 
 - Add card.
 - Set quantity and remove.
-- Move card.
-- Add a custom group, optionally moving a dropped card into it.
+- Move card between the command zone and the deck.
 - Create and select deck.
 - Rename deck.
 - Undo.
 
 Deck deletion is confirmed and current-session recoverable through
-`useDeck.ts`. Custom-group rename and delete operations are not implemented
-yet; add them through the same service rather than introducing component-local
-mutations.
+`useDeck.ts`. Add any further mutation through the same service rather than
+introducing component-local mutations.
 
 Keep mutation announcements meaningful for assistive technology.
 
 ## Editor Invariants
 
 - Card search is the single add workflow.
-- Permanent groups are Command zone and Not assigned.
-- Card types is the default grouping mode; Custom remains the editable mode.
-- Cards move only when grouping by Custom.
-- Card types are derived from card data.
+- The board groups by derived card type, under a permanent Command zone heading.
+  There is no grouping control and no user-created group (ADR 0037).
+- A card moves along one axis only: into the command zone or back into the deck.
+- Card types are derived from card data and cannot be edited.
 - No standalone maybeboard.
 - Card details are a dialog, not a persistent right inspector.
 - Right workspace remains available for future agent chat.
@@ -166,9 +164,9 @@ When the backend changes `CardSearchPage`, update:
 
 - Use `oracle_id` to recognize the same gameplay card across printings.
 - Use `scryfall_id` for selected printing, quantity, image, set, and price.
-- Command-zone cards use `section="command_zone"`.
-- Custom groups use the first category entry as the primary group ID.
-- Invalid and legacy placement normalizes to Not assigned.
+- Placement is `section`: `command_zone` or `mainboard`.
+- A stored deck's `custom_groups` and per-card `categories` are dropped on load, and
+  legacy or maybeboard placement becomes `mainboard`. No card is lost.
 
 ## Tests And Build
 

@@ -614,25 +614,26 @@ The current frontend stores:
 
 ```text
 Deck
-  custom_groups[]
   cards[]
     section: command_zone | mainboard
-    categories[0]: primary custom group ID
 ```
 
 Rules:
 
-- Command-zone cards always resolve to `command_zone`.
+- Placement is the section and nothing else. Custom groups and the per-card
+  `categories` array that held them were removed in ADR 0037.
 - Command-zone entries have quantity one.
 - A second command-zone entry is accepted only for Partner, reciprocal Partner
   with, Friends forever, Choose a Background plus a legendary Background, or
   Doctor's companion plus a legendary Time Lord Doctor.
 - A third command-zone entry is never accepted.
-- Mainboard cards resolve to a known custom group or `unassigned`.
-- Card-type grouping is derived from `type_line`.
-- Legacy maybeboard placement migrates to mainboard Not assigned.
-- Unknown or missing custom-group IDs normalize to Not assigned. A future
-  custom-group deletion operation must preserve that invariant.
+- Card-type grouping is derived from `type_line` and is not an edit axis: a heading a
+  card falls under cannot be changed by changing the deck, only by changing the card.
+- A stored deck carrying `custom_groups` or `categories` loads with both dropped and
+  every card kept. Legacy maybeboard placement becomes `mainboard`.
+- The agent names placement as a `zone` — `commander` or `deck` — which
+  `_section_for_zone` resolves to a section in one place. An absent zone means "leave
+  placement alone" and must never be resolved to `mainboard`.
 
 ## API Contract Coupling
 

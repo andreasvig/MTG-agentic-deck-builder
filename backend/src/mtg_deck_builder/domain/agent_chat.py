@@ -36,6 +36,18 @@ ToolPayloadText = Annotated[str, StringConstraints(max_length=MAX_TOOL_PAYLOAD_C
 
 DeckSection = Literal["command_zone", "mainboard"]
 
+DeckEditZone = Literal["commander", "deck"]
+"""Where an `edit_deck` change puts a card, in the words the model reads.
+
+The only placement a deck has left. Custom groups were removed — the board groups by
+card type, which is derived from the card and cannot be edited — so the one thing a
+change can say about placement is whether the card is the commander.
+
+Deliberately not `DeckSection`: `command_zone`/`mainboard` is the vocabulary of the
+stored deck, and `read_deck` prints the heading `Commander`, so these are the words the
+model has actually seen. `_section_for_zone` is the single place the two meet.
+"""
+
 CardToken = Annotated[
     str,
     StringConstraints(strip_whitespace=True, min_length=1, max_length=200),
@@ -113,9 +125,6 @@ class DeckAgentDeckCard(DeckAgentModel):
     scryfall_id: UUID
     quantity: Annotated[int, Field(ge=1, le=99)]
     section: DeckSection
-    # The custom group the card sits in on screen, so the agent can talk about the
-    # deck the way it is actually laid out. Absent means it is unassigned.
-    group: ShortLabel | None = None
 
 
 class DeckAgentDeckSnapshot(DeckAgentModel):
@@ -137,7 +146,7 @@ class DeckEditChange(DeckAgentModel):
 
     Declarative on purpose: it states the copy count it wants *afterwards* rather
     than an operation to perform. Add is `quantity: 1`, cut is `quantity: 0`, a move
-    is the same quantity with a new group, and a swap is two of these. That collapses
+    is the same quantity with a new zone, and a swap is two of these. That collapses
     the four verbs a discriminated union would need — along with their conditionally
     required fields, which is the shape a model malforms — and it makes the call
     idempotent, which matters because the edit applies itself and a retry must not
@@ -149,9 +158,11 @@ class DeckEditChange(DeckAgentModel):
 
     card: CardToken
     quantity: Annotated[int, Field(ge=0, le=99)]
-    # Where the card should sit on screen. Absent leaves placement alone, which is
-    # what an ordinary add or cut wants — naming a group is how a card is moved.
-    group: ShortLabel | None = None
+    # Where the card should sit. Absent leaves placement alone, which is what an
+    # ordinary add or cut wants; naming a zone is how a commander is set or unset.
+    # Absent must not be read as `deck` anywhere downstream: the same field carries a
+    # plain quantity change on a card that happens to be the commander.
+    zone: DeckEditZone | None = None
 
 
 class EditDeckArguments(DeckAgentModel):
@@ -180,7 +191,6 @@ class DeckAgentDeckPlacement(DeckAgentModel):
 
     quantity: Annotated[int, Field(ge=0, le=99)]
     section: DeckSection
-    group: ShortLabel | None = None
 
 
 class DeckAgentDeckHistoryChange(DeckAgentModel):
@@ -210,9 +220,9 @@ class DeckAgentDeckHistoryEdit(DeckAgentModel):
     at: datetime
     # Only an agent edit has one — a card dragged across the board states no intent.
     reason: ShortLabel | None = None
-    # Allowed to be empty rather than required: the browser also records renames and
-    # group changes, and an edit that carried neither a card change nor a reason
-    # must not fail a whole chat turn over a field this tool does not read.
+    # Allowed to be empty rather than required: the browser also records deck renames,
+    # and an edit that carried neither a card change nor a reason must not fail a whole
+    # chat turn over a field this tool does not read.
     cards: Annotated[
         list[DeckAgentDeckHistoryChange],
         Field(max_length=MAX_HISTORY_EDIT_CARDS),
@@ -373,7 +383,9 @@ class DeckAgentDeckEditChange(DeckAgentModel):
     # started. `quantity: 0` removes the card.
     quantity: Annotated[int, Field(ge=0, le=99)]
     previous_quantity: Annotated[int, Field(ge=0, le=99)]
-    group: ShortLabel | None = None
+    # The browser's own vocabulary rather than the model's `zone`, because this is read
+    # by code and not by a model. Absent leaves the card where it is.
+    section: DeckSection | None = None
     # Present exactly when this change adds copies, because `addCard` needs the whole
     # card — its colours and type line are what the identity and command-zone
     # validators read — and the browser has never seen a card it does not hold.

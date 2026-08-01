@@ -5,12 +5,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 import type { CardSearchResult } from "../domain/card";
 import { getCardPrice } from "../domain/card";
 import type { Deck, DeckCardEntry } from "../domain/deck";
-import {
-  COMMAND_ZONE_GROUP_ID,
-  createEmptyDeck,
-  DECK_LIBRARY_STORAGE_KEY,
-  UNASSIGNED_GROUP_ID,
-} from "../domain/deck";
+import { createEmptyDeck, DECK_LIBRARY_STORAGE_KEY } from "../domain/deck";
 import type { DeckEditEntry, DeckHistory } from "../domain/history";
 import {
   createDeckHistory,
@@ -25,29 +20,42 @@ beforeEach(() => {
   window.localStorage.clear();
 });
 
-describe("useDeck custom groups", () => {
-  it("creates a group and moves a dropped card as one undoable change", () => {
+describe("useDeck placement", () => {
+  it("moves a card into the command zone and back out as two undoable changes", () => {
     const { result } = renderHook(() => useDeck());
 
-    act(() => result.current.addCard(solRing));
+    act(() => result.current.addCard(ghalta));
     act(() =>
-      result.current.addCustomGroup("Ramp", solRing.scryfall_id),
+      result.current.moveCard(ghalta.scryfall_id, "command_zone"),
     );
 
-    const ramp = result.current.deck.custom_groups[0];
-    const entry = result.current.deck.cards[0];
-    expect(ramp?.name).toBe("Ramp");
-    expect(entry?.categories).toEqual([ramp?.id]);
+    expect(result.current.deck.cards[0]?.section).toBe("command_zone");
     expect(result.current.announcement).toBe(
-      "Ramp group created and Sol Ring moved to it.",
+      "Ghalta, Primal Hunger moved to the command zone.",
+    );
+
+    act(() => result.current.moveCard(ghalta.scryfall_id, "mainboard"));
+
+    expect(result.current.deck.cards[0]?.section).toBe("mainboard");
+    expect(result.current.announcement).toBe(
+      "Ghalta, Primal Hunger moved to the deck.",
     );
 
     act(() => result.current.undo());
 
-    expect(result.current.deck.custom_groups).toEqual([]);
-    expect(result.current.deck.cards[0]?.categories).toEqual([
-      UNASSIGNED_GROUP_ID,
-    ]);
+    expect(result.current.deck.cards[0]?.section).toBe("command_zone");
+  });
+
+  it("declines a move to the section the card is already in", () => {
+    const { result } = renderHook(() => useDeck());
+
+    act(() => result.current.addCard(solRing));
+    const before = result.current.deck.updated_at;
+    act(() => result.current.moveCard(solRing.scryfall_id, "mainboard"));
+
+    // Not an edit, so no history entry and nothing to undo back past the add.
+    expect(result.current.deck.updated_at).toBe(before);
+    expect(result.current.announcement).toBe("Sol Ring added to the deck.");
   });
 
   it("deletes an active deck, selects a fallback, and can restore it", () => {
@@ -96,10 +104,10 @@ describe("useDeck custom groups", () => {
     const { result } = renderHook(() => useDeck());
 
     act(() =>
-      result.current.addCard(ghalta, COMMAND_ZONE_GROUP_ID),
+      result.current.addCard(ghalta, "command_zone"),
     );
     act(() =>
-      result.current.addCard(counterspell, COMMAND_ZONE_GROUP_ID),
+      result.current.addCard(counterspell, "command_zone"),
     );
 
     expect(result.current.deck.cards).toHaveLength(1);
@@ -110,10 +118,10 @@ describe("useDeck custom groups", () => {
 
     act(() => result.current.removeCard(ghalta.scryfall_id));
     act(() =>
-      result.current.addCard(partnerA, COMMAND_ZONE_GROUP_ID),
+      result.current.addCard(partnerA, "command_zone"),
     );
     act(() =>
-      result.current.addCard(partnerB, COMMAND_ZONE_GROUP_ID),
+      result.current.addCard(partnerB, "command_zone"),
     );
 
     expect(
@@ -124,7 +132,7 @@ describe("useDeck custom groups", () => {
     expect(result.current.statistics.commandZoneProblem).toBeNull();
 
     act(() =>
-      result.current.addCard(ghalta, COMMAND_ZONE_GROUP_ID),
+      result.current.addCard(ghalta, "command_zone"),
     );
     expect(result.current.deck.cards).toHaveLength(2);
     expect(result.current.announcement).toContain(
@@ -145,18 +153,20 @@ describe("useDeck history", () => {
     // nothing would stop being undoable and only its own step would notice.
     const steps: { label: string; run: () => void }[] = [
       { label: "addCard", run: () => result.current.addCard(solRing) },
+      // Into the command zone and back out again before the quantity changes, because a
+      // commander may only have one copy: both mutators get a step and neither is refused.
+      {
+        label: "moveCard to the command zone",
+        run: () =>
+          result.current.moveCard(solRing.scryfall_id, "command_zone"),
+      },
+      {
+        label: "moveCard back to the deck",
+        run: () => result.current.moveCard(solRing.scryfall_id, "mainboard"),
+      },
       {
         label: "setQuantity",
         run: () => result.current.setQuantity(solRing.scryfall_id, 3),
-      },
-      { label: "addCustomGroup", run: () => result.current.addCustomGroup("Ramp") },
-      {
-        label: "moveCard",
-        run: () =>
-          result.current.moveCard(
-            solRing.scryfall_id,
-            result.current.deck.custom_groups[0].id,
-          ),
       },
       { label: "renameDeck", run: () => result.current.renameDeck("Gruul Stompy") },
       {
@@ -335,7 +345,6 @@ describe("useDeck history", () => {
           },
           quantity: 2,
           section: "mainboard",
-          categories: [UNASSIGNED_GROUP_ID],
         }),
       ),
     );
@@ -402,7 +411,7 @@ describe("useDeck applied edits", () => {
         () => ({
           changes: [
             { card: solRing, quantity: 1 },
-            { card: gamble, quantity: 2, groupId: UNASSIGNED_GROUP_ID },
+            { card: gamble, quantity: 2, section: "mainboard" },
             { card: counterspell, quantity: 0 },
           ],
           reason: "swapping the weakest card for two rocks",
@@ -436,7 +445,7 @@ describe("useDeck applied edits", () => {
 
   it("refuses an edit the validators reject, applying nothing and recording nothing", () => {
     const { result } = renderHook(() => useDeck());
-    act(() => result.current.addCard(ghalta, COMMAND_ZONE_GROUP_ID));
+    act(() => result.current.addCard(ghalta, "command_zone"));
     const before = shapeOf(result.current.deck);
     const recordedBefore = recordedEdits(
       storedLog(result.current.deck.id),
@@ -447,7 +456,7 @@ describe("useDeck applied edits", () => {
         () => ({
           changes: [
             { card: solRing, quantity: 1 },
-            { card: counterspell, quantity: 1, groupId: COMMAND_ZONE_GROUP_ID },
+            { card: counterspell, quantity: 1, section: "command_zone" },
           ],
           reason: "a second commander that cannot pair",
         }),
@@ -468,7 +477,7 @@ describe("useDeck applied edits", () => {
 
   it("reports a refusal to the caller with the reason it announced", () => {
     const { result } = renderHook(() => useDeck());
-    act(() => result.current.addCard(ghalta, COMMAND_ZONE_GROUP_ID));
+    act(() => result.current.addCard(ghalta, "command_zone"));
     const before = shapeOf(result.current.deck);
     const recordedBefore = recordedEdits(
       storedLog(result.current.deck.id),
@@ -480,7 +489,7 @@ describe("useDeck applied edits", () => {
         () => ({
           changes: [
             { card: solRing, quantity: 1 },
-            { card: counterspell, quantity: 1, groupId: COMMAND_ZONE_GROUP_ID },
+            { card: counterspell, quantity: 1, section: "command_zone" },
           ],
           reason: "a second commander that cannot pair",
         }),
@@ -555,15 +564,9 @@ describe("useDeck applied edits", () => {
     expect(result.current.announcement).toContain("whole number");
     expect(result.current.deck.cards).toEqual([]);
 
-    act(() =>
-      result.current.applyEdit(
-        () => ({ changes: [{ card: solRing, quantity: 1, groupId: "group-missing" }] }),
-        "agent",
-      ),
-    );
-    expect(result.current.announcement).toContain(
-      "a group this deck does not have",
-    );
+    // There is no "unknown placement" refusal left to test: a section is one of two
+    // values, the typed API cannot express a third, and an event naming one is refused by
+    // the reader in `domain/agent.ts` before the deck is ever asked.
     expect(result.current.deck.cards).toEqual([]);
     expect(result.current.canUndo).toBe(false);
   });
@@ -592,7 +595,7 @@ describe("useDeck applied edits", () => {
     const commanderEdit = (card: CardSearchResult): DeckEditPlanner => (open) => {
       seen.push(open.cards.map((entry) => entry.card.name));
       return {
-        changes: [{ card, quantity: 1, groupId: COMMAND_ZONE_GROUP_ID }],
+        changes: [{ card, quantity: 1, section: "command_zone" }],
         reason: `${card.name} leads this deck`,
       };
     };
@@ -677,11 +680,7 @@ describe("useDeck applied edits", () => {
  * because the reducer restamps it on an undo and comparing it would fail every restoration.
  */
 function shapeOf(deck: Deck): string {
-  return JSON.stringify({
-    name: deck.name,
-    cards: deck.cards,
-    custom_groups: deck.custom_groups,
-  });
+  return JSON.stringify({ name: deck.name, cards: deck.cards });
 }
 
 function cardNames(deck: Deck): string[] {

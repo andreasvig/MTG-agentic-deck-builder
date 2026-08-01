@@ -1,10 +1,5 @@
 import type { CardSearchResult } from "./card";
-import type {
-  Deck,
-  DeckCardEntry,
-  DeckCustomGroup,
-  DeckSection,
-} from "./deck";
+import type { Deck, DeckCardEntry, DeckSection } from "./deck";
 
 /**
  * The deck's edit log: what changed, when, and whether the user or the agent did it.
@@ -16,10 +11,15 @@ import type {
  * edit is nothing but swapping `before` for `after` on every change it carries.
  *
  * That only holds while the diff models everything a `Deck` can differ by. It models
- * `cards[]` (quantity, section and categories), `custom_groups[]` and `name`. It
- * deliberately excludes `id`, `format` and `created_at`, which never change, and
- * `updated_at`, which the reducer stamps on every mutation — recording that would make
- * every inversion fight the reducer over a field neither of them means to restore.
+ * `cards[]` (quantity and section) and `name`. It deliberately excludes `id`, `format` and
+ * `created_at`, which never change, and `updated_at`, which the reducer stamps on every
+ * mutation — recording that would make every inversion fight the reducer over a field
+ * neither of them means to restore.
+ *
+ * A stored entry written before custom groups were removed carries two fields this module
+ * no longer models: `categories` inside a placement, and a `groups` array on the diff. Both
+ * are ignored rather than rejected, so an old log stays readable and its card changes stay
+ * replayable. Nothing writes either again.
  *
  * Nothing here reads the clock, generates an id, or touches `localStorage`. Times and ids
  * arrive as arguments so a test can pin a session boundary to the second, and persistence
@@ -63,7 +63,6 @@ export type DeckHistoryActor = "user" | "agent";
 export interface DeckCardPlacement {
   quantity: number;
   section: DeckSection;
-  categories: string[];
   index: number;
 }
 
@@ -84,19 +83,6 @@ export interface DeckCardChange {
   after: DeckCardPlacement | null;
 }
 
-/** A custom group's name and position, on one side of a change. `index` is a hint, as above. */
-export interface DeckGroupPlacement {
-  name: string;
-  index: number;
-}
-
-/** One custom group that was created, renamed, moved or deleted. */
-export interface DeckGroupChange {
-  id: string;
-  before: DeckGroupPlacement | null;
-  after: DeckGroupPlacement | null;
-}
-
 export interface DeckNameChange {
   before: string;
   after: string;
@@ -106,15 +92,14 @@ export interface DeckNameChange {
  * Everything one edit changed. `deriveDeckDiff` produces this; the caller stamps identity
  * onto it to get a `DeckEditEntry`.
  *
- * `groups` and `name` are omitted rather than left empty when nothing of that kind changed,
- * because history shares `localStorage` with the deck library and an empty array per edit
+ * `name` is omitted rather than left empty when the deck was not renamed, because history
+ * shares `localStorage` with the deck library and a field per edit saying nothing happened
  * is quota spent on nothing.
  */
 export interface DeckDiff {
   /** `+2 / −2` plus the names, for display. Recomputed when a diff is inverted. */
   summary: string;
   cards: DeckCardChange[];
-  groups?: DeckGroupChange[];
   name?: DeckNameChange;
 }
 
@@ -200,10 +185,9 @@ export function createDeckHistory(deckId: string): DeckHistory {
 /**
  * Compare two states of one deck and describe the difference.
  *
- * Complete by construction: it walks the union of both card lists and both group lists and
- * compares the deck name, so a change no call site remembered to declare is still recorded.
- * A card whose quantity, section and categories all match is not a change, however far its
- * position moved.
+ * Complete by construction: it walks the union of both card lists and compares the deck
+ * name, so a change no call site remembered to declare is still recorded. A card whose
+ * quantity and section both match is not a change, however far its position moved.
  */
 export function deriveDeckDiff(before: Deck, after: Deck): DeckDiffDerivation {
   const beforeCards = indexEntriesByPrinting(before.cards);
@@ -245,24 +229,6 @@ export function deriveDeckDiff(before: Deck, after: Deck): DeckDiffDerivation {
     }
   }
 
-  const beforeGroups = indexGroupsById(before.custom_groups);
-  const afterGroups = indexGroupsById(after.custom_groups);
-  const groups: DeckGroupChange[] = [];
-  for (const groupId of unionKeys(beforeGroups, afterGroups)) {
-    const beforeGroup = beforeGroups.get(groupId);
-    const afterGroup = afterGroups.get(groupId);
-    const beforePlacement = beforeGroup
-      ? { name: beforeGroup.group.name, index: beforeGroup.index }
-      : null;
-    const afterPlacement = afterGroup
-      ? { name: afterGroup.group.name, index: afterGroup.index }
-      : null;
-    if (groupPlacementsMatch(beforePlacement, afterPlacement)) {
-      continue;
-    }
-    groups.push({ id: groupId, before: beforePlacement, after: afterPlacement });
-  }
-
   const name =
     before.name === after.name
       ? undefined
@@ -270,9 +236,8 @@ export function deriveDeckDiff(before: Deck, after: Deck): DeckDiffDerivation {
 
   return {
     diff: {
-      summary: summariseDeckDiff(cards, groups, name),
+      summary: summariseDeckDiff(cards, name),
       cards,
-      ...(groups.length > 0 ? { groups } : {}),
       ...(name ? { name } : {}),
     },
     payloads,
@@ -281,11 +246,7 @@ export function deriveDeckDiff(before: Deck, after: Deck): DeckDiffDerivation {
 
 /** True when a derivation found nothing. `appendToHistory` refuses these. */
 export function isEmptyDeckDiff(diff: DeckDiff): boolean {
-  return (
-    diff.cards.length === 0 &&
-    (diff.groups?.length ?? 0) === 0 &&
-    diff.name === undefined
-  );
+  return diff.cards.length === 0 && diff.name === undefined;
 }
 
 /**
@@ -303,11 +264,6 @@ export function invertDeckDiff(entry: DeckEditEntry): DeckEditEntry {
     before: change.after,
     after: change.before,
   }));
-  const groups = entry.groups?.map((change) => ({
-    ...change,
-    before: change.after,
-    after: change.before,
-  }));
   const name = entry.name
     ? { before: entry.name.after, after: entry.name.before }
     : undefined;
@@ -315,17 +271,16 @@ export function invertDeckDiff(entry: DeckEditEntry): DeckEditEntry {
   return {
     ...entry,
     cards,
-    ...(groups ? { groups } : {}),
     ...(name ? { name } : {}),
-    summary: summariseDeckDiff(cards, groups, name),
+    summary: summariseDeckDiff(cards, name),
   };
 }
 
 /**
  * Write a diff's `after` side onto a deck.
  *
- * Declarative, not transactional: it states what each mentioned card and group should look
- * like afterwards and never checks the `before` side against what it finds. That makes
+ * Declarative, not transactional: it states what each mentioned card should look like
+ * afterwards and never checks the `before` side against what it finds. That makes
  * applying idempotent — the same diff twice is the same deck — which matters because an
  * auto-applying agent edit may be retried, and because a replay must not fail merely
  * because the user dragged something in between.
@@ -391,34 +346,6 @@ export function applyDeckDiff(
       },
       quantity: placement.quantity,
       section: placement.section,
-      categories: [...placement.categories],
-    });
-  }
-
-  const groupRemovals = new Set<string>();
-  const groupUpdates = new Map<string, DeckGroupPlacement>();
-  const groupInsertions: { id: string; placement: DeckGroupPlacement }[] = [];
-  const existingGroups = new Set(deck.custom_groups.map((group) => group.id));
-  for (const change of diff.groups ?? []) {
-    if (change.after === null) {
-      groupRemovals.add(change.id);
-    } else if (existingGroups.has(change.id)) {
-      groupUpdates.set(change.id, change.after);
-    } else {
-      groupInsertions.push({ id: change.id, placement: change.after });
-    }
-  }
-
-  const customGroups = deck.custom_groups
-    .filter((group) => !groupRemovals.has(group.id))
-    .map((group) => {
-      const placement = groupUpdates.get(group.id);
-      return placement ? { ...group, name: placement.name } : group;
-    });
-  for (const { id, placement } of sortedByIndex(groupInsertions)) {
-    customGroups.splice(clampIndex(placement.index, customGroups.length), 0, {
-      id,
-      name: placement.name,
     });
   }
 
@@ -428,7 +355,6 @@ export function applyDeckDiff(
       ...deck,
       name: diff.name ? diff.name.after : deck.name,
       cards,
-      custom_groups: customGroups,
     },
   };
 }
@@ -557,7 +483,6 @@ function canJoinSession(
 
 function summariseDeckDiff(
   cards: DeckCardChange[],
-  groups: DeckGroupChange[] | undefined,
   name: DeckNameChange | undefined,
 ): string {
   let added = 0;
@@ -577,18 +502,6 @@ function summariseDeckDiff(
       parts.push(`${change.name} ×${beforeQuantity} → ×${afterQuantity}`);
     } else {
       parts.push(`${change.name} moved`);
-    }
-  }
-
-  for (const change of groups ?? []) {
-    if (change.after === null) {
-      parts.push(`−${change.before?.name ?? change.id} group`);
-    } else if (change.before === null) {
-      parts.push(`+${change.after.name} group`);
-    } else if (change.before.name !== change.after.name) {
-      parts.push(`${change.before.name} group renamed to ${change.after.name}`);
-    } else {
-      parts.push(`${change.after.name} group moved`);
     }
   }
 
@@ -622,18 +535,6 @@ function indexEntriesByPrinting(
   return byPrinting;
 }
 
-function indexGroupsById(
-  groups: DeckCustomGroup[],
-): Map<string, { group: DeckCustomGroup; index: number }> {
-  const byId = new Map<string, { group: DeckCustomGroup; index: number }>();
-  groups.forEach((group, index) => {
-    if (!byId.has(group.id)) {
-      byId.set(group.id, { group, index });
-    }
-  });
-  return byId;
-}
-
 function unionKeys(
   first: Map<string, unknown>,
   second: Map<string, unknown>,
@@ -642,12 +543,7 @@ function unionKeys(
 }
 
 function cardPlacement(entry: DeckCardEntry, index: number): DeckCardPlacement {
-  return {
-    quantity: entry.quantity,
-    section: entry.section,
-    categories: [...entry.categories],
-    index,
-  };
+  return { quantity: entry.quantity, section: entry.section, index };
 }
 
 function withCardPlacement(
@@ -658,7 +554,6 @@ function withCardPlacement(
     ...entry,
     quantity: placement.quantity,
     section: placement.section,
-    categories: [...placement.categories],
   };
 }
 
@@ -671,27 +566,7 @@ function cardPlacementsMatch(
     return before === after;
   }
   return (
-    before.quantity === after.quantity &&
-    before.section === after.section &&
-    sameStrings(before.categories, after.categories)
-  );
-}
-
-/** `index` is excluded on purpose; see `DeckCardPlacement`. */
-function groupPlacementsMatch(
-  before: DeckGroupPlacement | null,
-  after: DeckGroupPlacement | null,
-): boolean {
-  if (before === null || after === null) {
-    return before === after;
-  }
-  return before.name === after.name;
-}
-
-function sameStrings(left: string[], right: string[]): boolean {
-  return (
-    left.length === right.length &&
-    left.every((value, index) => value === right[index])
+    before.quantity === after.quantity && before.section === after.section
   );
 }
 

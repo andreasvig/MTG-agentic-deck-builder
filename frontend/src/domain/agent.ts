@@ -1,10 +1,6 @@
 import type { CardSearchResult } from "./card";
-import type { DeckCardEntry, DeckCustomGroup, DeckSection } from "./deck";
-import {
-  COMMAND_ZONE_GROUP_ID,
-  UNASSIGNED_GROUP_ID,
-  groupName,
-} from "./deck";
+import type { DeckCardEntry, DeckSection } from "./deck";
+import { isDeckSection } from "./deck";
 import type { DeckCardPlacement, DeckDiff, DeckHistory } from "./history";
 import { createDeckHistory, parseDeckHistory } from "./history";
 
@@ -39,8 +35,7 @@ export interface DeckAgentToolCall {
 export interface DeckAgentDeckCard {
   scryfall_id: string;
   quantity: number;
-  section: "command_zone" | "mainboard";
-  group?: string;
+  section: DeckSection;
 }
 
 export interface DeckAgentDeckSnapshot {
@@ -76,8 +71,11 @@ export interface DeckAgentDeckEditChange {
   quantity: number;
   /** What it held when the turn started, so the transcript can say what moved. */
   previous_quantity: number;
-  /** The group it should sit in, by display name. Absent leaves placement alone. */
-  group?: string;
+  /**
+   * Where the card should sit afterwards. Absent leaves placement alone, which is what an
+   * ordinary add or cut wants; `command_zone` is how the agent names a commander.
+   */
+  section?: DeckSection;
   /**
    * Present exactly when the change adds copies, because the deck's own validators
    * read the card's colours and type line and a card the deck has never held has
@@ -150,9 +148,13 @@ function readDeckAgentDeckEditChange(
     typeof value.name !== "string" ||
     !isEditCopyCount(value.quantity) ||
     !isEditCopyCount(value.previous_quantity) ||
-    (value.group !== undefined &&
-      value.group !== null &&
-      typeof value.group !== "string")
+    // Absent means "leave placement alone". Anything present that is not one of the two
+    // sections fails the whole edit rather than falling back to the mainboard: the one
+    // value it could be wrong about is the command zone, and quietly reading an
+    // unrecognised section as "not the command zone" would move the user's commander out.
+    (value.section !== undefined &&
+      value.section !== null &&
+      !isDeckSection(value.section))
   ) {
     return null;
   }
@@ -168,7 +170,7 @@ function readDeckAgentDeckEditChange(
     name: value.name,
     quantity: value.quantity,
     previous_quantity: value.previous_quantity,
-    ...(typeof value.group === "string" ? { group: value.group } : {}),
+    ...(isDeckSection(value.section) ? { section: value.section } : {}),
     ...(card ? { card } : {}),
   };
 }
@@ -224,7 +226,7 @@ export interface DeckAgentAppliedEdit {
   /** The card names, so the block reads without the catalog or the deck. */
   added: string[];
   removed: string[];
-  /** Same count, new group: a move states neither an addition nor a cut. */
+  /** Same count, new section: a move states neither an addition nor a cut. */
   moved: string[];
   /**
    * The history entry this block describes, when the deck recorded one.
@@ -284,7 +286,7 @@ export function summarizeDeckEditRecord(
       summary.removed.push(change.name);
     } else {
       // Neither in nor out. A derivation records a card only when something about it
-      // changed, so a card at an unchanged count is one that changed section or group.
+      // changed, so a card at an unchanged count is one that changed section.
       summary.moved.push(change.name);
     }
   }
@@ -623,19 +625,14 @@ export function formatModelCostUsd(value: number): string {
 export function toDeckSnapshot(
   name: string,
   entries: DeckCardEntry[],
-  groupNameFor: (entry: DeckCardEntry) => string | undefined,
 ): DeckAgentDeckSnapshot {
   return {
     name,
-    cards: entries.map((entry) => {
-      const group = groupNameFor(entry);
-      return {
-        scryfall_id: entry.card.scryfall_id,
-        quantity: entry.quantity,
-        section: entry.section,
-        ...(group ? { group } : {}),
-      };
-    }),
+    cards: entries.map((entry) => ({
+      scryfall_id: entry.card.scryfall_id,
+      quantity: entry.quantity,
+      section: entry.section,
+    })),
   };
 }
 
@@ -643,7 +640,6 @@ export function toDeckSnapshot(
 export interface DeckAgentDeckPlacement {
   quantity: number;
   section: DeckSection;
-  group?: string;
 }
 
 /** What one recorded edit did to one card, named so it reads without the catalog. */
@@ -761,7 +757,6 @@ function isPostableChange(change: {
 export function toDeckAgentHistory(
   raw: string | null,
   deckId: string,
-  customGroups: DeckCustomGroup[],
 ): DeckAgentDeckHistory {
   let stored: unknown = null;
   try {
@@ -801,11 +796,9 @@ export function toDeckAgentHistory(
           .map((change) => ({
             name: shortLabel(change.name),
             ...(change.before
-              ? { before: toPostedPlacement(change.before, customGroups) }
+              ? { before: toPostedPlacement(change.before) }
               : {}),
-            ...(change.after
-              ? { after: toPostedPlacement(change.after, customGroups) }
-              : {}),
+            ...(change.after ? { after: toPostedPlacement(change.after) } : {}),
           })),
       })),
     });
@@ -816,28 +809,17 @@ export function toDeckAgentHistory(
 /**
  * One recorded placement, as the agent can read it.
  *
- * The group travels as the name on screen rather than as the id the deck files it
- * under, because the agent talks about groups the way the user sees them — and because
- * an id it repeated back would resolve to nothing. A group deleted since the edge was
- * recorded resolves to no name at all, so it is left out rather than named wrongly.
+ * A placement is a copy count and a section, and `index` deliberately does not travel: it
+ * is a restoration hint the browser uses to put a cut card back where it was, and a
+ * position in `Deck.cards` means nothing to a reader who sees the deck grouped by type.
+ * A stored placement written before custom groups were removed also carries `categories`,
+ * which is dropped here for the same reason it is dropped everywhere else — there is no
+ * group left for it to name.
  */
 function toPostedPlacement(
   placement: DeckCardPlacement,
-  customGroups: DeckCustomGroup[],
 ): DeckAgentDeckPlacement {
-  const groupId = placement.categories[0];
-  const named =
-    groupId !== undefined &&
-    groupId !== COMMAND_ZONE_GROUP_ID &&
-    groupId !== UNASSIGNED_GROUP_ID &&
-    customGroups.some((group) => group.id === groupId)
-      ? groupName(groupId, customGroups)
-      : undefined;
-  return {
-    quantity: placement.quantity,
-    section: placement.section,
-    ...(named ? { group: shortLabel(named) } : {}),
-  };
+  return { quantity: placement.quantity, section: placement.section };
 }
 
 /** Held to the length the backend accepts, so a long label cannot fail a whole turn. */

@@ -366,8 +366,14 @@ def test_every_new_field_of_edit_deck_has_a_worked_example() -> None:
     assert '"changes": [{"card": "Sol Ring", "quantity": 1}]' in description
     # The cut, which is the whole reason `quantity` is required and 0 is meaningful.
     assert '{"card": "Wayfarer\'s Bauble", "quantity": 0}' in description
-    # `group`, which is otherwise invisible: it is the only way to move a card.
-    assert '"group": "Ramp"' in description
+    # `zone`, which is otherwise invisible: it is the only way to set a commander, and
+    # the agent could not set one at all while the prose described this field as a custom
+    # group that "has to be one that already exists" — an empty command zone is not one.
+    assert '"zone": "commander"' in description
+    assert '"zone": "deck"' in description
+    # The value the model must not have to guess at. `zone` is an enum in the schema, so a
+    # third word is a rejected call rather than a silent mainboard.
+    assert "`commander` to put the card in the command zone" in prose
     # And the swap, because one intent is one call rather than two.
     assert description.count('"reason"') >= 5
     assert "`0` removes the card entirely" in prose

@@ -274,6 +274,20 @@ export function getCardPrice(card: CardSearchResult): number {
   return Number.isFinite(parsed) ? parsed : 0;
 }
 
+/**
+ * The same price for a card that may not be there at all.
+ *
+ * A deck entry is allowed to hold no `details` — `isDeckEntry` does not require one, so a
+ * deck written by an older build hydrates without it — and `getCardPrice` dereferences
+ * `prices` unguarded. Every call site that priced an entry used to launder the absence
+ * through `as CardSearchResult`, which hid it from the type checker and took the whole board
+ * down inside a memo. One function so there is one place to be right: an unpriceable card
+ * contributes nothing, which is the behaviour an unpriced card has had all along.
+ */
+export function getKnownCardPrice(card: CardSearchResult | undefined): number {
+  return card ? getCardPrice(card) : 0;
+}
+
 export function formatEuro(value: number, empty = "No estimate"): string {
   if (value <= 0) {
     return empty;

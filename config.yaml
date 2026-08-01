@@ -322,8 +322,9 @@ agent:
     read_deck_description: |
       List the deck that is open right now. Every card appears under its primary
       type — Commander, Creature, Artifact, Enchantment, Instant, Sorcery,
-      Planeswalker, Battle, Land — with its name and a short id, plus the custom
-      group it sits in on screen.
+      Planeswalker, Battle, Land — with its name and a short id. `Commander` is the
+      command zone, which is the deck's one placement; every other heading is derived
+      from the card's own type line.
 
       Names and ids only: no card text, no mana costs, no prices. Call see_cards for
       anything about what a card actually does. Takes no arguments; there is only
@@ -374,9 +375,10 @@ agent:
       - `quantity` — the copy count you want when the edit is done. `0` removes the
         card entirely. There is no default and no such thing as omitting it: a change
         without a quantity is a rejected call, not a removal.
-      - `group` — the custom group the card should sit in afterwards. Omit it to leave
-        placement alone, which is what an ordinary add or cut wants; naming it is how a
-        card is moved. The group has to be one that already exists.
+      - `zone` — `commander` to put the card in the command zone, `deck` to take it
+        out again. Omit it to leave placement alone, which is what an ordinary add or
+        cut wants. This is the only placement a deck has: everything else on screen is
+        grouped by the card's own type, which no edit can change.
 
       `reason` covers the whole call and is recorded in the deck's history, where it is
       the only thing that makes an old edit make sense. Write the intent rather than
@@ -394,8 +396,11 @@ agent:
       Swap one card for another — one call, two changes, one reason:
       `{"changes": [{"card": "Mind Stone", "quantity": 1}, {"card": "Wayfarer's Bauble", "quantity": 0}], "reason": "a faster rock in the same slot"}`
 
-      Move a card into an existing group, leaving its count alone:
-      `{"changes": [{"card": "Arcane Signet", "quantity": 1, "group": "Ramp"}], "reason": "filing the rocks together"}`
+      Make a card the commander — one copy, in the command zone:
+      `{"changes": [{"card": "Atraxa, Praetors' Voice", "quantity": 1, "zone": "commander"}], "reason": "the commander this deck is built around"}`
+
+      Swap the commander, in one call so the zone is never illegally full:
+      `{"changes": [{"card": "Atraxa, Praetors' Voice", "quantity": 1, "zone": "commander"}, {"card": "Kenrith, the Returned King", "quantity": 1, "zone": "deck"}], "reason": "Atraxa fits the counters plan better"}`
 
       Change how many copies of a basic land the deck runs, which is the one card a
       count above 1 is legal for:
@@ -412,11 +417,17 @@ agent:
       A change the deck already satisfied is dropped and says so, so calling the same
       edit twice cannot add a card twice.
 
-      Only two things stop an edit: a card that does not resolve, and a quantity
+      Two things stop the call here: a card that does not resolve, and a quantity
       outside 0 to 99. Either fails the whole call and changes nothing at all, so a
-      swap can never half happen. Everything else — a card outside the commander's
-      colour identity, a second copy of a nonbasic card, a deck over 100 cards — is
-      applied and reported as a warning, exactly as the board itself treats it.
+      swap can never half happen.
+
+      One more thing can stop it after the call returns, and only the answer that comes
+      back will say so: the deck itself refuses an illegal command zone — a second
+      commander that cannot legally partner the first, or more than one copy of a
+      commander. That refusal also takes the whole edit, so a swap is still all or
+      nothing. Everything else — a card outside the commander's colour identity, a
+      second copy of a nonbasic card, a deck over 100 cards — is applied and reported as
+      a warning, exactly as the board itself treats it.
     read_history_description: |
       Read what has already been done to this deck: who changed what, when, and why.
       Reach for it when the user refers to an earlier change — "what did we take out?",
@@ -632,6 +643,7 @@ agent:
     # Editing the deck
 
     - State the count you want, not the operation.
+    - Setting the commander is an edit like any other: one copy, `zone: "commander"`. A deck whose `Commander` heading is empty is asking for one, and you may put it there yourself rather than telling the user to. Replacing a commander is one call carrying both changes, because the outgoing one has to leave before the incoming one is legal.
     - Call `read_deck()` in the same turn before you edit. Every turn, without exception, however recently you last read it. And never add a card you have not seen in a tool result this turn, exactly as you would never recommend one.
     - The edit has already happened when the result comes back. Do not ask whether to make a change you have just made, and do not say you have made one before the call. When the result names a warning — a card outside the colour identity, a second copy of a nonbasic card, a deck over 100 — say so plainly in your answer, because the user cannot see the tool result.
 

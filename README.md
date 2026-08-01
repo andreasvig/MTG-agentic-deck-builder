@@ -53,10 +53,10 @@ The application currently supports:
   default, with explicit opt-in switches for exceptions.
 - Enhance browsing and agentic search with default-on EDHREC commander
   evidence, optional deck themes, inclusion, and synergy.
-- Add cards into Command zone, Not assigned, or user-created custom groups.
-- Drag cards between custom groups or onto Add custom group.
-- Start in derived Card types grouping and switch to Custom when editable
-  functional groups or drag/drop are needed.
+- Add cards into the command zone or the deck.
+- Drag a card onto Command zone to make it the commander, and onto any card-type
+  heading to put it back in the deck. The card inspector has the same control.
+- Group the deck by derived card type, which is the only grouping there is.
 - Switch between visual stacks and a dense list.
 - Sort by name, mana value, or price.
 - Edit quantities, remove cards, and undo — including after a reload, because undo
@@ -414,8 +414,9 @@ changelog.md           Notable delivered changes
   change, which is why undo can restore a removed card's price and validation inputs
   without storing kilobytes per edit. Two caps mean two different things: undo reaches as
   far as the pooled payloads, and reading reaches every retained session.
-- Command zone and Not assigned are permanent placement concepts.
-- Unknown legacy and former maybeboard placement migrates to Not assigned.
+- Placement is a section: command zone or deck. A deck saved before ADR 0037 opens
+  with every card intact and its custom groups dropped, since the board now groups by
+  derived card type and a stored group name has nowhere to appear.
 
 The browser-local persistence decision and backend migration requirements are
 recorded in

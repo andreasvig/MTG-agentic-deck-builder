@@ -1,13 +1,10 @@
 import {
   AlertTriangle,
-  Check,
   CirclePlus,
   GripVertical,
   Minus,
-  MoreHorizontal,
   Plus,
   Trash2,
-  X,
 } from "lucide-react";
 import {
   closestCenter,
@@ -22,75 +19,64 @@ import {
   useSensor,
   useSensors,
 } from "@dnd-kit/core";
-import {
-  type FormEvent,
-  type ReactNode,
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-} from "react";
+import { type ReactNode, useMemo, useState } from "react";
 
 import type { CardSearchResult } from "../domain/card";
 import {
   formatEuro,
   getCardPrice,
+  getKnownCardPrice,
   primaryCardType,
 } from "../domain/card";
-import type { DeckCardEntry, DeckCustomGroup } from "../domain/deck";
-import {
-  COMMAND_ZONE_GROUP_ID,
-  groupIdForEntry,
-  groupName,
-  UNASSIGNED_GROUP_ID,
-} from "../domain/deck";
+import type { DeckCardEntry, DeckSection } from "../domain/deck";
+import { isDeckSection, sectionLabel } from "../domain/deck";
 import { CardArt } from "./CardArt";
 import { CardText } from "./CardText";
 
 export type ViewMode = "visual" | "list";
-export type GroupMode = "custom" | "type";
 export type SortMode = "alphabet" | "mana" | "price";
 
 interface DeckBoardProps {
   entries: DeckCardEntry[];
-  customGroups: DeckCustomGroup[];
   view: ViewMode;
-  group: GroupMode;
   sort: SortMode;
   singletonWarnings: Set<string>;
   colorIdentityWarnings: Set<string>;
-  onSearch: (targetGroupId?: string, targetLabel?: string) => void;
-  onAddCustomGroup: (name: string, moveScryfallId?: string) => void;
+  onSearch: (targetSection?: DeckSection, targetLabel?: string) => void;
   onSelect: (card: CardSearchResult) => void;
   onSetQuantity: (scryfallId: string, quantity: number) => void;
-  onMove: (scryfallId: string, groupId: string) => void;
+  onMove: (scryfallId: string, section: DeckSection) => void;
   onRemove: (scryfallId: string) => void;
 }
 
+/**
+ * One heading on the board and the cards under it.
+ *
+ * `section` is what a card dropped here becomes, and it is the reason every group carries one
+ * even though most groups are card types: a type is derived from the card and cannot be
+ * edited, so dropping a card on `Creature` cannot mean "make this a creature". It means the
+ * only thing it can mean — put the card in the deck rather than the command zone.
+ */
 interface CardGroup {
   id: string;
   label: string;
-  marker: "command_zone" | "unassigned" | "custom" | "type";
-  targetGroupId?: string;
+  marker: "command_zone" | "type";
+  section: DeckSection;
   entries: DeckCardEntry[];
 }
 
 export function DeckBoard({
   entries,
-  customGroups,
   view,
-  group,
   sort,
   singletonWarnings,
   colorIdentityWarnings,
   onSearch,
-  onAddCustomGroup,
   onSelect,
   onSetQuantity,
   onMove,
   onRemove,
 }: DeckBoardProps) {
-  const dragEnabled = group === "custom";
   const sensors = useSensors(
     useSensor(PointerSensor, {
       activationConstraint: { distance: 6 },
@@ -98,13 +84,7 @@ export function DeckBoard({
     useSensor(KeyboardSensor),
   );
   const [activeCardId, setActiveCardId] = useState<string | null>(null);
-  const [pendingNewGroupCardId, setPendingNewGroupCardId] = useState<
-    string | null
-  >(null);
-  const groups = useMemo(
-    () => makeGroups(entries, customGroups, group, sort),
-    [customGroups, entries, group, sort],
-  );
+  const groups = useMemo(() => makeGroups(entries, sort), [entries, sort]);
   const activeCard = activeCardId
     ? entries.find((entry) => entry.card.scryfall_id === activeCardId)?.card
         .details
@@ -121,19 +101,17 @@ export function DeckBoard({
     if (typeof scryfallId !== "string" || !event.over) {
       return;
     }
-    const targetType = event.over.data.current?.type;
-    if (targetType === "new-group") {
-      setPendingNewGroupCardId(scryfallId);
-      return;
-    }
-    const targetGroupId = event.over.data.current?.groupId;
-    const currentGroupId = event.active.data.current?.groupId;
+    const target = event.over.data.current;
+    const current = event.active.data.current?.section;
+    // A drop is only ever a change of section, and a drop onto the section the card is
+    // already in is not a move. `moveCard` declines one anyway, so this is about not asking:
+    // dropping a creature back on `Creature` should not spend a history entry to say nothing.
     if (
-      targetType === "group" &&
-      typeof targetGroupId === "string" &&
-      targetGroupId !== currentGroupId
+      target?.type === "group" &&
+      isDeckSection(target.section) &&
+      target.section !== current
     ) {
-      onMove(scryfallId, targetGroupId);
+      onMove(scryfallId, target.section);
     }
   };
 
@@ -144,68 +122,47 @@ export function DeckBoard({
           <span>Qty</span>
           <span>Card</span>
           <span>Type</span>
-          <span>Custom group</span>
           <span>Mana</span>
           <span>EUR</span>
           <span>Actions</span>
         </div>
-        {groups.map((cardGroup) =>
-          cardGroup.entries.length > 0 || dragEnabled ? (
-            <DroppableListGroup
-              group={cardGroup}
-              enabled={dragEnabled}
-              key={cardGroup.id}
-            >
-              <GroupHeader group={cardGroup} onSearch={onSearch} />
-              {cardGroup.entries.length > 0 ? (
-                cardGroup.entries.map((entry) => (
-                  <ListRow
-                    entry={entry}
-                    groupId={cardGroup.id}
-                    customGroups={customGroups}
-                    dragEnabled={dragEnabled}
-                    warning={warningCopy(
-                      singletonWarnings.has(entry.card.oracle_id),
-                      colorIdentityWarnings.has(entry.card.oracle_id),
-                    )}
-                    key={entry.card.scryfall_id}
-                    onSelect={onSelect}
-                    onSetQuantity={onSetQuantity}
-                    onRemove={onRemove}
-                  />
-                ))
-              ) : (
-                <div className="deck-list__empty-group">Drop cards here</div>
-              )}
-            </DroppableListGroup>
-          ) : null,
-        )}
-        {dragEnabled ? (
-          <AddGroupSlot
-            compact
-            dropEnabled
-            pendingCardId={pendingNewGroupCardId}
-            onAdd={onAddCustomGroup}
-            onPendingHandled={() => setPendingNewGroupCardId(null)}
-          />
-        ) : null}
+        {groups.map((cardGroup) => (
+          <DroppableListGroup group={cardGroup} key={cardGroup.id}>
+            <GroupHeader group={cardGroup} onSearch={onSearch} />
+            {cardGroup.entries.length > 0 ? (
+              cardGroup.entries.map((entry) => (
+                <ListRow
+                  entry={entry}
+                  warning={warningCopy(
+                    singletonWarnings.has(entry.card.oracle_id),
+                    colorIdentityWarnings.has(entry.card.oracle_id),
+                  )}
+                  key={entry.card.scryfall_id}
+                  onSelect={onSelect}
+                  onSetQuantity={onSetQuantity}
+                  onRemove={onRemove}
+                />
+              ))
+            ) : (
+              <div className="deck-list__empty-group">
+                {cardGroup.section === "command_zone"
+                  ? "Drop a card here to make it the commander"
+                  : "Drop cards here"}
+              </div>
+            )}
+          </DroppableListGroup>
+        ))}
       </div>
     ) : (
       <div className="visual-groups" aria-label="Deck visual groups">
         {groups.map((cardGroup) => (
-          <DroppableVisualGroup
-            group={cardGroup}
-            enabled={dragEnabled}
-            key={cardGroup.id}
-          >
+          <DroppableVisualGroup group={cardGroup} key={cardGroup.id}>
             <GroupHeader group={cardGroup} onSearch={onSearch} />
             {cardGroup.entries.length > 0 ? (
               <div className="visual-card-grid">
                 {cardGroup.entries.map((entry) => (
                   <VisualCard
                     entry={entry}
-                    groupId={cardGroup.id}
-                    dragEnabled={dragEnabled}
                     warning={warningCopy(
                       singletonWarnings.has(entry.card.oracle_id),
                       colorIdentityWarnings.has(entry.card.oracle_id),
@@ -220,9 +177,7 @@ export function DeckBoard({
               <button
                 className="visual-group__empty"
                 type="button"
-                onClick={() =>
-                  onSearch(cardGroup.targetGroupId, cardGroup.label)
-                }
+                onClick={() => onSearch(cardGroup.section, cardGroup.label)}
               >
                 <CirclePlus aria-hidden="true" size={18} />
                 Add to {cardGroup.label.toLowerCase()}
@@ -230,14 +185,6 @@ export function DeckBoard({
             )}
           </DroppableVisualGroup>
         ))}
-        {dragEnabled ? (
-          <AddGroupSlot
-            dropEnabled
-            pendingCardId={pendingNewGroupCardId}
-            onAdd={onAddCustomGroup}
-            onPendingHandled={() => setPendingNewGroupCardId(null)}
-          />
-        ) : null}
       </div>
     );
 
@@ -264,17 +211,14 @@ export function DeckBoard({
 
 function DroppableVisualGroup({
   group,
-  enabled,
   children,
 }: {
   group: CardGroup;
-  enabled: boolean;
   children: ReactNode;
 }) {
   const { isOver, setNodeRef } = useDroppable({
     id: `group:${group.id}`,
-    disabled: !enabled,
-    data: { type: "group", groupId: group.id },
+    data: { type: "group", section: group.section },
   });
   return (
     <section
@@ -289,17 +233,14 @@ function DroppableVisualGroup({
 
 function DroppableListGroup({
   group,
-  enabled,
   children,
 }: {
   group: CardGroup;
-  enabled: boolean;
   children: ReactNode;
 }) {
   const { isOver, setNodeRef } = useDroppable({
     id: `group:${group.id}`,
-    disabled: !enabled,
-    data: { type: "group", groupId: group.id },
+    data: { type: "group", section: group.section },
   });
   return (
     <section
@@ -316,15 +257,11 @@ function DroppableListGroup({
 
 function VisualCard({
   entry,
-  groupId,
-  dragEnabled,
   warning,
   onSelect,
   onSetQuantity,
 }: {
   entry: DeckCardEntry;
-  groupId: string;
-  dragEnabled: boolean;
   warning: ValidationWarning | null;
   onSelect: (card: CardSearchResult) => void;
   onSetQuantity: (scryfallId: string, quantity: number) => void;
@@ -332,11 +269,12 @@ function VisualCard({
   const card = entry.card.details;
   const { attributes, isDragging, listeners, setNodeRef } = useDraggable({
     id: `card:${entry.card.scryfall_id}`,
-    disabled: !dragEnabled,
     data: {
       type: "card",
       scryfallId: entry.card.scryfall_id,
-      groupId,
+      // Read from the entry rather than from the group it is rendered under, so a drop
+      // compares the card's own placement against the target and never a heading's.
+      section: entry.section,
     },
   });
   if (!card) {
@@ -391,27 +329,16 @@ function VisualCard({
         >
           <Plus aria-hidden="true" size={14} />
         </button>
-        {dragEnabled ? (
-          <button
-            className="card-drag-handle"
-            type="button"
-            aria-label={`Drag ${card.name}`}
-            title="Move card"
-            {...attributes}
-            {...listeners}
-          >
-            <GripVertical aria-hidden="true" size={15} />
-          </button>
-        ) : (
-          <button
-            type="button"
-            aria-label={`Inspect ${card.name} details`}
-            title="Card details"
-            onClick={() => onSelect(card)}
-          >
-            <MoreHorizontal aria-hidden="true" size={15} />
-          </button>
-        )}
+        <button
+          className="card-drag-handle"
+          type="button"
+          aria-label={`Drag ${card.name}`}
+          title="Move card"
+          {...attributes}
+          {...listeners}
+        >
+          <GripVertical aria-hidden="true" size={15} />
+        </button>
       </div>
     </article>
   );
@@ -422,7 +349,7 @@ function GroupHeader({
   onSearch,
 }: {
   group: CardGroup;
-  onSearch: (targetGroupId?: string, targetLabel?: string) => void;
+  onSearch: (targetSection?: DeckSection, targetLabel?: string) => void;
 }) {
   const quantity = group.entries.reduce(
     (total, entry) => total + entry.quantity,
@@ -430,7 +357,7 @@ function GroupHeader({
   );
   const subtotal = group.entries.reduce(
     (total, entry) =>
-      total + getCardPrice(entry.card.details as CardSearchResult) * entry.quantity,
+      total + getKnownCardPrice(entry.card.details) * entry.quantity,
     0,
   );
   return (
@@ -444,7 +371,7 @@ function GroupHeader({
         type="button"
         aria-label={`Add card to ${group.label}`}
         title={`Add to ${group.label}`}
-        onClick={() => onSearch(group.targetGroupId, group.label)}
+        onClick={() => onSearch(group.section, group.label)}
       >
         <CirclePlus aria-hidden="true" size={16} />
       </button>
@@ -452,146 +379,14 @@ function GroupHeader({
   );
 }
 
-function AddGroupSlot({
-  compact = false,
-  dropEnabled,
-  pendingCardId,
-  onAdd,
-  onPendingHandled,
-}: {
-  compact?: boolean;
-  dropEnabled: boolean;
-  pendingCardId: string | null;
-  onAdd: (name: string, moveScryfallId?: string) => void;
-  onPendingHandled: () => void;
-}) {
-  const [editing, setEditing] = useState(false);
-  const [name, setName] = useState("");
-  const editorRef = useRef<HTMLFormElement>(null);
-  const { isOver, setNodeRef } = useDroppable({
-    id: "new-custom-group",
-    disabled: !dropEnabled,
-    data: { type: "new-group" },
-  });
-
-  useEffect(() => {
-    if (pendingCardId) {
-      setEditing(true);
-    }
-  }, [pendingCardId]);
-
-  useEffect(() => {
-    if (!editing) {
-      return;
-    }
-    const frame = window.requestAnimationFrame(() => {
-      const editor = editorRef.current;
-      if (typeof editor?.scrollIntoView === "function") {
-        editor.scrollIntoView({
-          block: "nearest",
-          inline: "start",
-        });
-      }
-    });
-    return () => window.cancelAnimationFrame(frame);
-  }, [compact, editing]);
-
-  const cancel = () => {
-    setEditing(false);
-    setName("");
-    onPendingHandled();
-  };
-  const submit = (event: FormEvent) => {
-    event.preventDefault();
-    if (!name.trim()) {
-      return;
-    }
-    onAdd(name, pendingCardId ?? undefined);
-    cancel();
-  };
-
-  if (!editing) {
-    return (
-      <button
-        ref={setNodeRef}
-        className={`add-group-slot ${
-          compact ? "add-group-slot--compact" : ""
-        } ${isOver ? "add-group-slot--over" : ""}`}
-        type="button"
-        data-drop-target="new-group"
-        onClick={() => setEditing(true)}
-      >
-        <CirclePlus aria-hidden="true" size={19} />
-        Add custom group
-      </button>
-    );
-  }
-
-  return (
-    <form
-      ref={(node) => {
-        editorRef.current = node;
-        setNodeRef(node);
-      }}
-      className={`add-group-slot add-group-slot--editing ${
-        compact ? "add-group-slot--compact" : ""
-      } ${isOver ? "add-group-slot--over" : ""}`}
-      data-drop-target="new-group"
-      onSubmit={submit}
-    >
-      <label>
-        <span>Group name</span>
-        <input
-          autoFocus
-          value={name}
-          maxLength={40}
-          onChange={(event) => setName(event.target.value)}
-          onKeyDown={(event) => {
-            if (event.key === "Escape") {
-              event.preventDefault();
-              cancel();
-            }
-          }}
-        />
-      </label>
-      <div>
-        <button
-          className="icon-button icon-button--compact"
-          type="submit"
-          disabled={!name.trim()}
-          aria-label="Create custom group"
-          title="Create group"
-        >
-          <Check aria-hidden="true" size={16} />
-        </button>
-        <button
-          className="icon-button icon-button--compact"
-          type="button"
-          aria-label="Cancel custom group"
-          title="Cancel"
-          onClick={cancel}
-        >
-          <X aria-hidden="true" size={16} />
-        </button>
-      </div>
-    </form>
-  );
-}
-
 function ListRow({
   entry,
-  groupId,
-  customGroups,
-  dragEnabled,
   warning,
   onSelect,
   onSetQuantity,
   onRemove,
 }: {
   entry: DeckCardEntry;
-  groupId: string;
-  customGroups: DeckCustomGroup[];
-  dragEnabled: boolean;
   warning: ValidationWarning | null;
   onSelect: (card: CardSearchResult) => void;
   onSetQuantity: (scryfallId: string, quantity: number) => void;
@@ -600,11 +395,10 @@ function ListRow({
   const card = entry.card.details;
   const { attributes, isDragging, listeners, setNodeRef } = useDraggable({
     id: `card:${entry.card.scryfall_id}`,
-    disabled: !dragEnabled,
     data: {
       type: "card",
       scryfallId: entry.card.scryfall_id,
-      groupId,
+      section: entry.section,
     },
   });
   if (!card) {
@@ -651,34 +445,21 @@ function ListRow({
         ) : null}
       </button>
       <span className="list-type">{card.type_line}</span>
-      <span>{groupName(groupIdForEntry(entry, customGroups), customGroups)}</span>
       <span className="mana-line">
         <CardText text={card.mana_cost} fallback="—" />
       </span>
       <span>{formatEuro(getCardPrice(card) * entry.quantity, "—")}</span>
       <div className="list-actions">
-        {dragEnabled ? (
-          <button
-            className="icon-button icon-button--compact card-drag-handle"
-            type="button"
-            aria-label={`Drag ${card.name}`}
-            title="Move card"
-            {...attributes}
-            {...listeners}
-          >
-            <GripVertical aria-hidden="true" size={16} />
-          </button>
-        ) : (
-          <button
-            className="icon-button icon-button--compact"
-            type="button"
-            aria-label={`Inspect ${card.name} details`}
-            title="Card details"
-            onClick={() => onSelect(card)}
-          >
-            <MoreHorizontal aria-hidden="true" size={16} />
-          </button>
-        )}
+        <button
+          className="icon-button icon-button--compact card-drag-handle"
+          type="button"
+          aria-label={`Drag ${card.name}`}
+          title="Move card"
+          {...attributes}
+          {...listeners}
+        >
+          <GripVertical aria-hidden="true" size={16} />
+        </button>
         <button
           className="icon-button icon-button--compact icon-button--danger"
           type="button"
@@ -693,44 +474,22 @@ function ListRow({
   );
 }
 
+/**
+ * The board's headings: the command zone first, then one per card type present.
+ *
+ * The command zone heading is unconditional. It is the only placement a user can change, so
+ * it has to be a visible drop target even when it is empty — a deck with no commander is
+ * exactly the deck that needs somewhere to put one. Type headings appear only when a card
+ * files under them, because a type nothing matches is a heading that can never be dropped
+ * on to any effect: dropping a card on `Creature` moves it out of the command zone, and a
+ * card that is already in the deck is already there.
+ */
 function makeGroups(
   entries: DeckCardEntry[],
-  customGroups: DeckCustomGroup[],
-  groupMode: GroupMode,
   sortMode: SortMode,
 ): CardGroup[] {
   const sortEntries = (cards: DeckCardEntry[]) =>
     [...cards].sort((left, right) => compareEntries(left, right, sortMode));
-
-  if (groupMode === "custom") {
-    const definitions = [
-      {
-        id: COMMAND_ZONE_GROUP_ID,
-        label: "Command zone",
-        marker: "command_zone" as const,
-      },
-      {
-        id: UNASSIGNED_GROUP_ID,
-        label: "Not assigned",
-        marker: "unassigned" as const,
-      },
-      ...customGroups.map((customGroup) => ({
-        id: customGroup.id,
-        label: customGroup.name,
-        marker: "custom" as const,
-      })),
-    ];
-    return definitions.map((definition) => ({
-      ...definition,
-      targetGroupId: definition.id,
-      entries: sortEntries(
-        entries.filter(
-          (entry) =>
-            groupIdForEntry(entry, customGroups) === definition.id,
-        ),
-      ),
-    }));
-  }
 
   const mainboard = entries.filter((entry) => entry.section === "mainboard");
   const presentTypes = [
@@ -748,10 +507,10 @@ function makeGroups(
   );
   return [
     {
-      id: COMMAND_ZONE_GROUP_ID,
-      label: "Command zone",
+      id: "command_zone",
+      label: sectionLabel("command_zone"),
       marker: "command_zone",
-      targetGroupId: COMMAND_ZONE_GROUP_ID,
+      section: "command_zone",
       entries: sortEntries(
         entries.filter((entry) => entry.section === "command_zone"),
       ),
@@ -760,6 +519,7 @@ function makeGroups(
       id: `type-${type}`,
       label: type,
       marker: "type" as const,
+      section: "mainboard" as const,
       entries: sortEntries(
         mainboard.filter(
           (entry) => primaryCardType(entry.card.details) === type,
@@ -814,8 +574,8 @@ function compareEntries(
   }
   if (sortMode === "price") {
     return (
-      getCardPrice(right.card.details as CardSearchResult) -
-        getCardPrice(left.card.details as CardSearchResult) ||
+      getKnownCardPrice(right.card.details) -
+        getKnownCardPrice(left.card.details) ||
       left.card.name.localeCompare(right.card.name)
     );
   }

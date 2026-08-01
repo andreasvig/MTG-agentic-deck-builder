@@ -2,9 +2,13 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import type { CardSearchResult } from "../domain/card";
 import { getCardPrice, isBasicLand } from "../domain/card";
-import type { Deck, DeckCardEntry, DeckLibrary } from "../domain/deck";
+import type {
+  Deck,
+  DeckCardEntry,
+  DeckLibrary,
+  DeckSection,
+} from "../domain/deck";
 import {
-  COMMAND_ZONE_GROUP_ID,
   createDeckLibrary,
   createEmptyDeck,
   DECK_LIBRARY_STORAGE_KEY,
@@ -12,11 +16,10 @@ import {
   getColorIdentityWarnings,
   getCommandZoneProblem,
   getCommanderColorIdentity,
-  groupIdForEntry,
+  isDeckSection,
   parseStoredDeck,
   parseStoredDeckLibrary,
-  placementForGroup,
-  UNASSIGNED_GROUP_ID,
+  sectionLabel,
   validateCommandZoneAddition,
 } from "../domain/deck";
 import type {
@@ -69,7 +72,7 @@ export interface DeckEditChange {
   card: CardSearchResult;
   quantity: number;
   /** Where the card should sit afterwards. Omit to leave an existing card's placement alone. */
-  groupId?: string;
+  section?: DeckSection;
 }
 
 /** A whole edit: one intent, applied as one undo step and recorded as one history entry. */
@@ -232,13 +235,13 @@ export function useDeck() {
   }, []);
 
   const addCard = useCallback(
-    (card: CardSearchResult, targetGroupId?: string, quantity = 1) => {
-      const groupId = targetGroupId ?? UNASSIGNED_GROUP_ID;
+    (card: CardSearchResult, targetSection?: DeckSection, quantity = 1) => {
+      const section = targetSection ?? "mainboard";
       mutate((current) => {
         const existingIndex = current.cards.findIndex(
           (entry) => entry.card.scryfall_id === card.scryfall_id,
         );
-        if (groupId === COMMAND_ZONE_GROUP_ID) {
+        if (section === "command_zone") {
           if (quantity !== 1) {
             return {
               error: "Command-zone cards must be added one copy at a time.",
@@ -274,10 +277,7 @@ export function useDeck() {
                 ...current,
                 cards: current.cards.map((entry, index) =>
                   index === existingIndex
-                    ? {
-                        ...entry,
-                        ...placementForGroup(COMMAND_ZONE_GROUP_ID),
-                      }
+                    ? { ...entry, section: "command_zone" as const }
                     : entry,
                 ),
               },
@@ -299,7 +299,6 @@ export function useDeck() {
           };
         }
 
-        const placement = placementForGroup(groupId);
         return {
           deck: {
             ...current,
@@ -313,7 +312,7 @@ export function useDeck() {
                   details: card,
                 },
                 quantity,
-                ...placement,
+                section,
               },
             ],
           },
@@ -375,22 +374,15 @@ export function useDeck() {
   );
 
   const moveCard = useCallback(
-    (scryfallId: string, groupId: string) => {
+    (scryfallId: string, section: DeckSection) => {
       mutate((current) => {
         const entry = current.cards.find(
           (candidate) => candidate.card.scryfall_id === scryfallId,
         );
-        const validGroup =
-          groupId === COMMAND_ZONE_GROUP_ID ||
-          groupId === UNASSIGNED_GROUP_ID ||
-          current.custom_groups.some((group) => group.id === groupId);
-        if (!entry || !validGroup) {
+        if (!entry || !isDeckSection(section)) {
           return null;
         }
-        if (
-          groupId === COMMAND_ZONE_GROUP_ID &&
-          entry.section !== "command_zone"
-        ) {
+        if (section === "command_zone" && entry.section !== "command_zone") {
           if (entry.quantity !== 1) {
             return {
               error: `${entry.card.name} has ${entry.quantity} copies in the deck. Reduce it to one before moving it to the command zone.`,
@@ -413,10 +405,10 @@ export function useDeck() {
             };
           }
         }
-        if (
-          groupId === COMMAND_ZONE_GROUP_ID &&
-          entry.section === "command_zone"
-        ) {
+        // Already there. Reported as nothing happening rather than as a move, because a
+        // drag that lands where the card already is is not an edit and must not open a
+        // history entry.
+        if (section === entry.section) {
           return null;
         }
         return {
@@ -424,60 +416,13 @@ export function useDeck() {
             ...current,
             cards: current.cards.map((candidate) =>
               candidate.card.scryfall_id === scryfallId
-                ? { ...candidate, ...placementForGroup(groupId) }
+                ? { ...candidate, section }
                 : candidate,
             ),
           },
-          announcement:
-            groupId === COMMAND_ZONE_GROUP_ID
-              ? `${entry.card.name} moved to the command zone.`
-              : `${entry.card.name} moved to a custom group.`,
-        };
-      });
-    },
-    [mutate],
-  );
-
-  const addCustomGroup = useCallback(
-    (name: string, moveScryfallId?: string) => {
-      const normalizedName = name.trim();
-      if (!normalizedName) {
-        return;
-      }
-      const groupId = createLocalId("group");
-      mutate((current) => {
-        if (
-          current.custom_groups.some(
-            (group) =>
-              group.name.toLocaleLowerCase() ===
-              normalizedName.toLocaleLowerCase(),
-          )
-        ) {
-          return null;
-        }
-        const entryToMove = moveScryfallId
-          ? current.cards.find(
-              (entry) => entry.card.scryfall_id === moveScryfallId,
-            )
-          : undefined;
-        return {
-          deck: {
-            ...current,
-            custom_groups: [
-              ...current.custom_groups,
-              { id: groupId, name: normalizedName },
-            ],
-            cards: entryToMove
-              ? current.cards.map((entry) =>
-                  entry.card.scryfall_id === moveScryfallId
-                    ? { ...entry, ...placementForGroup(groupId) }
-                    : entry,
-                )
-              : current.cards,
-          },
-          announcement: entryToMove
-            ? `${normalizedName} group created and ${entryToMove.card.name} moved to it.`
-            : `${normalizedName} group created.`,
+          announcement: `${entry.card.name} moved to the ${sectionLabel(
+            section,
+          ).toLowerCase()}.`,
         };
       });
     },
@@ -662,7 +607,6 @@ export function useDeck() {
     setQuantity,
     removeCard,
     moveCard,
-    addCustomGroup,
     renameDeck,
     createDeck,
     selectDeck,
@@ -1137,20 +1081,9 @@ function applyEditChange(
     };
   }
 
-  const groupId =
-    change.groupId ??
-    (existing ? groupIdForEntry(existing, deck.custom_groups) : UNASSIGNED_GROUP_ID);
-  if (
-    groupId !== COMMAND_ZONE_GROUP_ID &&
-    groupId !== UNASSIGNED_GROUP_ID &&
-    !deck.custom_groups.some((group) => group.id === groupId)
-  ) {
-    return {
-      error: `${card.name} cannot be placed in a group this deck does not have. Create the group first.`,
-    };
-  }
+  const section = change.section ?? existing?.section ?? "mainboard";
 
-  if (groupId === COMMAND_ZONE_GROUP_ID) {
+  if (section === "command_zone") {
     if (quantity !== 1) {
       return {
         error: `${card.name} is a commander, so it may only have one copy in the command zone.`,
@@ -1170,7 +1103,6 @@ function applyEditChange(
     }
   }
 
-  const placement = placementForGroup(groupId);
   if (!existing) {
     return {
       deck: {
@@ -1185,7 +1117,7 @@ function applyEditChange(
               details: card,
             },
             quantity,
-            ...placement,
+            section,
           },
         ],
       },
@@ -1195,9 +1127,7 @@ function applyEditChange(
     };
   }
 
-  const relocated =
-    existing.section !== placement.section ||
-    existing.categories[0] !== placement.categories[0];
+  const relocated = existing.section !== section;
   if (existing.quantity === quantity && !relocated) {
     return { deck, added: 0, removed: 0, moved: 0 };
   }
@@ -1205,7 +1135,7 @@ function applyEditChange(
     deck: {
       ...deck,
       cards: deck.cards.map((entry, index) =>
-        index === existingIndex ? { ...entry, quantity, ...placement } : entry,
+        index === existingIndex ? { ...entry, quantity, section } : entry,
       ),
     },
     added: Math.max(0, quantity - existing.quantity),
@@ -1254,7 +1184,6 @@ function isUntouchedEmptyDeck(deck: Deck): boolean {
   return (
     deck.name === "Untitled Commander" &&
     deck.cards.length === 0 &&
-    deck.custom_groups.length === 0 &&
     deck.created_at === deck.updated_at
   );
 }

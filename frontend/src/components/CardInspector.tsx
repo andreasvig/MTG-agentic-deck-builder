@@ -14,11 +14,8 @@ import type {
   MagicColor,
 } from "../domain/card";
 import { formatEuro, getCardPrice } from "../domain/card";
-import type { DeckCustomGroup } from "../domain/deck";
-import {
-  COMMAND_ZONE_GROUP_ID,
-  UNASSIGNED_GROUP_ID,
-} from "../domain/deck";
+import type { DeckSection } from "../domain/deck";
+import { isDeckSection, sectionLabel } from "../domain/deck";
 import { apiClient, type ApiClient } from "../lib/api";
 import { CardArt } from "./CardArt";
 import { CardEnrichmentPanel } from "./CardEnrichmentPanel";
@@ -27,16 +24,15 @@ import { CardText } from "./CardText";
 interface CardInspectorProps {
   card: CardSearchResult | null;
   quantity: number;
-  groupId?: string;
-  customGroups: DeckCustomGroup[];
-  showCustomGroupControl: boolean;
+  /** The card's placement, or nothing when the deck does not hold it. */
+  section?: DeckSection;
   singletonWarning: boolean;
   colorIdentityWarning: boolean;
   commanderColorIdentity: ReadonlySet<MagicColor> | null;
   client?: ApiClient;
   onAdd: (card: CardSearchResult) => void;
   onSetQuantity: (scryfallId: string, quantity: number) => void;
-  onMove: (scryfallId: string, groupId: string) => void;
+  onMove: (scryfallId: string, section: DeckSection) => void;
   onRemove: (scryfallId: string) => void;
   onOpenCard?: (card: CardSearchResult) => void;
   onSelectTag?: (tag: CardTagFilter) => void;
@@ -46,9 +42,7 @@ interface CardInspectorProps {
 export function CardInspector({
   card,
   quantity,
-  groupId,
-  customGroups,
-  showCustomGroupControl,
+  section,
   singletonWarning,
   colorIdentityWarning,
   commanderColorIdentity,
@@ -268,30 +262,31 @@ export function CardInspector({
                     </button>
                   </div>
                 </div>
-                {showCustomGroupControl ? (
-                  <label>
-                    Custom group
-                    <select
-                      value={groupId ?? UNASSIGNED_GROUP_ID}
-                      aria-label={`Move ${card.name} to custom group`}
-                      onChange={(event) =>
-                        onMove(card.scryfall_id, event.target.value)
+                {/*
+                  Unconditional, and the only control that can make a card the commander.
+                  It used to be shown only while the board grouped by custom group, which
+                  left card-type grouping — the default, and now the only mode — with no way
+                  to fill the command zone except a drag.
+                */}
+                <label>
+                  Placement
+                  <select
+                    value={section ?? "mainboard"}
+                    aria-label={`Move ${card.name} to another part of the deck`}
+                    onChange={(event) => {
+                      if (isDeckSection(event.target.value)) {
+                        onMove(card.scryfall_id, event.target.value);
                       }
-                    >
-                      <option value={COMMAND_ZONE_GROUP_ID}>
-                        Command zone
-                      </option>
-                      <option value={UNASSIGNED_GROUP_ID}>
-                        Not assigned
-                      </option>
-                      {customGroups.map((customGroup) => (
-                        <option value={customGroup.id} key={customGroup.id}>
-                          {customGroup.name}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-                ) : null}
+                    }}
+                  >
+                    <option value="command_zone">
+                      {sectionLabel("command_zone")}
+                    </option>
+                    <option value="mainboard">
+                      {sectionLabel("mainboard")}
+                    </option>
+                  </select>
+                </label>
                 <button
                   className="remove-button"
                   type="button"

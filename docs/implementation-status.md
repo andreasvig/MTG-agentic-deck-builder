@@ -160,7 +160,7 @@ not the intended end state.
   only — the JSON one remains the plain API contract.
 - Five tools, four of them read-only (ADRs 0029, 0035 and 0036):
   - `read_deck()` — the open deck grouped under each card's primary type, with
-    names, short ids and on-screen custom groups, and no card text. It also reports a
+    names and short ids, and no card text. It also reports a
     quantity-weighted mana curve and a total EUR price without being asked, adopting the
     statistics memo's own conventions exactly — price over every card including the
     command zone, average mana value over neither the command zone nor anything with
@@ -237,8 +237,8 @@ not the intended end state.
 
 Missing:
 
-- Creating a custom group from an edit. `edit_deck` can place a card in a group the deck
-  already has; making a new one stays `addCustomGroup`'s job.
+- Nothing about placement beyond the command zone. `edit_deck`'s `zone` is
+  `commander` or `deck`, which since ADR 0037 is the whole of what placement means.
 - Reordering. Position is recorded so an undone removal lands where it was, but it is not
   an edit axis, so a pure reorder derives no change at all (ADR 0036).
 - Partner and background command zones, in `edit_deck` as in `see_cards` and
@@ -269,13 +269,11 @@ Missing:
   every retained session (50). An entry whose payload has been pruned stays readable and
   stops being replayable, and that refusal is announced rather than thrown.
 - A deleted deck's history is archived with the deck and restored with it.
-- Permanent Command zone and Not assigned groups.
-- User-created custom groups.
-- Drop-to-create a custom group and move the card in one undoable action.
-- Pointer, touch, and keyboard-accessible card movement between custom groups.
+- A permanent Command zone heading above groups derived from card type, which is the
+  only grouping there is (ADR 0037).
+- Pointer, touch, and keyboard-accessible card movement between the command zone and
+  the deck, by drag or from the card inspector's placement control.
 - Visual stacks and dense list views.
-- Derived Card types as the default grouping mode, with Custom available for
-  editable functional groups and drag/drop.
 - Alphabetic, mana-value, and price sorting.
 - Deck, group, and selected-printing price totals.
 - Singleton warnings.

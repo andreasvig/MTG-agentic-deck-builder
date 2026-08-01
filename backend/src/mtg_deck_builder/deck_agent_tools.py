@@ -60,6 +60,8 @@ from mtg_deck_builder.domain.agent_chat import (
     DeckAgentDeckSession,
     DeckAgentModel,
     DeckEditChange,
+    DeckEditZone,
+    DeckSection,
     EditDeckArguments,
     ReadHistoryArguments,
 )
@@ -180,8 +182,6 @@ if _MISSING_FROM_DETAIL_ORDER:
 
 # How the two deck sections read in prose. `command_zone` is a field name, and history
 # is read by a model that will repeat whatever it is shown.
-_SECTION_NAMES = {"command_zone": "command zone", "mainboard": "mainboard"}
-
 # What the history calls each actor. The reader of that text is the agent, so the agent
 # is `Me`: naming itself in the third person is how it comes to describe its own edits
 # as somebody else's.
@@ -376,7 +376,6 @@ class _DeckEntry:
     scryfall_id: UUID
     quantity: int
     section: str
-    group: str | None
 
 
 class DeckAgentToolError(RuntimeError):
@@ -1294,7 +1293,6 @@ class DeckAgentToolbox:
                     scryfall_id=entry.scryfall_id,
                     quantity=entry.quantity,
                     section=entry.section,
-                    group=entry.group,
                 )
             )
         return entries, unresolved
@@ -1391,6 +1389,32 @@ def _as_uuid(value: str) -> UUID | None:
         return None
 
 
+def _section_for_zone(zone: DeckEditZone | None) -> DeckSection | None:
+    """Resolve the zone the model named to the section the browser files cards under.
+
+    The one place the model's vocabulary and the deck's meet. `None` travels through as
+    `None` and is never resolved to the mainboard: a change that says nothing about
+    placement must leave it alone, or every quantity edit on a commander would quietly
+    move it out of the command zone.
+    """
+
+    if zone is None:
+        return None
+    return "command_zone" if zone == "commander" else "mainboard"
+
+
+def _as_section(value: str) -> DeckSection | None:
+    """Read a snapshot's section, which arrives as the plain string the request carried."""
+
+    return value if value in ("command_zone", "mainboard") else None  # type: ignore[return-value]
+
+
+def _section_words(section: DeckSection | None) -> str:
+    """Name a section in the words the deck listing uses for its headings."""
+
+    return "command zone" if section == "command_zone" else "deck"
+
+
 def _primary_type(card: CardSearchResult) -> str:
     """File a card under the first type its type line mentions."""
 
@@ -1425,8 +1449,9 @@ def _deck_line(
 ) -> str:
     prefix = prefixes.get(entry.card.oracle_id, str(entry.card.oracle_id))
     quantity = f"{entry.quantity}x " if with_quantity and entry.quantity > 1 else ""
-    group = f"  [group: {entry.group}]" if entry.group else ""
-    return f"  {quantity}{entry.card.name} [{prefix}]{group}"
+    # No placement suffix: a card is either under the `Commander` heading or it is in the
+    # deck, and the heading already says which.
+    return f"  {quantity}{entry.card.name} [{prefix}]"
 
 
 def _counts_toward_curve(entry: _DeckEntry) -> bool:
@@ -1593,19 +1618,22 @@ class _PlannedChange:
     scryfall_id: UUID
     quantity: int
     previous_quantity: int
-    group: str | None
-    previous_group: str | None
+    # The model's `zone` resolved to the browser's section, or `None` where the model
+    # named none. `previous_section` is where the posted deck had the card, absent when
+    # the deck does not hold it at all.
+    section: DeckSection | None
+    previous_section: DeckSection | None
 
     @property
     def effective(self) -> bool:
         """Report whether this actually changes the deck as posted.
 
-        A count the deck already holds changes nothing, and neither does a group the
+        A count the deck already holds changes nothing, and neither does a zone the
         card already sits in. Dropping those is what makes the tool idempotent: it
         applies itself, so a model that retries the same call must not double-add.
         """
 
-        moved = self.group is not None and self.group != self.previous_group
+        moved = self.section is not None and self.section != self.previous_section
         return self.quantity != self.previous_quantity or moved
 
     @property
@@ -1620,7 +1648,7 @@ class _PlannedChange:
             name=self.card.name,
             quantity=self.quantity,
             previous_quantity=self.previous_quantity,
-            group=self.group,
+            section=self.section,
             # Only an add needs the payload: `addCard` reads the card's colours and
             # type line, and those are exactly what the browser cannot construct for a
             # card it has never held.
@@ -1656,8 +1684,8 @@ def _planned_changes(
             scryfall_id=entry.scryfall_id if entry is not None else card.scryfall_id,
             quantity=change.quantity,
             previous_quantity=entry.quantity if entry is not None else 0,
-            group=change.group,
-            previous_group=entry.group if entry is not None else None,
+            section=_section_for_zone(change.zone),
+            previous_section=_as_section(entry.section) if entry is not None else None,
         )
     return list(planned.values()), collapsed
 
@@ -1675,8 +1703,9 @@ def _edit_warnings(
     outside the commander's identity be dragged in and says so, and it does not stop a
     deck growing past a hundred cards. So this reports and still applies — an agent
     that refused where the drag target allows would be inconsistent in a way the user
-    cannot see. Command-zone legality and whether a group exists stay in
-    `frontend/src/domain/deck.ts`, which is the one authority on both.
+    cannot see. Command-zone legality — whether this card may legally be a commander at
+    all, and whether it may share the zone — stays in `frontend/src/domain/deck.ts`,
+    which is the one authority on it.
     """
 
     warnings: list[str] = []
@@ -1780,9 +1809,9 @@ def _change_line(change: _PlannedChange) -> str:
     elif change.quantity < change.previous_quantity:
         line = f"{_REMOVED} {name} ({change.previous_quantity} → {change.quantity})"
     else:
-        return f"{name} → {change.group}"
-    if change.group is not None and change.group != change.previous_group:
-        line += f"  [group: {change.group}]"
+        return f"{name} → {_section_words(change.section)}"
+    if change.section is not None and change.section != change.previous_section:
+        line += f"  [{_section_words(change.section)}]"
     return line
 
 
@@ -1805,7 +1834,9 @@ def _noop_sentence(change: _PlannedChange) -> str:
             f"{_quoted(change.card.name)} is not in the deck, so there was nothing to "
             "remove."
         )
-    placement = f' in "{change.previous_group}"' if change.previous_group else ""
+    placement = (
+        " in the command zone" if change.previous_section == "command_zone" else ""
+    )
     return (
         f"{_quoted(change.card.name)} was already in the deck at "
         f"{change.previous_quantity} {_copies(change.previous_quantity)}{placement}, so "
@@ -1896,9 +1927,7 @@ def _history_change_text(change: DeckAgentDeckHistoryChange) -> str:
     if after.quantity != before.quantity:
         return f"{change.name} {before.quantity} → {after.quantity}"
     if after.section != before.section:
-        return f"{change.name} → {_SECTION_NAMES[after.section]}"
-    if after.group != before.group:
-        return f"{change.name} → {after.group or 'no group'}"
+        return f"{change.name} → {_section_words(after.section)}"
     return change.name
 
 
