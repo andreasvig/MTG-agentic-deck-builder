@@ -30,14 +30,19 @@ import { DeleteDeckDialog } from "./components/DeleteDeckDialog";
 import { SearchDrawer } from "./components/SearchDrawer";
 import type { CardSearchResult, CardTagFilter } from "./domain/card";
 import { formatEuro, getCardImage } from "./domain/card";
-import { toDeckSnapshot } from "./domain/agent";
+import type { DeckAgentDeckEdit } from "./domain/agent";
+import { toDeckAgentHistory, toDeckSnapshot } from "./domain/agent";
+import type { Deck, DeckCustomGroup } from "./domain/deck";
 import {
+  COMMAND_ZONE_GROUP_ID,
   UNASSIGNED_GROUP_ID,
   groupIdForEntry,
   groupName,
 } from "./domain/deck";
+import { DECK_HISTORY_STORAGE_KEY } from "./domain/history";
 import { useBackendHealth } from "./hooks/useBackendHealth";
 import { useDebugMode } from "./hooks/useDebugMode";
+import type { DeckEdit, DeckEditChange } from "./hooks/useDeck";
 import { useDeck } from "./hooks/useDeck";
 import { useMediaQuery } from "./hooks/useMediaQuery";
 
@@ -61,6 +66,7 @@ function App() {
     deletedDeckName,
     statistics,
     addCard,
+    applyEdit,
     setQuantity,
     removeCard,
     moveCard,
@@ -97,6 +103,44 @@ function App() {
       }),
     [deck.cards, deck.custom_groups, deck.name],
   );
+
+  /**
+   * Apply an edit the agent made, as the agent.
+   *
+   * The panel hands over what the backend resolved; translating it into the deck's own
+   * typed operation happens here, where both contracts are already in scope. The actor
+   * is what makes the history readable — an agent edit opens its own session, so "who
+   * did this" has one answer per block rather than one per edit.
+   */
+  const applyAgentEdit = useCallback(
+    (edit: DeckAgentDeckEdit) => {
+      const translated = toDeckEdit(edit, deck);
+      // Refused whole rather than in part: an edit missing one of its changes is the
+      // half-applied edit the design refuses, because history would then record an
+      // intent that did not happen.
+      if (translated) {
+        applyEdit(translated, "agent");
+      }
+    },
+    [applyEdit, deck],
+  );
+
+  /**
+   * The deck's recorded history, read from the browser at the moment a turn is sent.
+   *
+   * `useDeck` writes the log in an effect, so it is current by the time a question can
+   * be asked — but not during the render that changed the deck, which is why this is a
+   * function the panel calls rather than a value it is handed.
+   */
+  const readDeckHistory = useCallback(() => {
+    let raw: string | null = null;
+    try {
+      raw = window.localStorage?.getItem(DECK_HISTORY_STORAGE_KEY) ?? null;
+    } catch {
+      // A deck whose history cannot be read is a deck with none to post.
+    }
+    return toDeckAgentHistory(raw, deck.id, deck.custom_groups);
+  }, [deck.custom_groups, deck.id]);
 
   const [deckNameDraft, setDeckNameDraft] = useState(deck.name);
   const returnFocus = useRef<HTMLElement | null>(null);
@@ -610,6 +654,9 @@ function App() {
             deckId={deck.id}
             deck={deckSnapshot}
             onOpenCard={setSelectedCard}
+            onDeckEdit={applyAgentEdit}
+            onUndoDeckEdit={undo}
+            readDeckHistory={readDeckHistory}
           />
         </div>
       </main>
@@ -737,6 +784,71 @@ function App() {
       </div>
     </div>
   );
+}
+
+/**
+ * Translate a resolved agent edit into the deck's own typed edit, or refuse it whole.
+ *
+ * Two things have to be resolved here and nowhere else. A change that only cuts or
+ * moves carries no card payload — it does not need to, because the deck already holds
+ * the card — so the payload comes from the deck itself, and a card the deck cannot
+ * produce one for refuses the entire edit rather than silently dropping that change.
+ * And the group travels as the name on screen, which only the deck can turn back into
+ * the id it files cards under.
+ */
+function toDeckEdit(edit: DeckAgentDeckEdit, deck: Deck): DeckEdit | null {
+  const changes: DeckEditChange[] = [];
+  for (const change of edit.changes) {
+    const held = deck.cards.find(
+      (entry) => entry.card.scryfall_id === change.scryfall_id,
+    );
+    const card = change.card ?? held?.card.details;
+    if (!card) {
+      return null;
+    }
+    // Absent means "leave placement alone", never "unfile it". The same field carries
+    // both an ordinary quantity change on a card the user filed in a group and a card
+    // that is genuinely unfiled, so writing a group unconditionally would quietly take
+    // every edited card out of the group the user put it in — invisible in the deck,
+    // cumulative across turns, and it destroys the user's work rather than the agent's.
+    const groupId =
+      change.group === undefined
+        ? undefined
+        : groupIdForName(change.group, deck.custom_groups);
+    changes.push({
+      card,
+      quantity: change.quantity,
+      ...(groupId ? { groupId } : {}),
+    });
+  }
+  return { reason: edit.reason, changes };
+}
+
+/**
+ * The group id behind a name the agent used, or nothing when it names no known group.
+ *
+ * Nothing is the safe answer rather than the unassigned group: an unrecognised name is
+ * the agent being wrong about where a card should sit, and leaving the card where the
+ * user put it is the smaller mistake. The two permanent groups are matched by the
+ * labels the board shows for them, because those are the labels the deck snapshot sent.
+ */
+function groupIdForName(
+  name: string,
+  customGroups: DeckCustomGroup[],
+): string | undefined {
+  const wanted = name.trim().toLowerCase();
+  if (!wanted) {
+    return undefined;
+  }
+  if (wanted === groupName(COMMAND_ZONE_GROUP_ID, []).toLowerCase()) {
+    return COMMAND_ZONE_GROUP_ID;
+  }
+  if (wanted === groupName(UNASSIGNED_GROUP_ID, []).toLowerCase()) {
+    return UNASSIGNED_GROUP_ID;
+  }
+  return customGroups.find(
+    (group) => group.name.trim().toLowerCase() === wanted,
+  )?.id;
 }
 
 export default App;

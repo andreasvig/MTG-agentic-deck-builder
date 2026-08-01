@@ -1,10 +1,13 @@
 import type {
   DeckAgentCardLink,
   DeckAgentChatReply,
+  DeckAgentDeckEdit,
+  DeckAgentDeckHistory,
   DeckAgentDeckSnapshot,
   DeckAgentMessage,
   DeckAgentToolCall,
 } from "../domain/agent";
+import { readDeckAgentDeckEdit } from "../domain/agent";
 import type {
   CardEnrichment,
   EdhrecCommanderContext,
@@ -92,6 +95,7 @@ export interface ApiClient {
     handlers: DeckAgentStreamHandlers,
     signal?: AbortSignal,
     debug?: boolean,
+    history?: DeckAgentDeckHistory | null,
   ): Promise<DeckAgentChatReply>;
 }
 
@@ -101,6 +105,14 @@ export interface DeckAgentStreamHandlers {
   onText(content: string): void;
   /** One tool call, the moment it finished running. */
   onToolCall(call: DeckAgentToolCall): void;
+  /**
+   * An edit the agent made, resolved and ready to apply, the moment its tool finished.
+   *
+   * Optional because nothing about reading a stream requires being able to change a
+   * deck: a caller that has no deck to edit simply does not take them, and the edit is
+   * dropped rather than the turn.
+   */
+  onDeckEdit?(edit: DeckAgentDeckEdit): void;
 }
 
 export function createApiClient(
@@ -326,7 +338,14 @@ export function createApiClient(
       );
       return readCardSearchResponse(response);
     },
-    async streamDeckAgentChat(messages, deck, handlers, signal, debug = false) {
+    async streamDeckAgentChat(
+      messages,
+      deck,
+      handlers,
+      signal,
+      debug = false,
+      history = null,
+    ) {
       const response = await fetcher(`${normalizedBaseUrl}/agent/chat/stream`, {
         method: "POST",
         headers: {
@@ -339,6 +358,10 @@ export function createApiClient(
             content: message.content,
           })),
           ...(deck ? { deck } : {}),
+          // Omitted rather than sent empty when there is none, because "no history was
+          // posted" and "this deck has never been edited" send the agent somewhere
+          // different and only the caller can tell the two apart.
+          ...(history ? { history } : {}),
           debug,
         }),
         signal,
@@ -630,6 +653,13 @@ async function readDeckAgentStream(
       const [call] = readDeckAgentToolCalls([event.call]);
       if (call) {
         handlers.onToolCall(call);
+      }
+    } else if (event.type === "deck_edit") {
+      // Read whole or not at all, and a `null` is dropped exactly as an unknown event
+      // type is: the turn is still a turn, and half an edit is worse than none.
+      const edit = readDeckAgentDeckEdit(event.edit);
+      if (edit) {
+        handlers.onDeckEdit?.(edit);
       }
     } else if (event.type === "error") {
       // The response was already a 200 by the time this happened, so the failure

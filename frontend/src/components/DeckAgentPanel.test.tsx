@@ -5,6 +5,8 @@ import { beforeEach, expect, it, vi } from "vitest";
 import type {
   DeckAgentCardLink,
   DeckAgentChatReply,
+  DeckAgentDeckEdit,
+  DeckAgentDeckHistory,
   DeckAgentMessage,
   DeckAgentToolCall,
 } from "../domain/agent";
@@ -13,6 +15,7 @@ import {
   type ApiClient,
   type DeckAgentStreamHandlers,
 } from "../lib/api";
+import { solRing } from "../test/fixtures";
 import { DeckAgentPanel } from "./DeckAgentPanel";
 
 /**
@@ -56,6 +59,9 @@ function drivenStream() {
     },
     async tool(call: DeckAgentToolCall) {
       await act(async () => handlers?.onToolCall(call));
+    },
+    async deckEdit(edit: DeckAgentDeckEdit) {
+      await act(async () => handlers?.onDeckEdit?.(edit));
     },
     async finish(reply: DeckAgentChatReply) {
       await act(async () => settle?.(reply));
@@ -763,4 +769,239 @@ it("leaves a tool call plain when the turn carried no payloads", async () => {
   expect(screen.getByText("read_deck()").closest("p")).toHaveClass(
     "deck-agent__tool",
   );
+});
+
+/** One resolved swap: two rocks in, the two weakest pieces of ramp out. */
+function deckEdit(overrides: Partial<DeckAgentDeckEdit> = {}): DeckAgentDeckEdit {
+  const arcaneSignet = {
+    ...solRing,
+    oracle_id: "oracle-arcane-signet",
+    scryfall_id: "printing-arcane-signet",
+    name: "Arcane Signet",
+  };
+  return {
+    deck_name: "Gruul Stompy",
+    reason: "Swapping in two rocks for the weakest ramp.",
+    changes: [
+      {
+        scryfall_id: solRing.scryfall_id,
+        name: solRing.name,
+        quantity: 1,
+        previous_quantity: 0,
+        card: solRing,
+      },
+      {
+        scryfall_id: arcaneSignet.scryfall_id,
+        name: arcaneSignet.name,
+        quantity: 1,
+        previous_quantity: 0,
+        card: arcaneSignet,
+      },
+      {
+        scryfall_id: "printing-wayfarers-bauble",
+        name: "Wayfarer's Bauble",
+        quantity: 0,
+        previous_quantity: 1,
+      },
+      {
+        scryfall_id: "printing-rampant-growth",
+        name: "Rampant Growth",
+        quantity: 0,
+        previous_quantity: 1,
+      },
+    ],
+    ...overrides,
+  };
+}
+
+it("hands a streamed deck edit to the deck and says what it applied", async () => {
+  const stream = drivenStream();
+  const onDeckEdit = vi.fn();
+  const { unmount } = render(
+    <DeckAgentPanel
+      deckId="deck-a"
+      client={client(stream.chat)}
+      onDeckEdit={onDeckEdit}
+      onUndoDeckEdit={vi.fn()}
+    />,
+  );
+
+  await userEvent.type(
+    screen.getByLabelText("Message the deck agent"),
+    "Fix my ramp",
+  );
+  await userEvent.click(screen.getByLabelText("Send message"));
+  await stream.text("Swapping in two rocks for the weakest ramp.");
+  await stream.deckEdit(deckEdit());
+
+  // The panel does not change the deck itself — it hands the resolved edit outward,
+  // exactly as it hands a card name to the inspector.
+  expect(onDeckEdit).toHaveBeenCalledTimes(1);
+  expect(onDeckEdit).toHaveBeenCalledWith(deckEdit());
+  // And it is on screen the moment the deck has it, in the past tense: the change has
+  // already happened, so there is nothing here to confirm.
+  expect(screen.getByText("Applied: +2 / −2")).toBeInTheDocument();
+
+  await stream.finish(reply("Swapping in two rocks for the weakest ramp."));
+
+  // Once, not twice: the streamed block is replaced by the committed one rather than
+  // left beside it.
+  expect(screen.getAllByText("Applied: +2 / −2")).toHaveLength(1);
+  expect(screen.getByText("+ Sol Ring, Arcane Signet")).toBeInTheDocument();
+  expect(
+    screen.getByText("− Wayfarer's Bauble, Rampant Growth"),
+  ).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Undo" })).toBeInTheDocument();
+
+  // It belongs to the turn, so it comes back with the turn after a reload.
+  unmount();
+  render(
+    <DeckAgentPanel
+      deckId="deck-a"
+      client={client(stream.chat)}
+      onDeckEdit={onDeckEdit}
+      onUndoDeckEdit={vi.fn()}
+    />,
+  );
+  expect(screen.getByText("Applied: +2 / −2")).toBeInTheDocument();
+  expect(screen.getByText("+ Sol Ring, Arcane Signet")).toBeInTheDocument();
+});
+
+it("shows no applied block for a turn that changed nothing", async () => {
+  const chat = vi
+    .fn()
+    .mockResolvedValue(reply("You are light on ramp.", 0.0009, [toolCall("read_deck()")]));
+  const onDeckEdit = vi.fn();
+  render(
+    <DeckAgentPanel
+      deckId="deck-a"
+      client={client(chat)}
+      onDeckEdit={onDeckEdit}
+    />,
+  );
+
+  await userEvent.type(
+    screen.getByLabelText("Message the deck agent"),
+    "What am I missing?",
+  );
+  await userEvent.click(screen.getByLabelText("Send message"));
+  await screen.findByText("You are light on ramp.");
+
+  // A turn that answered a question is not a turn that changed the deck, and a block
+  // claiming otherwise would be the transcript inventing an edit.
+  expect(onDeckEdit).not.toHaveBeenCalled();
+  expect(screen.queryByText(/^Applied:/)).not.toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: "Undo" })).not.toBeInTheDocument();
+});
+
+it("posts the deck's recorded history so read_history has something to read", async () => {
+  const history: DeckAgentDeckHistory = {
+    sessions: [
+      {
+        actor: "user",
+        started_at: "2026-07-31T10:00:00.000Z",
+        ended_at: "2026-07-31T10:00:00.000Z",
+        edits: [
+          {
+            at: "2026-07-31T10:00:00.000Z",
+            cards: [
+              {
+                name: "Rampant Growth",
+                after: { quantity: 1, section: "mainboard" },
+              },
+            ],
+          },
+        ],
+      },
+    ],
+  };
+  const chat = vi.fn().mockResolvedValue(reply("You edited this yesterday."));
+  const readDeckHistory = vi.fn().mockReturnValue(history);
+  render(
+    <DeckAgentPanel
+      deckId="deck-a"
+      client={client(chat)}
+      readDeckHistory={readDeckHistory}
+    />,
+  );
+
+  await userEvent.type(
+    screen.getByLabelText("Message the deck agent"),
+    "What have I changed?",
+  );
+  await userEvent.click(screen.getByLabelText("Send message"));
+  await screen.findByText("You edited this yesterday.");
+
+  // The backend holds no deck and therefore no history of one, so the log travels with
+  // the turn exactly as the deck snapshot does — and it is read when the turn is sent,
+  // not when the panel rendered, so it includes the edit made a moment ago.
+  expect(readDeckHistory).toHaveBeenCalledTimes(1);
+  expect(chat.mock.calls[0][5]).toEqual(history);
+});
+
+it("undoes the applied edit from the transcript, on the only block that can", async () => {
+  const first = drivenStream();
+  const onUndoDeckEdit = vi.fn();
+  const { rerender } = render(
+    <DeckAgentPanel
+      deckId="deck-a"
+      client={client(first.chat)}
+      onDeckEdit={vi.fn()}
+      onUndoDeckEdit={onUndoDeckEdit}
+    />,
+  );
+
+  await userEvent.type(
+    screen.getByLabelText("Message the deck agent"),
+    "Fix my ramp",
+  );
+  await userEvent.click(screen.getByLabelText("Send message"));
+  await first.deckEdit(deckEdit());
+  await first.finish(reply("Swapped two rocks in."));
+
+  await userEvent.click(screen.getByRole("button", { name: "Undo" }));
+
+  // One click reverses the whole edit, because the deck recorded it as one entry.
+  expect(onUndoDeckEdit).toHaveBeenCalledTimes(1);
+
+  // A second edited turn takes the affordance over. `undo` reverses the deck's last
+  // recorded change, so an Undo left on the older block would promise that block's
+  // reversal and deliver a different one.
+  const second = drivenStream();
+  rerender(
+    <DeckAgentPanel
+      deckId="deck-a"
+      client={client(second.chat)}
+      onDeckEdit={vi.fn()}
+      onUndoDeckEdit={onUndoDeckEdit}
+    />,
+  );
+  await userEvent.type(
+    screen.getByLabelText("Message the deck agent"),
+    "And the curve?",
+  );
+  await userEvent.click(screen.getByLabelText("Send message"));
+  await second.deckEdit(
+    deckEdit({
+      reason: "Cutting a five-drop.",
+      changes: [
+        {
+          scryfall_id: "printing-colossal-dreadmaw",
+          name: "Colossal Dreadmaw",
+          quantity: 0,
+          previous_quantity: 1,
+        },
+      ],
+    }),
+  );
+  await second.finish(reply("Cut the six-drop."));
+
+  expect(screen.getByText("Applied: +0 / −1")).toBeInTheDocument();
+  expect(screen.getAllByRole("button", { name: "Undo" })).toHaveLength(1);
+  expect(
+    screen
+      .getByText("Applied: +0 / −1")
+      .closest(".deck-agent__edit")
+      ?.querySelector("button"),
+  ).not.toBeNull();
 });

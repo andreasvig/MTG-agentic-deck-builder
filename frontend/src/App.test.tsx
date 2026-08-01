@@ -1,14 +1,18 @@
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { StrictMode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import App from "./App";
+import type { Deck, DeckCardEntry } from "./domain/deck";
 import {
   createEmptyDeck,
   DECK_LIBRARY_STORAGE_KEY,
   DECK_STORAGE_KEY,
   UNASSIGNED_GROUP_ID,
 } from "./domain/deck";
+import { DECK_HISTORY_STORAGE_KEY } from "./domain/history";
+import type { CardSearchResult } from "./domain/card";
 import {
   cardSearchPage,
   counterspell,
@@ -550,5 +554,381 @@ describe("deck workspace", () => {
     await user.click(toggle);
     expect(window.localStorage.getItem("manabase.search-debug")).toBe("false");
     expect(screen.queryByText("$0.0000")).not.toBeInTheDocument();
+  });
+});
+
+/**
+ * The agent's edits, driven the way they actually arrive: a real stream through the real
+ * client into the real deck.
+ *
+ * The seam these tests exist for is the wiring, not the parts. An event that parses and a
+ * panel that renders can both be right while the deck never hears about the edit, so every
+ * test here starts at a server-sent-event body and ends at the board and the transcript.
+ */
+describe("agent deck edits", () => {
+  /** A server-sent-event body carrying one frame per event, as the backend writes them. */
+  function agentStream(frames: unknown[]): Response {
+    const encoder = new TextEncoder();
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        for (const frame of frames) {
+          controller.enqueue(encoder.encode(`data: ${JSON.stringify(frame)}\n\n`));
+        }
+        controller.close();
+      },
+    });
+    return new Response(body, {
+      status: 200,
+      headers: { "Content-Type": "text/event-stream" },
+    });
+  }
+
+  /** Serve one streamed turn, and collect the request bodies it was asked with. */
+  function serveAgentTurn(frames: unknown[]): Record<string, unknown>[] {
+    const requests: Record<string, unknown>[] = [];
+    vi.mocked(globalThis.fetch).mockImplementation((input, init) => {
+      const url = String(input);
+      if (url.includes("/agent/chat/stream")) {
+        requests.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+        return Promise.resolve(agentStream(frames));
+      }
+      if (url.includes("/cards/search")) {
+        return Promise.resolve(Response.json(cardSearchPage(), { status: 200 }));
+      }
+      return Promise.resolve(Response.json(healthResponse, { status: 200 }));
+    });
+    return requests;
+  }
+
+  function doneFrame(content: string) {
+    return {
+      type: "done",
+      reply: {
+        message: { role: "assistant", content },
+        model: "openai/gpt-5.6-luna",
+        replayed_message_count: 1,
+        cost_usd: 0.0009,
+        unpriced_call_count: 0,
+        tool_calls: [
+          {
+            name: "edit_deck",
+            signature: "edit_deck(2 changes)",
+            ok: true,
+            detail: null,
+          },
+        ],
+        card_links: [],
+      },
+    };
+  }
+
+  function deckEntry(
+    card: CardSearchResult,
+    groupId = UNASSIGNED_GROUP_ID,
+  ): DeckCardEntry {
+    return {
+      card: {
+        oracle_id: card.oracle_id,
+        scryfall_id: card.scryfall_id,
+        name: card.name,
+        details: card,
+      },
+      quantity: 1,
+      section: "mainboard",
+      categories: [groupId],
+    };
+  }
+
+  function seedDeck(deck: Partial<Deck>): void {
+    window.localStorage.setItem(
+      DECK_STORAGE_KEY,
+      JSON.stringify({
+        ...createEmptyDeck(new Date("2026-01-01T00:00:00Z"), "Gruul Stompy"),
+        ...deck,
+      }),
+    );
+  }
+
+  function storedDeck(): Deck {
+    const library = JSON.parse(
+      window.localStorage.getItem(DECK_LIBRARY_STORAGE_KEY) ?? "{}",
+    ) as { decks: Deck[] };
+    return library.decks[0];
+  }
+
+  function storedHistorySessions(): Array<{
+    actor: string;
+    edits: Array<{ reason?: string; cards: unknown[] }>;
+  }> {
+    const logs = JSON.parse(
+      window.localStorage.getItem(DECK_HISTORY_STORAGE_KEY) ?? "{}",
+    ) as Record<string, { sessions: Array<{ actor: string; edits: Array<{ reason?: string; cards: unknown[] }> }> }>;
+    return Object.values(logs).flatMap((log) => log.sessions);
+  }
+
+  /** One group's header row, which carries its own card count beside its name. */
+  function groupHeader(label: string): HTMLElement {
+    const header = screen
+      .getByRole("heading", { name: label })
+      .closest("header");
+    if (!header) {
+      throw new Error(`the ${label} group has no header`);
+    }
+    return header;
+  }
+
+  async function ask(question: string): Promise<void> {
+    const user = userEvent.setup();
+    await user.type(screen.getByLabelText("Message the deck agent"), question);
+    await user.click(screen.getByLabelText("Send message"));
+  }
+
+  it("applies a streamed deck edit, records it as the agent's, and undoes it", async () => {
+    seedDeck({ cards: [deckEntry(gamble)] });
+    serveAgentTurn([
+      { type: "text", content: "Swapping in a rock for the weakest ramp." },
+      // An event type this build has never heard of. The stream is forward compatible:
+      // a future event has to be ignorable, or every new one breaks every old client.
+      { type: "crystal_ball", prediction: "you will draw lands" },
+      // And a `deck_edit` that cannot be read is ignored the same way rather than
+      // taking the turn down: the quantity is not a number, and coercing it would
+      // delete a card.
+      {
+        type: "deck_edit",
+        edit: {
+          deck_name: "Gruul Stompy",
+          reason: "Malformed.",
+          changes: [
+            { scryfall_id: solRing.scryfall_id, name: "Sol Ring", quantity: "two" },
+          ],
+        },
+      },
+      {
+        type: "deck_edit",
+        edit: {
+          deck_name: "Gruul Stompy",
+          reason: "Swapping in a rock for the weakest ramp.",
+          changes: [
+            {
+              scryfall_id: solRing.scryfall_id,
+              name: solRing.name,
+              quantity: 2,
+              previous_quantity: 0,
+              card: solRing,
+            },
+            {
+              scryfall_id: gamble.scryfall_id,
+              name: gamble.name,
+              quantity: 0,
+              previous_quantity: 1,
+            },
+          ],
+        },
+      },
+      doneFrame("Swapping in a rock for the weakest ramp."),
+    ]);
+    render(<App />);
+    expect(screen.getByLabelText("1 Gamble in deck")).toBeInTheDocument();
+
+    await ask("Fix my ramp");
+    expect(
+      await screen.findByText("Swapping in a rock for the weakest ramp."),
+    ).toBeInTheDocument();
+
+    // The deck itself changed, which is the whole point: the browser is the only thing
+    // that can apply the edit and it did.
+    expect(screen.getByLabelText("2 Sol Ring in deck")).toBeInTheDocument();
+    expect(screen.queryByLabelText("1 Gamble in deck")).not.toBeInTheDocument();
+
+    const transcript = screen.getByRole("log", {
+      name: "Deck agent conversation",
+    });
+    expect(within(transcript).getByText("Applied: +2 / −1")).toBeInTheDocument();
+    expect(within(transcript).getByText("+ Sol Ring")).toBeInTheDocument();
+    expect(within(transcript).getByText("− Gamble")).toBeInTheDocument();
+
+    // Recorded as the agent's, with the model's reason. The actor is what makes the log
+    // worth having, and an agent edit filed as the user's would attribute the change to
+    // whoever is reading it.
+    const sessions = storedHistorySessions();
+    expect(sessions).toHaveLength(1);
+    expect(sessions[0].actor).toBe("agent");
+    expect(sessions[0].edits).toHaveLength(1);
+    expect(sessions[0].edits[0].reason).toBe(
+      "Swapping in a rock for the weakest ramp.",
+    );
+
+    // One click reverses the whole edit, because the deck recorded it as one entry.
+    await userEvent.setup().click(
+      within(transcript).getByRole("button", { name: "Undo" }),
+    );
+    expect(screen.queryByLabelText("2 Sol Ring in deck")).not.toBeInTheDocument();
+    expect(screen.getByLabelText("1 Gamble in deck")).toBeInTheDocument();
+  });
+
+  it("applies a streamed deck edit once in StrictMode, not twice", async () => {
+    seedDeck({ cards: [] });
+    serveAgentTurn([
+      {
+        type: "deck_edit",
+        edit: {
+          deck_name: "Gruul Stompy",
+          reason: "You have no ramp at all.",
+          changes: [
+            {
+              scryfall_id: solRing.scryfall_id,
+              name: solRing.name,
+              quantity: 2,
+              previous_quantity: 0,
+              card: solRing,
+            },
+          ],
+        },
+      },
+      doneFrame("Added two copies."),
+    ]);
+    render(
+      <StrictMode>
+        <App />
+      </StrictMode>,
+    );
+
+    await ask("Fix my ramp");
+    expect(await screen.findByText("Added two copies.")).toBeInTheDocument();
+
+    // Two copies, not four, and one block rather than two. The edit states the count it
+    // wants afterwards, so applying it twice is the same deck — but a turn that handed
+    // it over twice would still say so here.
+    expect(screen.getByLabelText("2 Sol Ring in deck")).toBeInTheDocument();
+    expect(screen.getAllByText("Applied: +2 / −0")).toHaveLength(1);
+    expect(storedHistorySessions()[0].edits).toHaveLength(1);
+  });
+
+  it("posts the edit it just made as history, so read_history can read it", async () => {
+    seedDeck({ cards: [deckEntry(gamble, "group-ramp")], custom_groups: [{ id: "group-ramp", name: "Ramp" }] });
+    const requests = serveAgentTurn([
+      {
+        type: "deck_edit",
+        edit: {
+          deck_name: "Gruul Stompy",
+          reason: "Swapping in a rock for the weakest ramp.",
+          changes: [
+            {
+              scryfall_id: solRing.scryfall_id,
+              name: solRing.name,
+              quantity: 1,
+              previous_quantity: 0,
+              group: "Ramp",
+              card: solRing,
+            },
+          ],
+        },
+      },
+      doneFrame("Sol Ring is in."),
+    ]);
+    render(<App />);
+
+    await ask("Fix my ramp");
+    expect(await screen.findByText("Sol Ring is in.")).toBeInTheDocument();
+    // Nothing was recorded when the first question was asked.
+    expect(requests[0].history).toEqual({ sessions: [] });
+
+    await ask("What did you change?");
+    await waitFor(() => expect(requests).toHaveLength(2));
+
+    // The edit made a moment ago is in the next turn's request. It is read when the
+    // turn is sent rather than held in state, because the log is written by an effect
+    // after the render that changed the deck — a value captured in that render would be
+    // missing exactly the edit the question is about.
+    expect(requests[1].history).toEqual({
+      sessions: [
+        {
+          actor: "agent",
+          started_at: expect.any(String),
+          ended_at: expect.any(String),
+          edits: [
+            {
+              at: expect.any(String),
+              reason: "Swapping in a rock for the weakest ramp.",
+              cards: [
+                {
+                  name: "Sol Ring",
+                  // The group travels as its name on screen, never the internal id.
+                  after: { quantity: 1, section: "mainboard", group: "Ramp" },
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    });
+  });
+
+  it("leaves a card's group alone when the agent only changes its quantity", async () => {
+    seedDeck({
+      cards: [deckEntry(gamble, "group-ramp")],
+      custom_groups: [{ id: "group-ramp", name: "Ramp" }],
+    });
+    serveAgentTurn([
+      {
+        type: "deck_edit",
+        edit: {
+          deck_name: "Gruul Stompy",
+          reason: "One more copy.",
+          changes: [
+            // No `group` at all, which means "leave placement alone" and never
+            // "unfile it" — the same absence covers a card the user filed and a card
+            // that is genuinely unfiled.
+            {
+              scryfall_id: gamble.scryfall_id,
+              name: gamble.name,
+              quantity: 2,
+              previous_quantity: 1,
+              card: gamble,
+            },
+          ],
+        },
+      },
+      doneFrame("Second copy added."),
+    ]);
+    render(<App />);
+
+    await ask("Run two");
+    expect(await screen.findByText("Second copy added.")).toBeInTheDocument();
+    expect(screen.getByLabelText("2 Gamble in deck")).toBeInTheDocument();
+
+    // The quantity alone proves nothing: an applier that wrote the group unconditionally
+    // would pass that assertion while quietly taking the card out of the group the user
+    // put it in — invisible on the board's default view, and cumulative across turns.
+    expect(storedDeck().cards[0].categories).toEqual(["group-ramp"]);
+    await userEvent
+      .setup()
+      .selectOptions(screen.getByLabelText("Group cards"), "custom");
+    // Both copies are still in Ramp, and Not assigned — which is a permanent group and
+    // therefore always on screen — is still empty.
+    expect(groupHeader("Ramp")).toHaveTextContent("2 cards");
+    expect(groupHeader("Not assigned")).toHaveTextContent("0 cards");
+  });
+
+  it("changes nothing on a turn that carried no deck edit", async () => {
+    seedDeck({ cards: [deckEntry(gamble)] });
+    const requests = serveAgentTurn([
+      { type: "text", content: "You are light on ramp." },
+      doneFrame("You are light on ramp."),
+    ]);
+    render(<App />);
+
+    await ask("What am I missing?");
+    expect(await screen.findByText("You are light on ramp.")).toBeInTheDocument();
+
+    // The deck is untouched, nothing is recorded against it, and the transcript claims
+    // no edit. A turn that answered a question is not a turn that changed the deck.
+    expect(screen.getByLabelText("1 Gamble in deck")).toBeInTheDocument();
+    expect(storedDeck().cards).toHaveLength(1);
+    expect(storedHistorySessions()).toEqual([]);
+    expect(screen.queryByText(/^Applied:/)).not.toBeInTheDocument();
+    // The history still travelled with the turn, so `read_history` had something to
+    // read: an empty log is a deck that has never been edited, which is an answer.
+    expect(requests[0].history).toEqual({ sessions: [] });
   });
 });

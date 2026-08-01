@@ -1,7 +1,20 @@
 import { describe, expect, it } from "vitest";
 
-import type { DeckAgentChat, DeckAgentTranscriptEntry } from "./agent";
-import { parseStoredAgentChats, serializeAgentChats } from "./agent";
+import { solRing } from "../test/fixtures";
+import type {
+  DeckAgentChat,
+  DeckAgentDeckEdit,
+  DeckAgentTranscriptEntry,
+} from "./agent";
+import {
+  parseStoredAgentChats,
+  readDeckAgentDeckEdit,
+  serializeAgentChats,
+  summarizeDeckEdit,
+  toDeckAgentHistory,
+} from "./agent";
+import type { DeckCardChange, DeckHistory, DeckSession } from "./history";
+import { DECK_HISTORY_SESSION_CAP } from "./history";
 
 function entry(
   content: string,
@@ -173,6 +186,30 @@ describe("agent chat storage", () => {
     ).toBe(false);
   });
 
+  it("round-trips an applied edit block, and reads an old turn as having none", () => {
+    const edited: DeckAgentTranscriptEntry = {
+      ...entry("Swapped in a rock.", {}, false),
+      appliedEdits: [
+        {
+          reason: "Swapping in two rocks for the weakest ramp.",
+          addedCopies: 2,
+          removedCopies: 2,
+          added: ["Sol Ring", "Arcane Signet"],
+          removed: ["Wayfarer's Bauble", "Rampant Growth"],
+          moved: [],
+        },
+      ],
+    };
+
+    const stored = roundTrip({ "deck-a": chat([edited]) });
+
+    expect(stored["deck-a"].entries[0]).toEqual(edited);
+    // A turn stored before the agent could edit anything did not edit anything, so it
+    // reads back with the field absent rather than with an empty list claiming it did.
+    const plain = roundTrip({ "deck-a": chat([entry("Just talking.", {}, false)]) });
+    expect(plain["deck-a"].entries[0].appliedEdits).toBeUndefined();
+  });
+
   it("spends the budget on the active deck before an older one", () => {
     const heavy = Array.from({ length: 30 }, (_, index) =>
       entry(`Old ${index}: ${"z".repeat(10_000)}`, {}, false),
@@ -185,5 +222,338 @@ describe("agent chat storage", () => {
 
     expect(stored["deck-active"].entries).toHaveLength(1);
     expect(stored["deck-old"].entries.length).toBeLessThan(30);
+  });
+});
+
+/** The event as the backend emits it: an add carrying its card, and a cut that cannot. */
+function deckEditEvent(
+  overrides: Partial<Record<string, unknown>> = {},
+): Record<string, unknown> {
+  return {
+    deck_name: "Gruul Stompy",
+    reason: "Swapping in two rocks for the weakest ramp.",
+    changes: [
+      {
+        scryfall_id: solRing.scryfall_id,
+        name: solRing.name,
+        quantity: 1,
+        previous_quantity: 0,
+        card: solRing,
+      },
+      {
+        scryfall_id: "printing-rampant-growth",
+        name: "Rampant Growth",
+        quantity: 0,
+        previous_quantity: 1,
+      },
+    ],
+    ...overrides,
+  };
+}
+
+describe("agent deck edits", () => {
+  it("reads a resolved edit, keeping the card payload only where it is needed", () => {
+    const edit = readDeckAgentDeckEdit(deckEditEvent());
+
+    expect(edit).toEqual({
+      deck_name: "Gruul Stompy",
+      reason: "Swapping in two rocks for the weakest ramp.",
+      changes: [
+        {
+          scryfall_id: solRing.scryfall_id,
+          name: solRing.name,
+          quantity: 1,
+          previous_quantity: 0,
+          card: solRing,
+        },
+        {
+          scryfall_id: "printing-rampant-growth",
+          name: "Rampant Growth",
+          quantity: 0,
+          previous_quantity: 1,
+        },
+      ],
+    });
+  });
+
+  it("refuses a malformed edit whole rather than applying part of it", () => {
+    const good = deckEditEvent().changes as unknown[];
+    const malformed: unknown[] = [
+      // Not an event payload at all.
+      null,
+      "deck_edit",
+      {},
+      // No reason, which is the field that makes history worth reading.
+      { ...deckEditEvent(), reason: 7 },
+      // No changes: an edit that changes nothing is not an edit.
+      { ...deckEditEvent(), changes: [] },
+      // A hundred is a whole deck replaced; a hundred and one is not an edit this
+      // backend can have produced.
+      {
+        ...deckEditEvent(),
+        changes: Array.from({ length: 101 }, () => good[0]),
+      },
+      // Rejected, never coerced: a quantity that quietly became zero deletes a card.
+      { ...deckEditEvent(), changes: [{ ...(good[0] as object), quantity: "one" }] },
+      { ...deckEditEvent(), changes: [{ ...(good[0] as object), quantity: 1.5 }] },
+      { ...deckEditEvent(), changes: [{ ...(good[0] as object), quantity: 100 }] },
+      {
+        ...deckEditEvent(),
+        changes: [{ ...(good[0] as object), previous_quantity: null }],
+      },
+      // Adding copies without the card to add: the deck's validators read fields only
+      // the payload carries, so this cannot be applied.
+      {
+        ...deckEditEvent(),
+        changes: [{ ...(good[0] as object), card: undefined }],
+      },
+      { ...deckEditEvent(), changes: [{ ...(good[0] as object), card: { name: "Sol Ring" } }] },
+    ];
+
+    for (const candidate of malformed) {
+      expect(readDeckAgentDeckEdit(candidate)).toBeNull();
+    }
+
+    // One unreadable change refuses the whole edit, so the readable one beside it is
+    // not applied on its own. A half-applied edit records an intent that did not happen.
+    expect(
+      readDeckAgentDeckEdit({
+        ...deckEditEvent(),
+        changes: [good[0], { ...(good[1] as object), name: 42 }],
+      }),
+    ).toBeNull();
+  });
+
+  it("counts copies in and copies out, and a move as neither", () => {
+    const edit = readDeckAgentDeckEdit(
+      deckEditEvent({
+        changes: [
+          {
+            scryfall_id: solRing.scryfall_id,
+            name: solRing.name,
+            quantity: 2,
+            previous_quantity: 0,
+            card: solRing,
+          },
+          {
+            scryfall_id: "printing-rampant-growth",
+            name: "Rampant Growth",
+            quantity: 0,
+            previous_quantity: 2,
+          },
+          {
+            scryfall_id: "printing-arcane-signet",
+            name: "Arcane Signet",
+            quantity: 1,
+            previous_quantity: 1,
+            group: "Ramp",
+          },
+        ],
+      }),
+    ) as DeckAgentDeckEdit;
+
+    expect(summarizeDeckEdit(edit)).toEqual({
+      reason: "Swapping in two rocks for the weakest ramp.",
+      addedCopies: 2,
+      removedCopies: 2,
+      added: ["Sol Ring"],
+      removed: ["Rampant Growth"],
+      // Same count, new group. The backend drops a change the deck already satisfies,
+      // so what is left at an unchanged count moved rather than did nothing.
+      moved: ["Arcane Signet"],
+    });
+  });
+});
+
+/** One recorded card change, in the shape the browser writes to storage. */
+function recordedChange(
+  name: string,
+  before: DeckCardChange["before"],
+  after: DeckCardChange["after"],
+): DeckCardChange {
+  return {
+    oracle_id: `oracle-${name}`,
+    scryfall_id: `printing-${name}`,
+    name,
+    before,
+    after,
+  };
+}
+
+/** One minute apart, which is well inside the session window and never reused. */
+function recordedAt(index: number): string {
+  return new Date(Date.UTC(2026, 6, 31, 10, 0, 0) + index * 60_000).toISOString();
+}
+
+function recordedSession(
+  index: number,
+  actor: "user" | "agent",
+  changes: DeckCardChange[],
+  reason?: string,
+): DeckSession {
+  const at = recordedAt(index);
+  return {
+    id: `session-${index}`,
+    actor,
+    started_at: at,
+    ended_at: at,
+    edits: [
+      {
+        id: `edit-${index}`,
+        at,
+        summary: "+1 / −0",
+        cards: changes,
+        ...(reason ? { reason } : {}),
+      },
+    ],
+  };
+}
+
+function storedHistory(sessions: DeckSession[]): string {
+  const history: DeckHistory = {
+    deck_id: "deck-a",
+    sessions,
+    cards: {},
+  };
+  return JSON.stringify({ "deck-a": history });
+}
+
+describe("posted deck history", () => {
+  it("projects a recorded edit into what the agent reads, naming the group", () => {
+    const raw = storedHistory([
+      recordedSession(
+        1,
+        "agent",
+        [
+          recordedChange(
+            "Sol Ring",
+            null,
+            { quantity: 2, section: "mainboard", categories: ["group-ramp"], index: 4 },
+          ),
+          recordedChange(
+            "Rampant Growth",
+            { quantity: 1, section: "mainboard", categories: ["unassigned"], index: 1 },
+            null,
+          ),
+        ],
+        "Swapping in two rocks for the weakest ramp.",
+      ),
+    ]);
+
+    expect(
+      toDeckAgentHistory(raw, "deck-a", [{ id: "group-ramp", name: "Ramp" }]),
+    ).toEqual({
+      sessions: [
+        {
+          actor: "agent",
+          started_at: recordedAt(1),
+          ended_at: recordedAt(1),
+          edits: [
+            {
+              at: recordedAt(1),
+              reason: "Swapping in two rocks for the weakest ramp.",
+              cards: [
+                {
+                  name: "Sol Ring",
+                  // No `before`: the card was not in the deck. The group travels as the
+                  // name on screen, never the id the deck files it under.
+                  after: { quantity: 2, section: "mainboard", group: "Ramp" },
+                },
+                {
+                  name: "Rampant Growth",
+                  // Unfiled, so no group at all rather than the internal placeholder.
+                  before: { quantity: 1, section: "mainboard" },
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    });
+  });
+
+  it("keeps the newest sessions inside the cap the backend accepts", () => {
+    const change = recordedChange("Sol Ring", null, {
+      quantity: 1,
+      section: "mainboard",
+      categories: ["unassigned"],
+      index: 0,
+    });
+    const raw = storedHistory(
+      Array.from({ length: DECK_HISTORY_SESSION_CAP + 12 }, (_, index) =>
+        recordedSession(index, "user", [change]),
+      ),
+    );
+
+    const posted = toDeckAgentHistory(raw, "deck-a", []);
+
+    // A request over the bound is refused whole, which would fail the chat turn rather
+    // than the history — so the browser prunes before it asks.
+    expect(posted.sessions).toHaveLength(DECK_HISTORY_SESSION_CAP);
+    // Oldest session first, and what was dropped is the oldest of them.
+    expect(posted.sessions[0].started_at).toBe(recordedAt(12));
+    expect(posted.sessions.at(-1)?.started_at).toBe(
+      recordedAt(DECK_HISTORY_SESSION_CAP + 11),
+    );
+  });
+
+  it("keeps the total edit count and one edit's card count inside their bounds", () => {
+    const change = recordedChange("Sol Ring", null, {
+      quantity: 1,
+      section: "mainboard",
+      categories: ["unassigned"],
+      index: 0,
+    });
+    const busy = recordedSession(1, "user", [change]);
+    busy.edits = Array.from({ length: 600 }, (_, index) => ({
+      id: `edit-${index}`,
+      at: recordedAt(index),
+      summary: "+1 / −0",
+      cards: [change],
+    }));
+    const wide = recordedSession(2, "agent", []);
+    wide.edits = [
+      {
+        id: "edit-wide",
+        at: recordedAt(700),
+        summary: "+300 / −0",
+        cards: Array.from({ length: 300 }, (_, index) =>
+          recordedChange(`Card ${index}`, null, {
+            quantity: 1,
+            section: "mainboard",
+            categories: ["unassigned"],
+            index,
+          }),
+        ),
+      },
+    ];
+
+    const posted = toDeckAgentHistory(storedHistory([busy, wide]), "deck-a", []);
+
+    // The session cap alone would let fifty sessions of six hundred edits through, and
+    // a request over either bound is refused whole — which fails the chat turn rather
+    // than the history.
+    const total = posted.sessions.reduce(
+      (sum, session) => sum + session.edits.length,
+      0,
+    );
+    expect(total).toBe(500);
+    // Spent newest-first: the newest session keeps its edit, the older one is trimmed.
+    expect(posted.sessions.at(-1)?.edits).toHaveLength(1);
+    expect(posted.sessions.at(-1)?.edits[0].cards).toHaveLength(250);
+  });
+
+  it("reads an absent, unreadable or unrecorded history as nothing recorded", () => {
+    expect(toDeckAgentHistory(null, "deck-a", [])).toEqual({ sessions: [] });
+    expect(toDeckAgentHistory("{oh no", "deck-a", [])).toEqual({ sessions: [] });
+    expect(toDeckAgentHistory("[]", "deck-a", [])).toEqual({ sessions: [] });
+    // Another deck's log is not this deck's history.
+    expect(
+      toDeckAgentHistory(
+        storedHistory([recordedSession(1, "user", [])]),
+        "deck-b",
+        [],
+      ),
+    ).toEqual({ sessions: [] });
   });
 });

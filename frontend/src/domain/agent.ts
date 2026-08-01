@@ -1,6 +1,21 @@
-import type { DeckCardEntry } from "./deck";
+import type { CardSearchResult } from "./card";
+import type { DeckCardEntry, DeckCustomGroup, DeckSection } from "./deck";
+import {
+  COMMAND_ZONE_GROUP_ID,
+  UNASSIGNED_GROUP_ID,
+  groupName,
+} from "./deck";
+import type { DeckCardPlacement, DeckHistory } from "./history";
+import {
+  DECK_HISTORY_SESSION_CAP,
+  createDeckHistory,
+  parseDeckHistory,
+} from "./history";
 
 export type DeckAgentRole = "user" | "assistant";
+
+/** Who made one edit. The same two values the recorded history tags a session with. */
+export type DeckAgentActor = "user" | "agent";
 
 export interface DeckAgentMessage {
   role: DeckAgentRole;
@@ -49,6 +64,202 @@ export interface DeckAgentCardLink {
   oracle_id: string;
 }
 
+/**
+ * One card change the backend already resolved against the deck this browser posted.
+ *
+ * The applied form of what the model asked for: the card name it typed is now a
+ * printing, the count the deck held sits beside the count it should hold, and a card
+ * being added arrives with the catalog entry this browser could not have built for a
+ * card it has never seen. Only changes that change something are sent, so applying the
+ * same edit twice is the same deck — which is what makes a retried turn safe.
+ */
+export interface DeckAgentDeckEditChange {
+  scryfall_id: string;
+  name: string;
+  /** The count the deck should hold afterwards. `0` removes the card. */
+  quantity: number;
+  /** What it held when the turn started, so the transcript can say what moved. */
+  previous_quantity: number;
+  /** The group it should sit in, by display name. Absent leaves placement alone. */
+  group?: string;
+  /**
+   * Present exactly when the change adds copies, because the deck's own validators
+   * read the card's colours and type line and a card the deck has never held has
+   * neither. A change that only cuts or moves needs none: the deck already has it.
+   */
+  card?: CardSearchResult;
+}
+
+/** One whole edit the agent made: what it moved, and the one line saying why. */
+export interface DeckAgentDeckEdit {
+  deck_name: string;
+  reason: string;
+  changes: DeckAgentDeckEditChange[];
+}
+
+/**
+ * How many changes one edit may carry, matching the tool's own schema bound.
+ *
+ * A hundred is a whole deck replaced at once. Anything longer is not an edit this
+ * backend can have produced, so it is read as a malformed event rather than trusted.
+ */
+const MAX_DECK_EDIT_CHANGES = 100;
+
+/** The most copies of one printing an edit may ask for, as the tool's schema bounds it. */
+const MAX_DECK_EDIT_COPIES = 99;
+
+/**
+ * Read a `deck_edit` event's payload, or report that it was not one.
+ *
+ * Rejected whole rather than in part. A change this cannot read is a change the deck
+ * would silently not make, and an edit applied minus one of its changes is exactly the
+ * half-applied edit the whole design refuses: history would then record an intent that
+ * did not happen. A `null` here is treated by the stream reader the way an unknown
+ * event type is — ignored, never fatal.
+ */
+export function readDeckAgentDeckEdit(
+  value: unknown,
+): DeckAgentDeckEdit | null {
+  if (
+    !isRecord(value) ||
+    typeof value.deck_name !== "string" ||
+    typeof value.reason !== "string" ||
+    !Array.isArray(value.changes) ||
+    value.changes.length === 0 ||
+    value.changes.length > MAX_DECK_EDIT_CHANGES
+  ) {
+    return null;
+  }
+  const changes: DeckAgentDeckEditChange[] = [];
+  for (const candidate of value.changes) {
+    const change = readDeckAgentDeckEditChange(candidate);
+    if (!change) {
+      return null;
+    }
+    changes.push(change);
+  }
+  return {
+    deck_name: value.deck_name,
+    reason: value.reason,
+    changes,
+  };
+}
+
+function readDeckAgentDeckEditChange(
+  value: unknown,
+): DeckAgentDeckEditChange | null {
+  if (
+    !isRecord(value) ||
+    typeof value.scryfall_id !== "string" ||
+    typeof value.name !== "string" ||
+    !isEditCopyCount(value.quantity) ||
+    !isEditCopyCount(value.previous_quantity) ||
+    (value.group !== undefined &&
+      value.group !== null &&
+      typeof value.group !== "string")
+  ) {
+    return null;
+  }
+  // A change that adds copies without the card it adds cannot be applied, because the
+  // validators the deck runs read fields only the payload carries. The backend already
+  // refuses to emit one, so reading it here as malformed keeps the two in step.
+  const card = isCardSearchResult(value.card) ? value.card : null;
+  if (value.quantity > value.previous_quantity && !card) {
+    return null;
+  }
+  return {
+    scryfall_id: value.scryfall_id,
+    name: value.name,
+    quantity: value.quantity,
+    previous_quantity: value.previous_quantity,
+    ...(typeof value.group === "string" ? { group: value.group } : {}),
+    ...(card ? { card } : {}),
+  };
+}
+
+/**
+ * A copy count, rejected rather than coerced.
+ *
+ * `Number(undefined)` is `NaN` and `Number(null)` is `0`, and a quantity that quietly
+ * became zero deletes a card the edit meant to keep.
+ */
+function isEditCopyCount(value: unknown): value is number {
+  return (
+    typeof value === "number" &&
+    Number.isInteger(value) &&
+    value >= 0 &&
+    value <= MAX_DECK_EDIT_COPIES
+  );
+}
+
+/**
+ * The fields the deck's own validators read, checked before an edit is trusted.
+ *
+ * Deliberately the same set `lib/api.ts` requires of a searched card: an edit that adds
+ * a card is adding it to the board the search drawer adds to, so a payload good enough
+ * for one has to be good enough for the other.
+ */
+function isCardSearchResult(value: unknown): value is CardSearchResult {
+  return (
+    isRecord(value) &&
+    typeof value.oracle_id === "string" &&
+    typeof value.scryfall_id === "string" &&
+    typeof value.name === "string" &&
+    typeof value.type_line === "string" &&
+    typeof value.mana_value === "number" &&
+    isRecord(value.prices)
+  );
+}
+
+/**
+ * One applied edit as the transcript keeps it: what changed, with no card payloads.
+ *
+ * The event that produced it carries a whole `CardSearchResult` per added card, which
+ * the deck needs and the transcript does not. Storing the event as it arrived would
+ * spend the chat's whole storage budget on payloads the deck already holds, so the
+ * conversation keeps the sentence and the deck keeps the cards.
+ */
+export interface DeckAgentAppliedEdit {
+  /** The model's one line, the same text history records against the edit. */
+  reason: string;
+  /** Copies in and copies out, which is what `+2 / −2` in the transcript counts. */
+  addedCopies: number;
+  removedCopies: number;
+  /** The card names, so the block reads without the catalog or the deck. */
+  added: string[];
+  removed: string[];
+  /** Same count, new group: a move states neither an addition nor a cut. */
+  moved: string[];
+}
+
+/** Reduce a resolved edit to the block the transcript shows and stores. */
+export function summarizeDeckEdit(
+  edit: DeckAgentDeckEdit,
+): DeckAgentAppliedEdit {
+  const summary: DeckAgentAppliedEdit = {
+    reason: edit.reason,
+    addedCopies: 0,
+    removedCopies: 0,
+    added: [],
+    removed: [],
+    moved: [],
+  };
+  for (const change of edit.changes) {
+    if (change.quantity > change.previous_quantity) {
+      summary.addedCopies += change.quantity - change.previous_quantity;
+      summary.added.push(change.name);
+    } else if (change.quantity < change.previous_quantity) {
+      summary.removedCopies += change.previous_quantity - change.quantity;
+      summary.removed.push(change.name);
+    } else {
+      // Neither in nor out. The backend drops a change the deck already satisfies, so
+      // what is left at an unchanged count is a card that moved group.
+      summary.moved.push(change.name);
+    }
+  }
+  return summary;
+}
+
 export interface DeckAgentChatReply {
   message: DeckAgentMessage;
   model: string;
@@ -68,6 +279,14 @@ export interface DeckAgentTranscriptEntry {
   /** Kept with the message so a restored conversation is still clickable. Small
    * enough that the storage budget never trades them away. */
   cardLinks: DeckAgentCardLink[];
+  /**
+   * What this turn changed about the deck, already applied.
+   *
+   * Absent on every turn that changed nothing, which is most of them — and absent is
+   * what makes "this turn edited the deck" answerable from the stored transcript alone.
+   * An empty array would claim the turn edited the deck and then name nothing.
+   */
+  appliedEdits?: DeckAgentAppliedEdit[];
 }
 
 /** One deck's conversation: what was said, and what it cost to say it. */
@@ -236,7 +455,40 @@ function readStoredEntry(value: unknown): DeckAgentTranscriptEntry | null {
         return read ? [read] : [];
       })
     : [];
-  return { message: { role, content }, toolCalls, cardLinks };
+  const appliedEdits = Array.isArray(value.appliedEdits)
+    ? value.appliedEdits.flatMap((applied) => {
+        const read = readStoredAppliedEdit(applied);
+        return read ? [read] : [];
+      })
+    : [];
+  return {
+    message: { role, content },
+    toolCalls,
+    cardLinks,
+    // Restored as absent rather than as an empty list, because a turn stored before
+    // the agent could edit anything did not edit anything.
+    ...(appliedEdits.length > 0 ? { appliedEdits } : {}),
+  };
+}
+
+function readStoredAppliedEdit(value: unknown): DeckAgentAppliedEdit | null {
+  if (!isRecord(value) || typeof value.reason !== "string") {
+    return null;
+  }
+  return {
+    reason: value.reason,
+    addedCopies: readNonNegative(value.addedCopies),
+    removedCopies: readNonNegative(value.removedCopies),
+    added: readStoredNames(value.added),
+    removed: readStoredNames(value.removed),
+    moved: readStoredNames(value.moved),
+  };
+}
+
+function readStoredNames(value: unknown): string[] {
+  return Array.isArray(value)
+    ? value.filter((name): name is string => typeof name === "string")
+    : [];
 }
 
 function readStoredToolCall(value: unknown): DeckAgentToolCall | null {
@@ -317,4 +569,161 @@ export function toDeckSnapshot(
       };
     }),
   };
+}
+
+/** Where one printing sat, and how many copies, on one side of a recorded change. */
+export interface DeckAgentDeckPlacement {
+  quantity: number;
+  section: DeckSection;
+  group?: string;
+}
+
+/** What one recorded edit did to one card, named so it reads without the catalog. */
+export interface DeckAgentDeckHistoryChange {
+  name: string;
+  /** Absent on the left means the card was not in the deck. */
+  before?: DeckAgentDeckPlacement;
+  /** Absent on the right means it was removed. */
+  after?: DeckAgentDeckPlacement;
+}
+
+export interface DeckAgentDeckHistoryEdit {
+  at: string;
+  /** Only an agent edit has one: a card dragged across the board states no intent. */
+  reason?: string;
+  cards: DeckAgentDeckHistoryChange[];
+}
+
+export interface DeckAgentDeckSession {
+  actor: DeckAgentActor;
+  started_at: string;
+  ended_at: string;
+  edits: DeckAgentDeckHistoryEdit[];
+}
+
+/** The open deck's recorded past, oldest session first, as one turn posts it. */
+export interface DeckAgentDeckHistory {
+  sessions: DeckAgentDeckSession[];
+}
+
+/**
+ * How many edits one request may carry in total, across every session in it.
+ *
+ * The session cap alone is not enough: fifty sessions of ten edits is a request body
+ * worth carrying and fifty sessions of five hundred edits is not. Both bounds are the
+ * backend's, and a request that exceeds either is refused whole — which would fail the
+ * chat turn rather than the history, so the browser prunes to fit before it asks.
+ */
+const MAX_POSTED_HISTORY_EDITS = 500;
+
+/**
+ * How many card changes one posted edit may carry.
+ *
+ * Looser than the hundred an agent edit may ask for, because this records what actually
+ * happened and replacing a whole deck in one step is a hundred cards out and a hundred
+ * back in.
+ */
+const MAX_POSTED_HISTORY_EDIT_CARDS = 250;
+
+/** As long as one short label may be. Longer text is refused by the backend outright. */
+const MAX_POSTED_LABEL_CHARS = 200;
+
+/**
+ * Project one deck's recorded history into what `read_history` reads, inside the bounds.
+ *
+ * Takes the stored envelope rather than a parsed log, the same way `parseStoredAgentChats`
+ * does, so which browser key history lives under stays the caller's business. It is read
+ * at the moment a turn is sent rather than held in state: the log is written by an effect
+ * after the render that changed the deck, so anything computed during that render would be
+ * exactly one edit out of date — and the edit missing would be the one just made.
+ *
+ * The budget is spent newest-first. What is dropped is old, and what survives is the part
+ * a question about the deck as it is now can actually be about.
+ */
+export function toDeckAgentHistory(
+  raw: string | null,
+  deckId: string,
+  customGroups: DeckCustomGroup[],
+): DeckAgentDeckHistory {
+  let stored: unknown = null;
+  try {
+    stored = raw === null ? null : JSON.parse(raw);
+  } catch {
+    // Unreadable history is a deck with nothing recorded, never a failed turn.
+  }
+  const byDeck = isRecord(stored) ? stored : {};
+  const log: DeckHistory = parseDeckHistory(
+    byDeck[deckId] ?? null,
+    createDeckHistory(deckId),
+  );
+
+  const sessions: DeckAgentDeckSession[] = [];
+  let budget = MAX_POSTED_HISTORY_EDITS;
+  for (const session of log.sessions.slice(-DECK_HISTORY_SESSION_CAP).reverse()) {
+    if (budget <= 0) {
+      break;
+    }
+    const edits = session.edits.slice(-budget);
+    budget -= edits.length;
+    // A session whose every edit was pruned away describes a stretch of editing with
+    // nothing in it, which tells the agent less than not sending it at all.
+    if (edits.length === 0) {
+      continue;
+    }
+    sessions.push({
+      actor: session.actor,
+      started_at: session.started_at,
+      ended_at: session.ended_at,
+      edits: edits.map((edit) => ({
+        at: edit.at,
+        ...(edit.reason ? { reason: shortLabel(edit.reason) } : {}),
+        cards: edit.cards
+          .slice(0, MAX_POSTED_HISTORY_EDIT_CARDS)
+          .map((change) => ({
+            name: shortLabel(change.name),
+            ...(change.before
+              ? { before: toPostedPlacement(change.before, customGroups) }
+              : {}),
+            ...(change.after
+              ? { after: toPostedPlacement(change.after, customGroups) }
+              : {}),
+          })),
+      })),
+    });
+  }
+  return { sessions: sessions.reverse() };
+}
+
+/**
+ * One recorded placement, as the agent can read it.
+ *
+ * The group travels as the name on screen rather than as the id the deck files it
+ * under, because the agent talks about groups the way the user sees them — and because
+ * an id it repeated back would resolve to nothing. A group deleted since the edge was
+ * recorded resolves to no name at all, so it is left out rather than named wrongly.
+ */
+function toPostedPlacement(
+  placement: DeckCardPlacement,
+  customGroups: DeckCustomGroup[],
+): DeckAgentDeckPlacement {
+  const groupId = placement.categories[0];
+  const named =
+    groupId !== undefined &&
+    groupId !== COMMAND_ZONE_GROUP_ID &&
+    groupId !== UNASSIGNED_GROUP_ID &&
+    customGroups.some((group) => group.id === groupId)
+      ? groupName(groupId, customGroups)
+      : undefined;
+  return {
+    quantity: placement.quantity,
+    section: placement.section,
+    ...(named ? { group: shortLabel(named) } : {}),
+  };
+}
+
+/** Held to the length the backend accepts, so a long label cannot fail a whole turn. */
+function shortLabel(value: string): string {
+  return value.length > MAX_POSTED_LABEL_CHARS
+    ? value.slice(0, MAX_POSTED_LABEL_CHARS)
+    : value;
 }

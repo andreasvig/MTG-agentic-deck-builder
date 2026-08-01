@@ -1,12 +1,23 @@
-import { Bot, ChevronDown, RotateCcw, SendHorizontal, Wrench } from "lucide-react";
+import {
+  Bot,
+  Check,
+  ChevronDown,
+  RotateCcw,
+  SendHorizontal,
+  Undo2,
+  Wrench,
+} from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import type {
+  DeckAgentAppliedEdit,
+  DeckAgentDeckEdit,
+  DeckAgentDeckHistory,
   DeckAgentDeckSnapshot,
   DeckAgentMessage,
   DeckAgentToolCall,
 } from "../domain/agent";
-import { formatModelCostUsd } from "../domain/agent";
+import { formatModelCostUsd, summarizeDeckEdit } from "../domain/agent";
 import type { CardSearchResult } from "../domain/card";
 import { useDeckAgentChats } from "../hooks/useDeckAgentChats";
 import { apiClient, type ApiClient } from "../lib/api";
@@ -16,9 +27,11 @@ import { AgentAnswer } from "./AgentAnswer";
 interface LiveTurn {
   text: string;
   toolCalls: DeckAgentToolCall[];
+  /** Edits already made to the deck this turn, shown the moment they land. */
+  appliedEdits: DeckAgentAppliedEdit[];
 }
 
-const NO_LIVE_TURN: LiveTurn = { text: "", toolCalls: [] };
+const NO_LIVE_TURN: LiveTurn = { text: "", toolCalls: [], appliedEdits: [] };
 
 interface DeckAgentPanelProps {
   client?: ApiClient;
@@ -29,6 +42,22 @@ interface DeckAgentPanelProps {
   deck?: DeckAgentDeckSnapshot | null;
   /** Open a card the answer named, in the same inspector the board uses. */
   onOpenCard?: (card: CardSearchResult) => void;
+  /**
+   * Apply an edit the agent just made. Threaded exactly as `onOpenCard` is, and for
+   * the same reason: how a deck changes is not this panel's business, so it hands the
+   * resolved edit outward rather than reaching into deck state itself.
+   */
+  onDeckEdit?: (edit: DeckAgentDeckEdit) => void;
+  /** Reverse the deck's last recorded change, behind the transcript's Undo. */
+  onUndoDeckEdit?: () => void;
+  /**
+   * The deck's recorded history, read at the moment a turn is sent.
+   *
+   * A function rather than a value because the log is written by an effect after the
+   * render that changed the deck: a value handed down during that render would be one
+   * edit stale, and the missing edit would be the one just made.
+   */
+  readDeckHistory?: () => DeckAgentDeckHistory | null;
 }
 
 /**
@@ -43,6 +72,10 @@ interface DeckAgentPanelProps {
  * A turn is streamed: each tool call shows the moment it runs, and the answer
  * appears as it is written. The stream is presentation only — the turn is committed
  * from the finished reply, so what is stored never depends on what was on screen.
+ *
+ * A deck edit is the one thing on the stream that is not presentation: the deck has
+ * already changed by the time the block describing it appears, which is why that block
+ * is worded in the past tense and carries an Undo rather than a confirmation.
  */
 export function DeckAgentPanel({
   client = apiClient,
@@ -50,6 +83,9 @@ export function DeckAgentPanel({
   deckId,
   deck = null,
   onOpenCard,
+  onDeckEdit,
+  onUndoDeckEdit,
+  readDeckHistory,
 }: DeckAgentPanelProps) {
   const { chat, appendEntry, recordReply, setDraft, clearChat } =
     useDeckAgentChats(deckId);
@@ -108,6 +144,13 @@ export function DeckAgentPanel({
     // Captured for the whole turn: the answer belongs to the deck the question was
     // asked about, even if the request outlives the user's attention on it.
     const turnDeckId = deckId;
+    // Read now rather than held in state, so the log includes the edit made a moment
+    // ago. See `readDeckHistory`.
+    const history = readDeckHistory?.() ?? null;
+    // Accumulated on the turn itself rather than read back out of `live` at the end:
+    // this closure would see the state as it was when the turn started, and an edit
+    // the deck has already taken must not be the thing the transcript forgets.
+    const appliedEdits: DeckAgentAppliedEdit[] = [];
     const controller = new AbortController();
     pendingRequest.current = controller;
     appendEntry(turnDeckId, {
@@ -132,13 +175,27 @@ export function DeckAgentPanel({
             // committed turn keeps only the final round's prose, so the live view
             // drops it here and ends up showing exactly what gets stored.
             setLive((current) => ({
+              ...current,
               text: "",
               toolCalls: [...current.toolCalls, call],
+            }));
+          },
+          onDeckEdit: (edit) => {
+            // Handed outward first and recorded second. The deck is the authority on
+            // what an edit does, and a transcript that described the change before the
+            // deck had been offered it would be describing an intention.
+            onDeckEdit?.(edit);
+            const applied = summarizeDeckEdit(edit);
+            appliedEdits.push(applied);
+            setLive((current) => ({
+              ...current,
+              appliedEdits: [...current.appliedEdits, applied],
             }));
           },
         },
         controller.signal,
         debugEnabled,
+        history,
       );
       if (controller.signal.aborted) {
         return;
@@ -156,6 +213,10 @@ export function DeckAgentPanel({
           message: reply.message,
           toolCalls: reply.tool_calls,
           cardLinks: reply.card_links,
+          // The one part of a committed turn the finished reply does not carry: the
+          // edits arrived on the stream and have already been applied, so the panel
+          // is the only thing that saw them. Absent when the turn changed nothing.
+          ...(appliedEdits.length > 0 ? { appliedEdits } : {}),
         },
         costUsd: cost,
         unpricedCalls: unpriced + missingWholeTurn,
@@ -191,10 +252,25 @@ export function DeckAgentPanel({
     deckId,
     draft,
     entries,
+    onDeckEdit,
     pending,
+    readDeckHistory,
     recordReply,
     setDraft,
   ]);
+
+  /**
+   * Which turn's applied block gets the Undo, which is the newest one that has any.
+   *
+   * `undo` reverses the deck's last recorded change, so offering it on an older block
+   * would promise a reversal of that block and deliver a reversal of something else.
+   * One affordance, on the only edit it can actually undo.
+   */
+  const undoableEntryIndex = entries.reduce(
+    (newest, entry, index) =>
+      entry.appliedEdits && entry.appliedEdits.length > 0 ? index : newest,
+    -1,
+  );
 
   if (!client.streamDeckAgentChat) {
     return null;
@@ -274,6 +350,19 @@ export function DeckAgentPanel({
                   )}
                 </p>
               </article>
+              {(entry.appliedEdits ?? []).map((applied, editIndex, all) => (
+                <AppliedEditBlock
+                  applied={applied}
+                  key={`edit-${editIndex}-${applied.reason}`}
+                  // Only the last block of the newest edited turn: see
+                  // `undoableEntryIndex`.
+                  onUndo={
+                    index === undoableEntryIndex && editIndex === all.length - 1
+                      ? onUndoDeckEdit
+                      : undefined
+                  }
+                />
+              ))}
             </div>
           ))
         )}
@@ -282,13 +371,24 @@ export function DeckAgentPanel({
           * that announced every chunk would be unusable. The committed turn is
           * announced once, whole, the moment it lands.
           */}
-        {live.toolCalls.length > 0 || live.text ? (
+        {live.toolCalls.length > 0 || live.text || live.appliedEdits.length > 0 ? (
           <div aria-hidden="true">
             {live.toolCalls.map((call, callIndex) => (
               <ToolCallLine
                 call={call}
                 debugEnabled={debugEnabled}
                 key={`live-${callIndex}-${call.signature}`}
+              />
+            ))}
+            {/*
+              * The edit is on screen the moment the deck takes it, with no Undo: the
+              * committed block carries that, and a button inside a hidden region is
+              * one nobody can press anyway.
+              */}
+            {live.appliedEdits.map((applied, editIndex) => (
+              <AppliedEditBlock
+                applied={applied}
+                key={`live-edit-${editIndex}-${applied.reason}`}
               />
             ))}
             {live.text ? (
@@ -352,6 +452,56 @@ export function DeckAgentPanel({
         </button>
       </form>
     </section>
+  );
+}
+
+/**
+ * One edit the agent made, below the answer that explains it.
+ *
+ * Written in the past tense throughout, because it is: the deck took the change before
+ * this rendered, and wording that suggested a pending action would be describing a
+ * confirmation step this design deliberately does not have. If the deck refused the
+ * edit instead, its own announcement carries the reason — the transcript does not
+ * duplicate it, because two places saying why an edit failed is two places to disagree.
+ */
+function AppliedEditBlock({
+  applied,
+  onUndo,
+}: {
+  applied: DeckAgentAppliedEdit;
+  onUndo?: () => void;
+}) {
+  const lines: Array<[string, string]> = [
+    ["+", applied.added.join(", ")],
+    ["−", applied.removed.join(", ")],
+    ["→", applied.moved.join(", ")],
+  ];
+
+  return (
+    <div className="deck-agent__edit">
+      <p className="deck-agent__edit-summary" title={applied.reason}>
+        <Check aria-hidden="true" size={12} />
+        <span>{`Applied: +${applied.addedCopies} / −${applied.removedCopies}`}</span>
+        {onUndo ? (
+          <button
+            className="deck-agent__edit-undo"
+            type="button"
+            title="Undo the last deck change"
+            onClick={onUndo}
+          >
+            <Undo2 aria-hidden="true" size={12} />
+            Undo
+          </button>
+        ) : null}
+      </p>
+      {lines.map(([marker, names]) =>
+        names ? (
+          <p className="deck-agent__edit-cards" key={marker}>
+            {`${marker} ${names}`}
+          </p>
+        ) : null,
+      )}
+    </div>
   );
 }
 
