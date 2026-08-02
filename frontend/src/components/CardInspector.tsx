@@ -1,11 +1,3 @@
-import {
-  AlertTriangle,
-  ExternalLink,
-  Minus,
-  Plus,
-  Trash2,
-  X,
-} from "lucide-react";
 import { useEffect, useRef } from "react";
 
 import type {
@@ -13,6 +5,7 @@ import type {
   CardTagFilter,
   MagicColor,
 } from "../domain/card";
+import { Icon } from "./Icon";
 import { formatEuro, getCardPrice } from "../domain/card";
 import type { DeckSection } from "../domain/deck";
 import { isDeckSection, sectionLabel } from "../domain/deck";
@@ -134,7 +127,7 @@ export function CardInspector({
             title="Close"
             onClick={onClose}
           >
-            <X aria-hidden="true" size={18} />
+            <Icon name="close" aria-hidden="true" size={18} />
           </button>
         </div>
 
@@ -158,7 +151,7 @@ export function CardInspector({
                 aria-label={`Open ${card.name} on Scryfall`}
                 title="Open on Scryfall"
               >
-                <ExternalLink aria-hidden="true" size={16} />
+                <Icon name="external" aria-hidden="true" size={16} />
               </a>
             </div>
             <p className="type-line">{card.type_line}</p>
@@ -184,7 +177,7 @@ export function CardInspector({
 
             {singletonWarning ? (
               <div className="singleton-warning" role="status">
-                <AlertTriangle aria-hidden="true" size={16} />
+                <Icon name="warning" aria-hidden="true" size={16} />
                 Commander is a singleton format. This oracle card appears more
                 than once.
               </div>
@@ -192,7 +185,7 @@ export function CardInspector({
 
             {colorIdentityWarning ? (
               <div className="singleton-warning" role="status">
-                <AlertTriangle aria-hidden="true" size={16} />
+                <Icon name="warning" aria-hidden="true" size={16} />
                 {formatColorIdentity(card.color_identity)} is outside this
                 deck's {formatColorIdentity(commanderColorIdentity)} commander
                 color identity.
@@ -237,7 +230,7 @@ export function CardInspector({
                         onSetQuantity(card.scryfall_id, quantity - 1)
                       }
                     >
-                      <Minus aria-hidden="true" size={15} />
+                      <Icon name="minus" aria-hidden="true" size={15} />
                     </button>
                     <input
                       id="inspector-quantity"
@@ -258,7 +251,7 @@ export function CardInspector({
                         onSetQuantity(card.scryfall_id, quantity + 1)
                       }
                     >
-                      <Plus aria-hidden="true" size={15} />
+                      <Icon name="plus" aria-hidden="true" size={15} />
                     </button>
                   </div>
                 </div>
@@ -292,7 +285,7 @@ export function CardInspector({
                   type="button"
                   onClick={() => onRemove(card.scryfall_id)}
                 >
-                  <Trash2 aria-hidden="true" size={16} />
+                  <Icon name="trash" aria-hidden="true" size={16} />
                   Remove from deck
                 </button>
               </div>
@@ -302,7 +295,7 @@ export function CardInspector({
                 type="button"
                 onClick={() => onAdd(card)}
               >
-                <Plus aria-hidden="true" size={16} />
+                <Icon name="plus" aria-hidden="true" size={16} />
                 Add to deck
               </button>
             )}

@@ -478,6 +478,38 @@ describe("deck workspace", () => {
     ).not.toBeInTheDocument();
   });
 
+  it("offers no export on an empty deck, because there is no list to hand anyone", () => {
+    render(<App />);
+
+    expect(screen.getByRole("button", { name: "Export" })).toBeDisabled();
+  });
+
+  it("opens the export dialog on the deck the editor is showing", async () => {
+    const user = userEvent.setup();
+    const deck = createEmptyDeck(new Date("2026-01-01T00:00:00Z"));
+    deck.cards = [
+      {
+        card: {
+          oracle_id: solRing.oracle_id,
+          scryfall_id: solRing.scryfall_id,
+          name: solRing.name,
+          details: solRing,
+        },
+        quantity: 1,
+        section: "mainboard",
+      },
+    ];
+    window.localStorage.setItem(DECK_STORAGE_KEY, JSON.stringify(deck));
+    render(<App />);
+
+    await user.click(screen.getByRole("button", { name: "Export" }));
+
+    const dialog = await screen.findByRole("dialog", {
+      name: /^Export /,
+    });
+    expect(within(dialog).getByRole("textbox")).toHaveValue("1 Sol Ring");
+  });
+
   it("shows enrichment in deck card details and opens related cards at quantity zero", async () => {
     const deck = createEmptyDeck(new Date("2026-01-01T00:00:00Z"));
     deck.cards = [
@@ -1637,6 +1669,71 @@ describe("agent deck edits", () => {
     // Scoped to the card, because the group subtotal and the deck total both read €2.20
     // in a deck this size and an unscoped match would be satisfied by either of them.
     expect(within(card).getByText("€2.20")).toBeInTheDocument();
+  });
+
+  it("orders a column by mana value, then by how many coloured pips, then WUBRG", () => {
+    // One sorcery per case so they all land in one group, and named so that neither
+    // alphabetical order nor mana-value-then-name produces the expected sequence —
+    // otherwise the old comparator passes this too.
+    const sorcery = (name: string, mana_cost: string, mana_value: number) =>
+      deckEntry({
+        ...gamble,
+        oracle_id: `oracle-${name}`,
+        scryfall_id: `printing-${name}`,
+        name,
+        mana_cost,
+        mana_value,
+      });
+    seedDeck({
+      cards: [
+        sorcery("Roar", "{R}{R}", 2),
+        sorcery("Bloom", "{1}{G}", 2),
+        sorcery("Zap", "{R}", 1),
+        sorcery("Quicken", "{U}{R}", 2),
+        sorcery("Ancestral", "{2}", 2),
+        sorcery("Yield", "{1}{R}", 2),
+        // A hybrid pip is one coloured pip, not none and not two. Named to sort
+        // before "Ancestral": counted as no pip it would tie with it at zero and
+        // the name tiebreak would move it, so the position is the assertion.
+        sorcery("Alloy", "{1}{G/W}", 2),
+        // A split card prints both halves but `mana_value` is the front face's,
+        // so the shape has to be too. Named to sort before "Zap": read whole, its
+        // three pips would drop it below Zap's one instead of tying with it.
+        sorcery("Aftermath", "{R} // {2}{G}{G}", 1),
+        // A variable symbol counts as zero mana, so these three cost visibly
+        // different things and all report mana value 0. Named against the wanted
+        // order: alphabetically they interleave, which is exactly what shipped
+        // before, and counting {X}{X} as one variable would swap the last two.
+        sorcery("Nil", "{0}", 0),
+        sorcery("Torrent", "{X}", 0),
+        sorcery("Blast", "{X}{X}", 0),
+        // The only card here with a variable AND coloured pips, and it has fewer
+        // pips than the two-pip costs at its value — so it lands last only while
+        // the variable outranks the pip count. Order those the other way round and
+        // it moves up between the one-pip and two-pip costs.
+        sorcery("Surge", "{X}{1}{R}", 2),
+      ],
+    });
+    render(<App />);
+
+    expect(
+      screen
+        .getAllByRole("button", { name: /^Inspect / })
+        .map((button) => button.getAttribute("aria-label")),
+    ).toEqual([
+      "Inspect Nil", // {0} — no variable at all
+      "Inspect Torrent", // {X}
+      "Inspect Blast", // {X}{X} — after every single-X cost
+      "Inspect Aftermath", // {R}, front face only — ties with Zap, wins on name
+      "Inspect Zap", // {R} — both cheaper than everything below
+      "Inspect Ancestral", // {2} — no coloured pip at all
+      "Inspect Alloy", // {1}{G/W} — one pip, filed under W
+      "Inspect Yield", // {1}{R}
+      "Inspect Bloom", // {1}{G}
+      "Inspect Quicken", // {U}{R} — two pips, so after every one-pip cost
+      "Inspect Roar", // {R}{R}
+      "Inspect Surge", // {X}{1}{R} — a variable at this value comes after all of them
+    ]);
   });
 
   it("moves a card to another group when its art is dropped on that group", () => {

@@ -1,5 +1,5 @@
-import { ImageOff } from "lucide-react";
 
+import { Icon } from "./Icon";
 import type { CardSearchResult } from "../domain/card";
 import { getCardImage } from "../domain/card";
 
@@ -19,7 +19,7 @@ export function CardArt({
   if (!source) {
     return (
       <span className="card-art card-art--missing" aria-label="Card image unavailable">
-        <ImageOff aria-hidden="true" size={22} />
+        <Icon name="noImage" aria-hidden="true" size={22} />
         <span>{card.name}</span>
       </span>
     );

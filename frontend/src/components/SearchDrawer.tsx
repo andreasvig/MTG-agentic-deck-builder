@@ -1,17 +1,4 @@
 import {
-  AlertCircle,
-  ChevronRight,
-  CirclePlus,
-  Minus,
-  Plus,
-  RotateCw,
-  Search,
-  Sparkles,
-  SlidersHorizontal,
-  Trash2,
-  X,
-} from "lucide-react";
-import {
   type FormEvent,
   useCallback,
   useEffect,
@@ -35,6 +22,7 @@ import {
   formatEuro,
   getCardPrice,
 } from "../domain/card";
+import { Icon } from "./Icon";
 import type { DeckCardEntry, DeckSection } from "../domain/deck";
 import {
   getCommanderColorIdentity,
@@ -727,13 +715,13 @@ export function SearchDrawer({
               title="Close"
               onClick={onClose}
             >
-              <X aria-hidden="true" size={20} />
+              <Icon name="close" aria-hidden="true" size={20} />
             </button>
           </div>
         </header>
 
         <form className="search-form" role="search" onSubmit={submit}>
-          <Search aria-hidden="true" size={19} />
+          <Icon name="search" aria-hidden="true" size={19} />
           <input
             ref={inputRef}
             value={query}
@@ -750,7 +738,7 @@ export function SearchDrawer({
               title="Clear"
               onClick={() => setQuery("")}
             >
-              <X aria-hidden="true" size={17} />
+              <Icon name="close" aria-hidden="true" size={17} />
             </button>
           ) : null}
           <button
@@ -761,7 +749,7 @@ export function SearchDrawer({
             title="Filters"
             onClick={() => setFiltersOpen((open) => !open)}
           >
-            <SlidersHorizontal aria-hidden="true" size={17} />
+            <Icon name="sliders" aria-hidden="true" size={17} />
             {activeFilterCount > 0 ? (
               <span aria-label={`${activeFilterCount} active filters`}>
                 {activeFilterCount}
@@ -951,7 +939,7 @@ export function SearchDrawer({
                         key={subtype}
                       >
                         {subtype}
-                        <X aria-hidden="true" size={10} />
+                        <Icon name="close" aria-hidden="true" size={10} />
                       </button>
                     ))}
                   </div>
@@ -1119,7 +1107,7 @@ export function SearchDrawer({
                         key={tag.id}
                       >
                         {tag.name}
-                        <X aria-hidden="true" size={10} />
+                        <Icon name="close" aria-hidden="true" size={10} />
                       </button>
                     ))}
                   </div>
@@ -1174,7 +1162,7 @@ export function SearchDrawer({
               disabled={activeFilterCount === 0}
               onClick={resetFilters}
             >
-              <Trash2 aria-hidden="true" size={16} />
+              <Icon name="trash" aria-hidden="true" size={16} />
             </button>
           </section>
         ) : null}
@@ -1189,7 +1177,7 @@ export function SearchDrawer({
           >
             {state.phase === "idle" ? (
               <div className="search-state">
-                <Search aria-hidden="true" size={26} />
+                <Icon name="search" aria-hidden="true" size={26} />
                 <h3>Search Magic cards</h3>
               </div>
             ) : null}
@@ -1209,7 +1197,7 @@ export function SearchDrawer({
                 aria-label="Agentic search is loading"
               >
                 <span className="agentic-search-loading__icon">
-                  <Sparkles aria-hidden="true" size={15} />
+                  <Icon name="sparkles" aria-hidden="true" size={15} />
                 </span>
                 <span className="agentic-search-loading__copy">
                   <strong>Agentic search loading</strong>
@@ -1243,7 +1231,7 @@ export function SearchDrawer({
                 ].join(" ")}
                 role="alert"
               >
-                <AlertCircle aria-hidden="true" size={26} />
+                <Icon name="alert" aria-hidden="true" size={26} />
                 <h3>Search could not finish</h3>
                 <p>{state.message}</p>
                 <button
@@ -1251,7 +1239,7 @@ export function SearchDrawer({
                   type="button"
                   onClick={() => void runSearch(query)}
                 >
-                  <RotateCw aria-hidden="true" size={16} />
+                  <Icon name="refresh" aria-hidden="true" size={16} />
                   Try again
                 </button>
               </div>
@@ -1267,7 +1255,7 @@ export function SearchDrawer({
 
             {state.page?.edhrec.status === "unavailable" ? (
               <div className="search-enhancement-error" role="alert">
-                <AlertCircle aria-hidden="true" size={17} />
+                <Icon name="alert" aria-hidden="true" size={17} />
                 <span>
                   <strong>EDHREC enhancement failed</strong>
                   <small>
@@ -1280,7 +1268,7 @@ export function SearchDrawer({
 
             {state.phase === "success" && cards.length === 0 ? (
               <div className="search-state">
-                <Search aria-hidden="true" size={26} />
+                <Icon name="search" aria-hidden="true" size={26} />
                 <h3>No cards found</h3>
                 <p>Try a broader name or remove one of the search filters.</p>
               </div>
@@ -1302,13 +1290,13 @@ export function SearchDrawer({
                 </div>
                 {state.phase === "error" ? (
                   <p className="search-warning" role="alert">
-                    <AlertCircle aria-hidden="true" size={14} />
+                    <Icon name="alert" aria-hidden="true" size={14} />
                     {state.message}
                   </p>
                 ) : null}
                 {state.page?.warnings[0] ? (
                   <p className="search-warning" role="status">
-                    <AlertCircle aria-hidden="true" size={14} />
+                    <Icon name="alert" aria-hidden="true" size={14} />
                     {state.page.warnings[0]}
                   </p>
                 ) : null}
@@ -1351,7 +1339,7 @@ export function SearchDrawer({
                             onClick={() => setSelected(card)}
                           >
                             <strong>{card.name}</strong>
-                            <ChevronRight aria-hidden="true" size={15} />
+                            <Icon name="chevronRight" aria-hidden="true" size={15} />
                           </button>
                           <span className="mana-line">
                             <CardText text={card.mana_cost} fallback="No mana cost" />
@@ -1385,7 +1373,7 @@ export function SearchDrawer({
                                     onSetQuantity(card.scryfall_id, quantity - 1)
                                   }
                                 >
-                                  <Minus aria-hidden="true" size={14} />
+                                  <Icon name="minus" aria-hidden="true" size={14} />
                                 </button>
                                 <output aria-label={`${quantity} in deck`}>
                                   {quantity}
@@ -1397,7 +1385,7 @@ export function SearchDrawer({
                                     onSetQuantity(card.scryfall_id, quantity + 1)
                                   }
                                 >
-                                  <Plus aria-hidden="true" size={14} />
+                                  <Icon name="plus" aria-hidden="true" size={14} />
                                 </button>
                               </div>
                             ) : (
@@ -1407,7 +1395,7 @@ export function SearchDrawer({
                                 aria-label={`Add ${card.name} to deck`}
                                 onClick={() => onAdd(card, targetSection)}
                               >
-                                <CirclePlus aria-hidden="true" size={16} />
+                                <Icon name="plusCircle" aria-hidden="true" size={16} />
                                 Add
                               </button>
                             )}

@@ -1,5 +1,5 @@
-import { Bug, ChevronDown } from "lucide-react";
 
+import { Icon } from "./Icon";
 import { formatModelCostUsd } from "../domain/agent";
 import type {
   SearchDebugSummary,
@@ -111,7 +111,7 @@ export function SearchTracePanel({ debug }: SearchTracePanelProps) {
   return (
     <details className="search-debug" open={hasFailed ? true : undefined}>
       <summary>
-        <Bug aria-hidden="true" size={14} />
+        <Icon name="bug" aria-hidden="true" size={14} />
         <span className="search-debug__label">
           Search trace
           {isAgentic && roundNumber ? ` · Round ${roundNumber}` : ""}
@@ -123,7 +123,7 @@ export function SearchTracePanel({ debug }: SearchTracePanelProps) {
             {formatModelCostUsd(debug.total_cost_usd)}
           </strong>
         ) : null}
-        <ChevronDown
+        <Icon name="chevronDown"
           className="search-debug__chevron"
           aria-hidden="true"
           size={14}
@@ -207,7 +207,7 @@ function TraceStage({
           {formatCounts(stage)}
         </span>
         <strong>{formatDuration(stage.duration_ms)}</strong>
-        <ChevronDown aria-hidden="true" size={13} />
+        <Icon name="chevronDown" aria-hidden="true" size={13} />
       </summary>
 
       <div className="search-debug-layer__body">

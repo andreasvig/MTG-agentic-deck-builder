@@ -1,5 +1,4 @@
-import { CircleCheck, CircleDashed, CircleX, RefreshCw } from "lucide-react";
-
+import { Icon, type IconName } from "./Icon";
 import type { BackendHealthState } from "../hooks/useBackendHealth";
 
 interface ConnectionStatusProps {
@@ -11,26 +10,25 @@ const statusCopy = {
   checking: {
     label: "Connecting",
     detail: "Checking local backend",
-    Icon: CircleDashed,
+    icon: "pending",
   },
   online: {
     label: "Backend online",
     detail: "Local data service ready",
-    Icon: CircleCheck,
+    icon: "checkCircle",
   },
   offline: {
     label: "Backend offline",
     detail: "Local data service unavailable",
-    Icon: CircleX,
+    icon: "xCircle",
   },
-} as const;
+} as const satisfies Record<string, { label: string; detail: string; icon: IconName }>;
 
 export function ConnectionStatus({
   health,
   onRefresh,
 }: ConnectionStatusProps) {
   const status = statusCopy[health.state];
-  const StatusIcon = status.Icon;
 
   return (
     <div
@@ -38,7 +36,7 @@ export function ConnectionStatus({
       role="status"
       aria-live="polite"
     >
-      <StatusIcon aria-hidden="true" size={18} />
+      <Icon name={status.icon} aria-hidden="true" size={18} />
       <div>
         <strong>{status.label}</strong>
         <span>{status.detail}</span>
@@ -50,7 +48,7 @@ export function ConnectionStatus({
         aria-label="Check backend connection"
         title="Check backend connection"
       >
-        <RefreshCw aria-hidden="true" size={16} />
+        <Icon name="refresh" aria-hidden="true" size={16} />
       </button>
     </div>
   );

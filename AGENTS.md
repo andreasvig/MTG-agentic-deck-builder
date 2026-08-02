@@ -116,6 +116,12 @@ Do not change these without an explicit product decision and ADR update:
   in it (ADR 0038). Nothing removes a recorded edit except `appendToHistory`,
   which discards the undone tail before appending — that is what keeps the cursor
   the newest edit in the log, and every other reader relies on it.
+- The `text` export carries **no section headings**, ever. A shop's paste box — Cardmarket
+  wants, TCGplayer Mass Entry — reads every line as a card to price, so a `Commander`
+  heading is a card called "Commander" and the whole import fails on it. The `arena` format
+  is the one that carries headings, and the TCGplayer cart parameter is built from the
+  headingless lines rather than from whichever format the dialog is showing (ADR 0044). Do
+  not merge the two formats, and do not "tidy" `text` by giving it sections.
 - Every movement goes through `planHistoryTravel`. Do not add a second path for
   the panel or for a keyboard shortcut: a jump is exactly the steps it is made
   of, and it plans rather than counts so a button cannot offer a step the reducer
@@ -158,6 +164,10 @@ provider HTTP calls in routes. Keep public Pydantic models strict.
   inversion, session rule, payload pool and pruning live in
   `frontend/src/domain/history.ts` as pure functions with no React and no storage;
   `useDeck` is the only caller and the only place that decides an actor.
+- Decklist serialization lives in `frontend/src/domain/export.ts` as pure functions from a
+  `Deck` to a string — no React, no clipboard, no DOM. `ExportDeckDialog.tsx` is the only
+  thing that touches the browser, and it enumerates `DECK_EXPORT_FORMATS`, so a new format
+  is a row in that table plus a branch in `exportDeck`.
 - Search orchestration lives in `frontend/src/components/SearchDrawer.tsx`.
 - Debug trace presentation lives in
   `frontend/src/components/SearchTracePanel.tsx`.

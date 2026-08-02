@@ -1,6 +1,6 @@
-import { Check, History, X } from "lucide-react";
 import { useEffect, useRef } from "react";
 
+import { Icon } from "./Icon";
 import type { DeckHistoryEntry } from "../domain/history";
 import { describeDeckCardChange } from "../domain/history";
 
@@ -72,7 +72,7 @@ export function DeckHistoryPanel({
   return (
     <div className="history-panel" ref={panelRef} aria-label="Recorded deck history">
       <header>
-        <History aria-hidden="true" size={15} />
+        <Icon name="history" aria-hidden="true" size={15} />
         <h2>History</h2>
         <button
           className="icon-button icon-button--compact"
@@ -81,7 +81,7 @@ export function DeckHistoryPanel({
           aria-label="Close deck history"
           onClick={onClose}
         >
-          <X aria-hidden="true" size={15} />
+          <Icon name="close" aria-hidden="true" size={15} />
         </button>
       </header>
 
@@ -112,7 +112,7 @@ export function DeckHistoryPanel({
               <span className="history-row__head">
                 <strong>Before any edits</strong>
                 {appliedEditId === null ? (
-                  <Check
+                  <Icon name="check"
                     aria-label="The deck stands here"
                     className="history-row__here"
                     size={14}
@@ -151,7 +151,7 @@ function HistoryRow({
           <strong>{actor === "agent" ? "Agent" : "You"}</strong>
           <time dateTime={entry.at}>{clockFace(entry.at)}</time>
           {current ? (
-            <Check
+            <Icon name="check"
               aria-label="The deck stands here"
               className="history-row__here"
               size={14}

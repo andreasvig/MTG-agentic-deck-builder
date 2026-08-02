@@ -1,5 +1,6 @@
-import { Trash2, X } from "lucide-react";
 import { useEffect, useRef } from "react";
+import { Icon } from "./Icon";
+
 
 interface DeleteDeckDialogProps {
   deckName: string;
@@ -85,10 +86,10 @@ export function DeleteDeckDialog({
           title="Close"
           onClick={onCancel}
         >
-          <X aria-hidden="true" size={18} />
+          <Icon name="close" aria-hidden="true" size={18} />
         </button>
         <span className="confirmation-modal__icon" aria-hidden="true">
-          <Trash2 size={22} />
+          <Icon name="trash" size={22} />
         </span>
         <h2 id="delete-deck-title">Delete {deckName}?</h2>
         <p id="delete-deck-description">
@@ -115,7 +116,7 @@ export function DeleteDeckDialog({
             type="button"
             onClick={onConfirm}
           >
-            <Trash2 aria-hidden="true" size={16} />
+            <Icon name="trash" aria-hidden="true" size={16} />
             Delete deck
           </button>
         </div>

@@ -512,6 +512,15 @@ relationships remain a separate graph.
 
 ## Frontend Modules
 
+### `components/Icon.tsx`
+
+Every icon in the application: 40 glyphs hand-set as `[x, y, w, h]` rects on a 12x12
+grid and rendered in `currentColor` with `shape-rendering="crispEdges"` (ADR 0043).
+There is no icon dependency. `dev/IconSheet.tsx`, reachable at `#icons` in the dev
+server, renders the whole set at the four sizes the app ships plus an 8x blow-up on the
+grid; edit a glyph and look at it there before shipping, because the failure mode is
+legible at 26px and mush at 11.
+
 ### `domain/card.ts`
 
 Provider-neutral card and search response types plus presentation-safe helpers.

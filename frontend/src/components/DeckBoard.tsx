@@ -1,13 +1,4 @@
 import {
-  AlertTriangle,
-  CirclePlus,
-  GripVertical,
-  Minus,
-  MoreHorizontal,
-  Plus,
-  Trash2,
-} from "lucide-react";
-import {
   closestCenter,
   DndContext,
   DragOverlay,
@@ -22,6 +13,7 @@ import {
 } from "@dnd-kit/core";
 import { type ReactNode, useMemo, useState } from "react";
 
+import { Icon } from "./Icon";
 import type { CardSearchResult } from "../domain/card";
 import {
   CARD_MOVE_DRAG_TYPE,
@@ -186,7 +178,7 @@ export function DeckBoard({
                 type="button"
                 onClick={() => onSearch(cardGroup.section, cardGroup.label)}
               >
-                <CirclePlus aria-hidden="true" size={18} />
+                <Icon name="plusCircle" aria-hidden="true" size={18} />
                 Add to {cardGroup.label.toLowerCase()}
               </button>
             )}
@@ -419,7 +411,7 @@ function StackCard({
           */}
         {warning ? (
           <span className="stack-card__warning" title={warning.title}>
-            <AlertTriangle aria-label={warning.label} size={11} />
+            <Icon name="warning" aria-label={warning.label} size={11} />
           </span>
         ) : null}
       </div>
@@ -433,7 +425,7 @@ function StackCard({
           aria-label={`Decrease ${card.name} quantity`}
           onClick={() => onSetQuantity(card.scryfall_id, entry.quantity - 1)}
         >
-          <Minus aria-hidden="true" size={14} />
+          <Icon name="minus" aria-hidden="true" size={14} />
         </button>
         <output aria-label={`${entry.quantity} ${card.name} in deck`}>
           {entry.quantity}
@@ -443,7 +435,7 @@ function StackCard({
           aria-label={`Increase ${card.name} quantity`}
           onClick={() => onSetQuantity(card.scryfall_id, entry.quantity + 1)}
         >
-          <Plus aria-hidden="true" size={14} />
+          <Icon name="plus" aria-hidden="true" size={14} />
         </button>
         <span className="stack-card__price">
           {formatEuro(getCardPrice(card) * entry.quantity, "—")}
@@ -482,7 +474,7 @@ function GroupHeader({
         title={`Add to ${group.label}`}
         onClick={() => onSearch(group.section, group.label)}
       >
-        <CirclePlus aria-hidden="true" size={16} />
+        <Icon name="plusCircle" aria-hidden="true" size={16} />
       </button>
     </header>
   );
@@ -546,7 +538,7 @@ function ListRow({
           </small>
         </span>
         {warning ? (
-          <AlertTriangle
+          <Icon name="warning"
             className="list-warning"
             aria-label={warning.label}
             size={15}
@@ -572,7 +564,7 @@ function ListRow({
           title="Card details"
           onClick={() => onSelect(card)}
         >
-          <MoreHorizontal aria-hidden="true" size={16} />
+          <Icon name="more" aria-hidden="true" size={16} />
         </button>
         <button
           className="icon-button icon-button--compact card-drag-handle"
@@ -582,7 +574,7 @@ function ListRow({
           {...attributes}
           {...listeners}
         >
-          <GripVertical aria-hidden="true" size={16} />
+          <Icon name="grip" aria-hidden="true" size={16} />
         </button>
         <button
           className="icon-button icon-button--compact icon-button--danger"
@@ -591,7 +583,7 @@ function ListRow({
           title="Remove"
           onClick={() => onRemove(card.scryfall_id)}
         >
-          <Trash2 aria-hidden="true" size={15} />
+          <Icon name="trash" aria-hidden="true" size={15} />
         </button>
       </div>
     </div>
@@ -684,15 +676,80 @@ function warningCopy(
   return null;
 }
 
+const COLORS = ["W", "U", "B", "R", "G"];
+/** {X}, and the {Y}/{Z} a handful of old cards use alongside it. */
+const VARIABLES = ["X", "Y", "Z"];
+
+interface ManaCostShape {
+  /** How many variable symbols: `{0}` has none, `{X}` one, `{X}{X}` two. */
+  variables: number;
+  /** How many coloured pips. */
+  pips: number;
+  /** Those pips as WUBRG indices, ascending. */
+  colors: string;
+}
+
+/**
+ * The shape of a mana cost, for ordering cards that cost the same amount.
+ *
+ * Mana value alone leaves a curve column in name order, which puts `{2}{G}`
+ * between two `{G}{G}` cards. Worse at the top of the column: a variable
+ * symbol counts as zero, so `{0}`, `{X}` and `{X}{X}` all report mana value 0
+ * and eighteen cards that cost three visibly different things came out
+ * interleaved alphabetically.
+ *
+ * So the variable count is the first tiebreak — every `{X}` card at a value
+ * sits together and every `{X}{X}` card after them — then the coloured-pip
+ * count, then the pips themselves, which keeps cards costing exactly the same
+ * thing adjacent.
+ *
+ * Indices rather than letters for the pips, because the string is compared
+ * directly and WUBRG is not alphabetical: `"R"` must sort before `"G"`, and
+ * `"3"` does before `"4"`.
+ */
+function manaCostShape(cost: string | null | undefined): ManaCostShape {
+  // Split and double-faced cards print both halves, and `mana_value` is the
+  // front face's — so the shape has to come from the front face too.
+  const front = (cost ?? "").split("//")[0];
+  const symbols = [...front.matchAll(/\{([^}]+)\}/g)].map(([, symbol]) =>
+    symbol.toUpperCase(),
+  );
+  const pips = symbols
+    // A hybrid or Phyrexian symbol is one coloured pip ({G/W}, {2/W}, {W/P});
+    // generic, {X}, {C} and {S} are not coloured at all. A hybrid files under
+    // the earliest of its halves in WUBRG rather than the one printed first,
+    // so {G/W} and {W/G} are the same shape.
+    .map((symbol) => {
+      const colors = symbol
+        .split("/")
+        .map((part) => COLORS.indexOf(part))
+        .filter((index) => index >= 0);
+      return colors.length > 0 ? Math.min(...colors) : undefined;
+    })
+    .filter((index): index is number => index !== undefined)
+    .sort((a, b) => a - b);
+  return {
+    // Counted per symbol rather than per distinct letter: {X}{X} is two.
+    variables: symbols.filter((symbol) => VARIABLES.includes(symbol)).length,
+    pips: pips.length,
+    colors: pips.join(""),
+  };
+}
+
 function compareEntries(
   left: DeckCardEntry,
   right: DeckCardEntry,
   sortMode: SortMode,
 ): number {
   if (sortMode === "mana") {
+    const leftShape = manaCostShape(left.card.details?.mana_cost);
+    const rightShape = manaCostShape(right.card.details?.mana_cost);
     return (
       (left.card.details?.mana_value ?? 0) -
         (right.card.details?.mana_value ?? 0) ||
+      leftShape.variables - rightShape.variables ||
+      leftShape.pips - rightShape.pips ||
+      leftShape.colors.localeCompare(rightShape.colors) ||
       left.card.name.localeCompare(right.card.name)
     );
   }

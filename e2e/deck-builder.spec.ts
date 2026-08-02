@@ -1869,3 +1869,88 @@ test("escape cancels a turn and hands the question back to the composer", async 
   await composer.fill("what ramp should I add");
   await expect(panel.getByRole("button", { name: "Send message" })).toBeEnabled();
 });
+
+test("a deck leaves the application in a shape a shop can read", async ({
+  page,
+}, testInfo) => {
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await page.route(SEARCH_ROUTE, async (route) => {
+    const query = new URL(route.request().url()).searchParams.get("q") ?? "";
+    const cards = query.includes("Ghalta")
+      ? [ghalta]
+      : query.includes("Llanowar")
+        ? [llanowarElves]
+        : [solRing];
+    await fulfillJson(route, searchPage(query, cards));
+  });
+  await page.goto("/");
+
+  // Nothing to hand anyone yet.
+  await expect(page.getByRole("button", { name: "Export" })).toBeDisabled();
+
+  const closeSearch = () =>
+    page
+      .getByRole("button", { name: "Close card search", exact: true })
+      .and(page.locator(".icon-button"))
+      .click();
+
+  // The commander goes in through the command zone's own trigger. The drawer keeps that
+  // target for everything added while it is open, so the mainboard cards need a second
+  // pass — a second card sent to the command zone is refused as an illegal pairing.
+  await page.getByRole("button", { name: "Add to command zone" }).click();
+  const search = page.getByRole("textbox", { name: "Search cards" });
+  await search.fill("Ghalta");
+  await page
+    .getByRole("button", { name: "Add Ghalta, Primal Hunger to deck" })
+    .click();
+  await closeSearch();
+
+  await openSearch(page);
+  await search.fill("Sol Ring");
+  await page.getByRole("button", { name: "Add Sol Ring to deck" }).click();
+  await search.fill("Llanowar");
+  await page
+    .getByRole("button", { name: "Add Llanowar Elves to deck" })
+    .click();
+  await closeSearch();
+
+  await page.getByRole("button", { name: "Export" }).click();
+  const dialog = page.getByRole("dialog", { name: /^Export / });
+  await expect(dialog).toBeVisible();
+
+  // Commander first and no heading anywhere: every line is a card a shop can price.
+  const preview = dialog.getByRole("textbox");
+  await expect(preview).toHaveValue(
+    "1 Ghalta, Primal Hunger\n1 Llanowar Elves\n1 Sol Ring",
+  );
+
+  await dialog.getByRole("button", { name: "MTG Arena", exact: true }).click();
+  await expect(preview).toHaveValue(
+    "Commander\n1 Ghalta, Primal Hunger (RIX) 130\n\n" +
+      "Deck\n1 Llanowar Elves (FDN) 227\n1 Sol Ring (MSC) 211",
+  );
+
+  await dialog.getByRole("button", { name: "CSV", exact: true }).click();
+  await expect(preview).toHaveValue(
+    "Quantity,Name,Set,Collector number,Price EUR\n" +
+      '1,"Ghalta, Primal Hunger",RIX,130,0.23\n' +
+      "1,Llanowar Elves,FDN,227,0.23\n" +
+      "1,Sol Ring,MSC,211,0.95",
+  );
+
+  // The cart carries the buyable list whatever the preview is currently showing.
+  const cart = dialog.getByRole("link", { name: "Buy on TCGplayer" });
+  await expect(cart).toHaveAttribute(
+    "href",
+    "https://www.tcgplayer.com/massentry?productline=Magic" +
+      "&c=1%20Ghalta%2C%20Primal%20Hunger%7C%7C1%20Llanowar%20Elves%7C%7C1%20Sol%20Ring",
+  );
+
+  await page.screenshot({
+    path: testInfo.outputPath("export-deck.png"),
+    fullPage: true,
+  });
+
+  await page.keyboard.press("Escape");
+  await expect(dialog).toHaveCount(0);
+});

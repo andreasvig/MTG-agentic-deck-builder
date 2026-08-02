@@ -1,13 +1,3 @@
-import {
-  AlertTriangle,
-  Bot,
-  Check,
-  ChevronDown,
-  RotateCcw,
-  SendHorizontal,
-  Undo2,
-  Wrench,
-} from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import type {
@@ -18,6 +8,7 @@ import type {
   DeckAgentMessage,
   DeckAgentToolCall,
 } from "../domain/agent";
+import { Icon } from "./Icon";
 import { formatModelCostUsd, isRefusedDeckEdit } from "../domain/agent";
 import type { CardSearchResult } from "../domain/card";
 import { CARD_NAME_DRAG_TYPE } from "../domain/card";
@@ -523,7 +514,7 @@ export function DeckAgentPanel({
     >
       <header className="deck-agent__header">
         <h2 id="deck-agent-heading">
-          <Bot aria-hidden="true" size={15} />
+          <Icon name="bot" aria-hidden="true" size={15} />
           Deck agent
         </h2>
         {debugEnabled ? (
@@ -545,7 +536,7 @@ export function DeckAgentPanel({
           disabled={entries.length === 0 && !error}
           onClick={resetChat}
         >
-          <RotateCcw aria-hidden="true" size={13} />
+          <Icon name="reset" aria-hidden="true" size={13} />
           Reset chat
         </button>
       </header>
@@ -705,7 +696,7 @@ export function DeckAgentPanel({
           aria-label="Send message"
           title="Send message"
         >
-          <SendHorizontal aria-hidden="true" size={16} />
+          <Icon name="send" aria-hidden="true" size={16} />
         </button>
       </form>
     </section>
@@ -732,7 +723,7 @@ function AppliedEditBlock({
     return (
       <div className="deck-agent__edit deck-agent__edit--refused">
         <p className="deck-agent__edit-summary">
-          <AlertTriangle aria-hidden="true" size={12} />
+          <Icon name="warning" aria-hidden="true" size={12} />
           <span>Not applied</span>
         </p>
         <p className="deck-agent__edit-cards">{applied.reason}</p>
@@ -749,7 +740,7 @@ function AppliedEditBlock({
   return (
     <div className="deck-agent__edit">
       <p className="deck-agent__edit-summary" title={applied.reason}>
-        <Check aria-hidden="true" size={12} />
+        <Icon name="check" aria-hidden="true" size={12} />
         <span>{`Applied: +${applied.addedCopies} / −${applied.removedCopies}`}</span>
         {onUndo ? (
           <button
@@ -758,7 +749,7 @@ function AppliedEditBlock({
             title="Undo the last deck change"
             onClick={onUndo}
           >
-            <Undo2 aria-hidden="true" size={12} />
+            <Icon name="undo" aria-hidden="true" size={12} />
             Undo
           </button>
         ) : null}
@@ -812,7 +803,7 @@ function ToolCallLine({
         }
         title={title}
       >
-        <Wrench aria-hidden="true" size={11} />
+        <Icon name="wrench" aria-hidden="true" size={11} />
         <code className="deck-agent__tool-signature">{call.signature}</code>
         {call.ok ? null : <span> — failed</span>}
       </p>
@@ -828,10 +819,10 @@ function ToolCallLine({
       }
     >
       <summary title={title}>
-        <Wrench aria-hidden="true" size={11} />
+        <Icon name="wrench" aria-hidden="true" size={11} />
         <code className="deck-agent__tool-signature">{call.signature}</code>
         {call.ok ? null : <span>failed</span>}
-        <ChevronDown aria-hidden="true" size={12} />
+        <Icon name="chevronDown" aria-hidden="true" size={12} />
       </summary>
       <div className="deck-agent__tool-body">
         {payloads.map(([label, hint, text]) => (

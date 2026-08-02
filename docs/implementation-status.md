@@ -1,6 +1,6 @@
 # Implementation Status
 
-Last verified: 2026-08-01
+Last verified: 2026-08-02
 
 This is the canonical feature ledger. It describes the repository as it exists,
 not the intended end state.
@@ -339,6 +339,18 @@ Missing:
 - Tagger tags and related-card navigation inside that deck card dialog.
 - Desktop navigation rail and mobile deck-action toolbar.
 - Responsive search, deck-name editing, custom-group creation, and card actions.
+- Columns sorted by mana cost by default: value, then coloured-pip count, then WUBRG,
+  so a stacked column reads as the curve.
+- A paper interface: cream stock, one monospace face, hairline rules, no drop shadows
+  outside the things that float, and nothing rounder than 3px (ADR 0043). Card art, mana
+  symbols and set symbols keep their own colour and their own printed corner, and are
+  the only saturated things on screen.
+- Every icon hand-set on a 12x12 grid in `components/Icon.tsx`; no icon dependency. The
+  contact sheet at `#icons` renders the set at each size the app ships.
+- Export to plain text, MTG Arena and CSV from one dialog, with copy, download and a
+  prefilled TCGplayer Mass Entry cart (ADR 0044). Plain text carries no section headings,
+  because a shop reads every line as a card to price; the Arena format carries them and
+  pins each printing. `domain/export.ts` is pure functions from a `Deck` to a string.
 
 ### Verification
 
@@ -350,8 +362,8 @@ Missing:
   twelve-case table covering every field a `Deck` can differ by. It is what stands between
   a new `Deck` field and an undo that silently stops undoing it (ADR 0036).
 - Playwright workflows for desktop editing, search failure recovery, filters,
-  color warnings, legal commander pairs, recoverable deck deletion, and mobile
-  containment.
+  color warnings, legal commander pairs, recoverable deck deletion, deck export, and
+  mobile containment.
 - Production frontend build.
 - Paired-process startup and shutdown smoke test.
 
@@ -482,7 +494,8 @@ missing or stale sidecar is an explicit unavailable state fixed by
 - Automatic weekly catalog-refresh scheduling.
 - Backend deck CRUD, persistence, and typed mutation API.
 - Browser-local deck import/migration into backend storage.
-- Plaintext import and export.
+- Plaintext deck *import*. Export is shipped (ADR 0044); reading a pasted list back in
+  is not.
 - Full printing and finish selection.
 - Mana curve, color production, probability, and functional analytics.
 - Multi-select and bulk editing.

@@ -1,4 +1,3 @@
-import { ExternalLink, Tags } from "lucide-react";
 import { useEffect, useState } from "react";
 
 import type {
@@ -9,6 +8,7 @@ import type {
   EdhrecSimilarCard,
   RelatedOracleCard,
 } from "../domain/card";
+import { Icon } from "./Icon";
 import { apiClient, type ApiClient } from "../lib/api";
 
 type EnrichmentState =
@@ -76,7 +76,7 @@ export function CardEnrichmentPanel({
   if (state.phase === "loading") {
     return (
       <section className="card-enrichment card-enrichment--loading" role="status">
-        <Tags aria-hidden="true" size={13} />
+        <Icon name="tags" aria-hidden="true" size={13} />
         Loading card tags…
       </section>
     );
@@ -242,7 +242,7 @@ function RelatedCards({
               key={card.oracle_id}
             >
               <span>{card.name}</span>
-              <ExternalLink aria-hidden="true" size={11} />
+              <Icon name="external" aria-hidden="true" size={11} />
             </a>
           );
         })}

@@ -1,30 +1,12 @@
-import {
-  AlertTriangle,
-  Boxes,
-  Bug,
-  Columns3,
-  Command,
-  History,
-  LayoutGrid,
-  List,
-  Menu,
-  MoreHorizontal,
-  Pencil,
-  Plus,
-  Redo2,
-  Settings2,
-  Trash2,
-  Undo2,
-  WandSparkles,
-  X,
-} from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
+import { Icon } from "./components/Icon";
 import { CardInspector } from "./components/CardInspector";
 import { DeckAgentPanel } from "./components/DeckAgentPanel";
 import { DeckBoard, type SortMode, type ViewMode } from "./components/DeckBoard";
 import { DeckHistoryPanel } from "./components/DeckHistoryPanel";
 import { DeleteDeckDialog } from "./components/DeleteDeckDialog";
+import { ExportDeckDialog } from "./components/ExportDeckDialog";
 import { SearchDrawer } from "./components/SearchDrawer";
 import type { CardSearchResult, CardTagFilter } from "./domain/card";
 import { formatEuro, getCardImage } from "./domain/card";
@@ -84,7 +66,9 @@ function App() {
   const [debugEnabled, setDebugEnabled] = useDebugMode();
   const isMobile = useMediaQuery("(max-width: 860px)");
   const [view, setView] = useState<ViewMode>("visual");
-  const [sort, setSort] = useState<SortMode>("alphabet");
+  // Mana cost, not name: a stacked column shows each card's printed top, which
+  // is its name AND its cost, so the curve is readable straight down the column.
+  const [sort, setSort] = useState<SortMode>("mana");
   const [navigationOpen, setNavigationOpen] = useState(false);
   const [searchRequest, setSearchRequest] = useState<SearchRequest | null>(null);
   const [selectedCard, setSelectedCard] = useState<CardSearchResult | null>(null);
@@ -92,6 +76,7 @@ function App() {
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [historyOpen, setHistoryOpen] = useState(false);
+  const [exportOpen, setExportOpen] = useState(false);
   // What the deck agent's tools read. Rebuilt from the deck rather than held
   // separately, so a card added mid-conversation is visible on the next question.
   const deckSnapshot = useMemo(
@@ -338,7 +323,7 @@ function App() {
       >
         <div className="brand">
           <span className="brand-mark" aria-hidden="true">
-            <WandSparkles size={19} />
+            <Icon name="brand" size={25} />
           </span>
           <span>Manabase</span>
           <button
@@ -349,13 +334,13 @@ function App() {
             title="Close navigation"
             onClick={closeNavigation}
           >
-            <X aria-hidden="true" size={18} />
+            <Icon name="close" aria-hidden="true" size={18} />
           </button>
         </div>
 
         <nav className="primary-nav" aria-label="Primary">
           <a className="nav-item nav-item--active" href="#deck">
-            <Boxes aria-hidden="true" size={18} />
+            <Icon name="deck" aria-hidden="true" size={18} />
             Deck editor
           </a>
         </nav>
@@ -395,7 +380,7 @@ function App() {
                         alt={`${commander.name} commander`}
                       />
                     ) : (
-                      <Command aria-hidden="true" size={17} />
+                      <Icon name="command" aria-hidden="true" size={17} />
                     )}
                   </span>
                   <span>
@@ -411,7 +396,7 @@ function App() {
             type="button"
             onClick={startNewDeck}
           >
-            <Plus aria-hidden="true" size={16} />
+            <Icon name="plus" aria-hidden="true" size={16} />
             Create new deck
           </button>
         </div>
@@ -468,7 +453,7 @@ function App() {
             title="Open navigation"
             onClick={() => setNavigationOpen(true)}
           >
-            <Menu aria-hidden="true" size={20} />
+            <Icon name="menu" aria-hidden="true" size={20} />
           </button>
           <div
             className={`deck-identity ${
@@ -520,7 +505,7 @@ function App() {
                   title="Rename deck"
                   onClick={beginDeckRename}
                 >
-                  <Pencil aria-hidden="true" size={14} />
+                  <Icon name="pencil" aria-hidden="true" size={14} />
                 </button>
                 <button
                   className="icon-button icon-button--compact deck-delete"
@@ -529,7 +514,7 @@ function App() {
                   title="Delete deck"
                   onClick={() => setDeleteDialogOpen(true)}
                 >
-                  <Trash2 aria-hidden="true" size={14} />
+                  <Icon name="trash" aria-hidden="true" size={14} />
                 </button>
               </span>
             ) : null}
@@ -551,7 +536,7 @@ function App() {
             type="button"
             onClick={() => openSearch()}
           >
-            <Plus aria-hidden="true" size={16} />
+            <Icon name="plus" aria-hidden="true" size={16} />
             Add cards
           </button>
           <div className="segmented-control view-control" aria-label="Deck view">
@@ -561,7 +546,7 @@ function App() {
               aria-pressed={view === "visual"}
               onClick={() => setView("visual")}
             >
-              <Columns3 aria-hidden="true" size={15} />
+              <Icon name="columns" aria-hidden="true" size={15} />
               Visual
             </button>
             <button
@@ -570,7 +555,7 @@ function App() {
               aria-pressed={view === "list"}
               onClick={() => setView("list")}
             >
-              <List aria-hidden="true" size={15} />
+              <Icon name="list" aria-hidden="true" size={15} />
               List
             </button>
           </div>
@@ -582,10 +567,21 @@ function App() {
               onChange={(event) => setSort(event.target.value as SortMode)}
             >
               <option value="alphabet">Alphabetical</option>
-              <option value="mana">Mana value</option>
+              <option value="mana">Mana cost</option>
               <option value="price">Price high-low</option>
             </select>
           </label>
+          <button
+            className="secondary-button export-button"
+            type="button"
+            disabled={deck.cards.length === 0}
+            aria-haspopup="dialog"
+            title="Export deck"
+            onClick={() => setExportOpen(true)}
+          >
+            <Icon name="download" aria-hidden="true" size={15} />
+            Export
+          </button>
           <div className="time-travel">
             <button
               className="icon-button undo-button"
@@ -595,7 +591,7 @@ function App() {
               title="Back"
               onClick={back}
             >
-              <Undo2 aria-hidden="true" size={17} />
+              <Icon name="undo" aria-hidden="true" size={17} />
             </button>
             <button
               className={`icon-button history-button ${
@@ -607,7 +603,7 @@ function App() {
               title="History"
               onClick={() => setHistoryOpen((open) => !open)}
             >
-              <History aria-hidden="true" size={17} />
+              <Icon name="history" aria-hidden="true" size={17} />
             </button>
             <button
               className="icon-button redo-button"
@@ -617,7 +613,7 @@ function App() {
               title="Forward"
               onClick={forward}
             >
-              <Redo2 aria-hidden="true" size={17} />
+              <Icon name="redo" aria-hidden="true" size={17} />
             </button>
             {historyOpen ? (
               <DeckHistoryPanel
@@ -637,13 +633,13 @@ function App() {
               title="Settings"
               onClick={() => setSettingsOpen((open) => !open)}
             >
-              <Settings2 aria-hidden="true" size={17} />
+              <Icon name="settings" aria-hidden="true" size={17} />
             </button>
             {settingsOpen ? (
               <div className="interface-settings__panel" aria-label="Settings">
                 <label>
                   <span>
-                    <Bug aria-hidden="true" size={15} />
+                    <Icon name="bug" aria-hidden="true" size={15} />
                     Debug mode
                   </span>
                   <input
@@ -673,7 +669,7 @@ function App() {
             </div>
             {statistics.commandZoneProblem ? (
               <div className="command-zone-warning" role="status">
-                <AlertTriangle aria-hidden="true" size={17} />
+                <Icon name="warning" aria-hidden="true" size={17} />
                 <span>{statistics.commandZoneProblem}</span>
               </div>
             ) : null}
@@ -716,7 +712,7 @@ function App() {
         }
       >
         <button type="button" onClick={() => openSearch()}>
-          <Plus aria-hidden="true" size={20} />
+          <Icon name="plus" aria-hidden="true" size={20} />
           <span>Add cards</span>
         </button>
         <button
@@ -724,22 +720,22 @@ function App() {
           onClick={() => setView((current) => (current === "visual" ? "list" : "visual"))}
         >
           {view === "visual" ? (
-            <List aria-hidden="true" size={20} />
+            <Icon name="list" aria-hidden="true" size={20} />
           ) : (
-            <LayoutGrid aria-hidden="true" size={20} />
+            <Icon name="grid" aria-hidden="true" size={20} />
           )}
           <span>Layout</span>
         </button>
         <button type="button" disabled={!canGoBack} onClick={back}>
-          <Undo2 aria-hidden="true" size={20} />
+          <Icon name="undo" aria-hidden="true" size={20} />
           <span>Undo</span>
         </button>
         <button type="button" disabled={!canGoForward} onClick={forward}>
-          <Redo2 aria-hidden="true" size={20} />
+          <Icon name="redo" aria-hidden="true" size={20} />
           <span>Redo</span>
         </button>
         <button type="button" onClick={() => setNavigationOpen(true)}>
-          <MoreHorizontal aria-hidden="true" size={20} />
+          <Icon name="more" aria-hidden="true" size={20} />
           <span>More</span>
         </button>
       </nav>
@@ -795,9 +791,13 @@ function App() {
         />
       ) : null}
 
+      {exportOpen ? (
+        <ExportDeckDialog deck={deck} onClose={() => setExportOpen(false)} />
+      ) : null}
+
       {announcementTone === "error" ? (
         <div className="deck-toast deck-toast--error" role="alert">
-          <AlertTriangle aria-hidden="true" size={18} />
+          <Icon name="warning" aria-hidden="true" size={18} />
           <span>{announcement}</span>
           <button
             className="icon-button icon-button--compact"
@@ -805,7 +805,7 @@ function App() {
             aria-label="Dismiss deck warning"
             onClick={clearAnnouncement}
           >
-            <X aria-hidden="true" size={16} />
+            <Icon name="close" aria-hidden="true" size={16} />
           </button>
         </div>
       ) : null}

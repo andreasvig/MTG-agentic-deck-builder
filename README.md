@@ -65,7 +65,8 @@ The application currently supports:
   is a badge outside the corner, and its price sits under it once it is open.
 - Drag a card by its art: onto a group to move it there, into the chat to put its name in
   the composer. Hover a card the agent named to see its picture and its EUR estimate.
-- Sort by name, mana value, or price.
+- Sort by name, mana cost, or price. Mana cost is the default: value first, then how
+  many coloured pips, then WUBRG, so a stacked column reads as the curve.
 - Step back, forward, and straight to any recorded diff from the History panel between
   the two buttons — including after a reload, because the position is stored with the log.
 - Edit quantities, remove cards, and undo — including after a reload, because undo
@@ -81,6 +82,9 @@ The application currently supports:
   and deck card details.
 - Open related cards in the normal card dialog without losing the current
   search, or click a tag to start a tag-filtered search.
+- Export the deck as plain text, an MTG Arena list, or CSV — copy it, download it, or
+  open a TCGplayer cart already holding every card. The plain-text list is what
+  Cardmarket's wants import and TCGplayer's Mass Entry both take.
 - Use a purpose-built desktop shell and mobile deck-action toolbar.
 
 Deliberate UX choices:
@@ -397,7 +401,8 @@ backend/
   tests/               Backend contract and behavior tests
 frontend/
   src/
-    components/        Editor, search, dialogs, trace UI
+    components/        Editor, search, dialogs, trace UI, the pixel icon set
+    dev/               Dev-only surfaces; `#icons` opens the icon contact sheet
     domain/            Card/deck contracts and migrations
     hooks/             Deck, chats, health, and debug-mode application state
     lib/               HTTP client and response validation

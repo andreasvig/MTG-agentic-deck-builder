@@ -6,6 +6,48 @@ All notable changes to this project are documented here.
 
 ### Added
 
+- **A deck can leave, in a shape a shop can read.** An **Export** button in the editor
+  toolbar opens a dialog holding the generated list: **plain text** (`1 Sol Ring`),
+  **MTG Arena** (`1 Sol Ring (CMM) 396`, with `Commander` / `Deck` headings), and **CSV**
+  (quantity, name, set, collector number, EUR). Copy it, download it, or open a
+  **TCGplayer** cart already holding the deck. Cardmarket's import is behind a login and
+  has no public link, so that one gets the list plus the name of the page that takes it.
+  The plain-text format carries **no section headings on purpose**: a shop parses every
+  line as a card to sell you, so a `Commander` heading is a card called "Commander" and
+  the whole paste fails on it (ADR 0044). A double-faced card exports to Arena by its
+  front face; a split card keeps both halves, because `Wear // Tear` is its printed name.
+
+### Changed
+
+- **A column is ordered by what its cards cost, and that is now the default sort.** Mana
+  value first, then how many coloured pips the cost has, then those pips in WUBRG order —
+  so at any one value every single-pip cost sits together and every double-pip cost after
+  them, and cards costing exactly the same thing are always adjacent. Mana value alone
+  left the curve in name order, which puts `{2}{G}` between two `{G}{G}` cards. It is the
+  default because a stacked card shows its own printed top, and that band is the name
+  *and* the cost: the curve is now readable straight down the column. A hybrid or
+  Phyrexian symbol counts as one coloured pip and files under the earliest of its halves,
+  so `{G/W}` and `{W/G}` are the same shape; a split card's shape comes from its front
+  face, because its mana value does.
+
+- **The interface is printed on paper.** Cream stock, one monospace face, hairline rules
+  instead of drop shadows, flat tint blocks instead of glows, and nothing rounder than
+  3px — the sheet `ai-plays-pokemon`'s control center uses, re-inked with green as the
+  house ink. The sidebar was the app's one dark surface and is now a recessed well on the
+  same sheet. What this buys is contrast where it matters: with the chrome desaturated,
+  the card art, mana symbols and set symbols are the only saturated things on screen, and
+  they keep their own colour and their own printed corner. 252 frontend tests and all 15
+  end-to-end tests pass unmodified, which is the evidence that this is a re-skin.
+
+- **Every icon is hand-drawn pixels; `lucide-react` is gone.** Thirty-nine glyphs set as rects
+  on a 12x12 grid — half the usual resolution on purpose, so they read as printed marks
+  rather than as small tidy line art. The brand mark is the colour pie: five pips wired
+  into a pentagon, which is the diagram a manabase is a choice about. Because a glyph
+  that is fine at 26px can be mush at 11, `#icons` in the dev server opens a contact
+  sheet of the whole set at every size the app ships, plus an 8x blow-up on the grid.
+
+### Added
+
 - **Escape cancels the turn the deck agent is working on.** From anywhere in the panel,
   not only the composer, because a waiting user rarely sits in the textarea — and
   sending now keeps the focus there, which it did not: clicking Send disables the button
