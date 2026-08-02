@@ -25,6 +25,9 @@ import asyncio
 import ipaddress
 import re
 import socket
+import threading
+import time
+from collections import OrderedDict
 from dataclasses import dataclass
 from html import unescape
 from html.parser import HTMLParser
@@ -36,6 +39,13 @@ from urllib.request import Request, urlopen
 from .web_sites import read_known_site
 
 _ALLOWED_SCHEMES: Final = frozenset({"http", "https"})
+
+# How many distinct fetches the short-lived cache keeps. A read walks one document,
+# so this only has to span the parts of it plus whatever an adapter fetched alongside.
+_CACHE_ENTRIES: Final = 8
+
+# What one fetch returns: content type, body, and the URL after any redirect.
+_Fetched = tuple[str, bytes, str]
 
 # Content this reader can turn into text. Anything else — a PDF, an image, a download —
 # is reported rather than decoded into mojibake.
@@ -53,11 +63,20 @@ _SKIPPED: Final = frozenset(
 # Measured, not assumed: `www.reddit.com` returns no readable text at all, and YouTube
 # returns its cookie footer with a 200, which is worse — it looks like a result. Naming
 # them costs the agent one clear sentence instead of one wasted tool round.
+#
+# YouTube stays on this list even though it has an adapter, because the adapter only
+# handles a *video*. The refusal runs after the adapters, so a watch URL is read and a
+# channel or a search URL still gets the honest refusal rather than a cookie footer.
 _NEEDS_RENDERING: Final = frozenset(
     {
         "youtube.com", "m.youtube.com", "youtu.be",
         "facebook.com", "instagram.com", "tiktok.com",
         "x.com", "twitter.com", "threads.net",
+        # Moxfield is the largest deckbuilding site there is and it cannot be read at
+        # all: its API answers 403 to everything, and a page like `/decks/public`
+        # answers 200 with forty-three characters saying "Loading Moxfield. This may
+        # take a minute..." — a placeholder that reads exactly like a short deck.
+        "moxfield.com",
     }
 )
 
@@ -113,6 +132,10 @@ class WebPage:
     # its markup. What that changes is how far the reader should trust the numbers in
     # it, which is a different answer for a database export than for a model's prose.
     from_site_data: bool = False
+    # The card names an adapter declared *and* that survived into this part. Declared
+    # by the adapter rather than parsed back out of `text`, so it never mistakes a
+    # heading or a total for a card.
+    card_names: tuple[str, ...] = ()
 
     @property
     def has_more_pages(self) -> bool:
@@ -182,15 +205,21 @@ class WebPageFetcher:
         max_characters: int,
         max_bytes: int,
         user_agent: str,
+        cache_seconds: float = 0.0,
         open_url: Any = urlopen,
         resolve: Any = socket.getaddrinfo,
+        clock: Any = time.monotonic,
     ) -> None:
         self._timeout_seconds = timeout_seconds
         self._max_characters = max_characters
         self._max_bytes = max_bytes
         self._user_agent = user_agent
+        self._cache_seconds = cache_seconds
         self._open_url = open_url
         self._resolve = resolve
+        self._clock = clock
+        self._cache: OrderedDict[tuple[str, str], tuple[float, _Fetched]] = OrderedDict()
+        self._cache_lock = threading.Lock()
 
     async def fetch(self, url: str, page: int = 1) -> WebPage:
         """Return one page of one document's text, or say why it could not be read."""
@@ -203,6 +232,9 @@ class WebPageFetcher:
         # A known site is read through its own data first — see `web_sites`. The
         # adapters share this fetcher's guards because they are handed `self._get`,
         # and a miss returns None so the page is still read the ordinary way.
+        #
+        # This runs *before* the renderer refusal below, so an adapter may claim a
+        # host that a plain fetch cannot read — YouTube is exactly that case.
         try:
             reading = read_known_site(target, self._get)
         except WebPageUnavailable:
@@ -218,7 +250,9 @@ class WebPageFetcher:
                 page=page,
                 oversized=False,
                 from_site_data=True,
+                cards=reading.cards,
             )
+        self._refuse_if_it_needs_a_renderer(target)
 
         content_type, body, final_url = self._get_readable(target)
         oversized = len(body) > self._max_bytes
@@ -253,6 +287,7 @@ class WebPageFetcher:
         page: int,
         oversized: bool,
         from_site_data: bool = False,
+        cards: tuple[str, ...] = (),
     ) -> WebPage:
         """Split one document and return the requested part of it.
 
@@ -277,7 +312,29 @@ class WebPageFetcher:
             total_pages=len(pages),
             truncated=oversized,
             from_site_data=from_site_data,
+            # Narrowed to this part, because a reader can only act on what it can see.
+            # Order and duplicates are dropped here, not by the adapters.
+            card_names=tuple(
+                dict.fromkeys(card for card in cards if card in pages[page - 1])
+            ),
         )
+
+    def _refuse_if_it_needs_a_renderer(self, url: str) -> None:
+        """Stop before fetching a page that only exists once its scripts have run.
+
+        Checked after the adapters rather than before, so a host on this list can
+        still be read when there is a way to read it — YouTube has no readable HTML
+        but does answer oEmbed, and refusing it before the adapter ran would throw
+        that away.
+        """
+
+        bare = (urlsplit(url).hostname or "").lower().removeprefix("www.")
+        if bare in _NEEDS_RENDERING:
+            raise WebPageUnavailable(
+                f"{bare} builds its pages in the browser, so a plain fetch reads "
+                "nothing useful from it. Whatever the search summary said about this "
+                "source is all there is without a rendering fetch."
+            )
 
     def _get(self, url: str, accept: str) -> bytes:
         """Fetch one URL under this fetcher's guards, for a site adapter to parse.
@@ -302,7 +359,48 @@ class WebPageFetcher:
             )
         return content_type, body, final_url
 
-    def _get_body(self, target: str, accept: str) -> tuple[str, bytes, str]:
+    def _get_body(self, target: str, accept: str) -> _Fetched:
+        """Fetch one URL, reusing a very recent identical fetch if there is one.
+
+        Pagination refetches by design — nothing is held between `read_page` calls —
+        which without this makes reading a five-part EDHREC page five identical
+        137 KB requests. The cache also closes the one honest gap in that design: a
+        document that changed between part one and part two would move every boundary
+        after it, and within the window the parts now come from one download.
+
+        Deliberately short and small. This is for the span of one read, not a store.
+        """
+
+        # One flag rather than the same comparison on both sides. Written as two
+        # separate checks, either one alone was unobservable — a store nothing reads
+        # and a read of a store nothing writes both behave exactly like no cache — so
+        # neither could be tested, and a test that cannot fail is not a test.
+        if not self._caching():
+            return self._fetch_body(target, accept)
+        key = (target, accept)
+        with self._cache_lock:
+            found = self._cache.get(key)
+            if found is not None and self._clock() - found[0] < self._cache_seconds:
+                return found[1]
+        fetched = self._fetch_body(target, accept)
+        with self._cache_lock:
+            self._cache[key] = (self._clock(), fetched)
+            while len(self._cache) > _CACHE_ENTRIES:
+                self._cache.popitem(last=False)
+        return fetched
+
+    def _caching(self) -> bool:
+        """A fast path, not the thing that disables the cache.
+
+        A zero window is already disabled by the age comparison above — nothing can be
+        newer than zero seconds old — so this only avoids taking the lock and storing
+        entries that could never be read. Worth knowing when reading a mutation report:
+        flipping this alone changes no behaviour, and it should not.
+        """
+
+        return self._cache_seconds > 0
+
+    def _fetch_body(self, target: str, accept: str) -> _Fetched:
         request = Request(
             target,
             method="GET",
@@ -347,13 +445,6 @@ class WebPageFetcher:
         if not host:
             raise WebPageUnavailable("That is not a URL this reader can open.")
 
-        bare = host.lower().removeprefix("www.")
-        if bare in _NEEDS_RENDERING:
-            raise WebPageUnavailable(
-                f"{bare} builds its pages in the browser, so a plain fetch reads "
-                "nothing useful from it. Whatever the search summary said about this "
-                "source is all there is without a rendering fetch."
-            )
         replacement = _REWRITTEN_HOSTS.get(host.lower())
         if replacement is not None:
             parts = parts._replace(netloc=replacement)

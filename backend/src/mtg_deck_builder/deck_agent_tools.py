@@ -34,10 +34,12 @@ and text costs a fraction of the tokens for a hundred-card deck.
 
 from __future__ import annotations
 
+import unicodedata
 from dataclasses import dataclass
 from datetime import date, datetime
 from decimal import Decimal
-from typing import Annotated, Any, get_args
+from typing import Annotated, Any, Final, get_args
+from urllib.parse import urlsplit
 from uuid import UUID
 
 from pydantic import Field, StringConstraints, ValidationError
@@ -81,6 +83,7 @@ from mtg_deck_builder.edhrec_catalog import (
 )
 from mtg_deck_builder.providers.tool_schema import provider_tool_schema
 from mtg_deck_builder.providers.web_page import WebPageFetcher, WebPageUnavailable
+from mtg_deck_builder.providers.web_sites import known_hosts
 from mtg_deck_builder.tagger_catalog import SQLiteTaggerCatalog, TaggerCatalogUnavailable
 from mtg_deck_builder.web_search import WebSearchService, WebSearchUnavailable
 
@@ -1555,7 +1558,34 @@ class DeckAgentToolbox:
             signature=_read_page_signature(
                 arguments.url, page=page.page, total=page.total_pages
             ),
-            content="\n".join(_page_lines(page)),
+            content="\n".join(_page_lines(page, await self._unknown_cards(page))),
+        )
+
+    async def _unknown_cards(self, page: Any) -> tuple[str, ...]:
+        """Name the cards in a fetched decklist that the local catalog does not have.
+
+        Only for a page a site adapter rendered. Both ADRs list resolving web card
+        names in code as a known gap, and the reason given was that pulling names out
+        of prose is unreliable — which the bake-off's own extractor demonstrated twice
+        over. That reason does not survive an adapter: its output is a `12 Island`
+        line built from a database row, not a name plucked from a sentence, so the
+        parse is exact and the lookup is honest.
+
+        Names are normalised before the comparison. A site writes Ashnod's Altar with
+        a curly apostrophe and the catalog stores a straight one, and scoring real
+        cards as missing over that is the precise mistake that made the first
+        bake-off numbers meaningless.
+        """
+
+        names = tuple(getattr(page, "card_names", ()) or ())
+        if not names or self._card_catalog is None:
+            return ()
+        # Normalise toward what the catalog stores, then ask under that form and read
+        # the answer back through the same map.
+        canonical = {name: _catalog_spelling(name) for name in names}
+        known = await self.oracle_ids_for_names(sorted(set(canonical.values())))
+        return tuple(
+            name for name in names if canonical[name].casefold() not in known
         )
 
 
@@ -2431,6 +2461,48 @@ _SITE_DATA_CAUTION = (
 )
 
 
+# Punctuation a website writes and the card catalog does not. Sonar and every deck
+# site render typographic quotes and dashes; Scryfall stores ASCII. Comparing the two
+# without this scored real cards as fabrications during the bake-off, which is how a
+# metric ends up measuring its own parser rather than the thing it was aimed at.
+_TYPOGRAPHIC: Final = {
+    0x2018: "'", 0x2019: "'", 0x201A: "'", 0x201B: "'",
+    0x201C: '"', 0x201D: '"', 0x2032: "'", 0x2035: "'",
+    0x2010: "-", 0x2011: "-", 0x2012: "-", 0x2013: "-", 0x2014: "-", 0x2015: "-",
+    0x2212: "-", 0x00A0: " ",
+}
+
+
+def _catalog_spelling(name: str) -> str:
+    """Rewrite one name the way the catalog would store it, before looking it up."""
+
+    return unicodedata.normalize("NFKC", name).translate(_TYPOGRAPHIC).strip()
+
+
+def _unknown_card_lines(unknown: tuple[str, ...]) -> list[str]:
+    """Say which of a fetched decklist's names the catalog does not have.
+
+    The interesting case is not a typo, it is a *near* miss: the bake-off found a
+    complete deck built around "Gretian Titcho", which is Gretchen Titchwillow with
+    the name mangled. Naming the misses turns the closing caution from advice into a
+    finding the agent already has, and the instruction is to go and resolve them
+    rather than to conclude the card is fictional.
+    """
+
+    if not unknown:
+        return []
+    shown = ", ".join(unknown[:8])
+    if len(unknown) > 8:
+        shown += f", and {len(unknown) - 8} more"
+    return [
+        "",
+        f"The local catalog has no card called: {shown}. Treat those as names to "
+        "resolve, not as cards — search_cards on a distinctive word usually finds "
+        "what was meant, because a mangled name is far likelier than a card that "
+        "does not exist.",
+    ]
+
+
 def _web_answer_lines(answer: Any) -> list[str]:
     """Render one Sonar answer: its prose, its numbered sources, then the caution.
 
@@ -2445,10 +2517,14 @@ def _web_answer_lines(answer: Any) -> list[str]:
         lines.append("Sources")
         for index, source in enumerate(answer.sources, start=1):
             title = source.title or "untitled"
-            lines.append(f"  [{index}] {title}")
+            lines.append(f"  [{index}] {title}{_read_quality(source.url)}")
             lines.append(f"      {source.url}")
         lines.append("")
-        lines.append(f"Call {READ_PAGE} with any of these URLs to read it yourself.")
+        lines.append(
+            f"Call {READ_PAGE} with any of these URLs to read it yourself. The ones "
+            "marked as read in full come back as the site's own data rather than as a "
+            "page of menus, so prefer those when the summary is not enough."
+        )
     else:
         lines.append("")
         lines.append("The search returned no sources, so none of this can be checked.")
@@ -2457,7 +2533,7 @@ def _web_answer_lines(answer: Any) -> list[str]:
     return lines
 
 
-def _page_lines(page: Any) -> list[str]:
+def _page_lines(page: Any, unknown: tuple[str, ...] = ()) -> list[str]:
     """Render one part of a page: what it was, its text, and the way to read on.
 
     A long document is walked rather than cut off, so the last line of a part that has
@@ -2483,11 +2559,25 @@ def _page_lines(page: Any) -> list[str]:
             "The page was too large to fetch whole, so there is more of it that no "
             "part will reach."
         )
+    lines += _unknown_card_lines(unknown)
     lines.append("")
     lines.append(
         _SITE_DATA_CAUTION if getattr(page, "from_site_data", False) else _WEB_CAUTION
     )
     return lines
+
+
+def _read_quality(url: str) -> str:
+    """Mark a source `read_page` has an adapter for.
+
+    A ten-source list is a choice the agent has to make blind otherwise, and the
+    difference is large: an Archidekt link comes back as an exact decklist, while a
+    forum thread comes back as whatever survives HTML-to-text. Cheap to say, and it
+    changes which link gets the one tool round that is worth spending.
+    """
+
+    host = (urlsplit(url).hostname or "").lower().removeprefix("www.")
+    return " — read in full" if host in known_hosts() else ""
 
 
 def _search_web_signature(question: str) -> str:

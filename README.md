@@ -28,7 +28,7 @@ The first manual editing slice is usable and tested.
 | Deck agent chat | Shipped, desktop only, streamed, one saved conversation per deck |
 | Deck agent read-only tools | Shipped: `read_deck` (with `extra_info` for costs, the curve and prices), `see_cards`, `search_cards`, `read_history` |
 | Deck agent web research | Shipped: `search_web` on Perplexity `sonar` with its sources, `read_page` for a plain fetch of one, paginated so a long page is read on rather than cut off — leads only, never card data |
-| Deck site parsers | Shipped: EDHREC, Archidekt, MTGGoldfish, TappedOut, Aetherhub, Commander Spellbook and cEDHstat read through their own endpoints behind `read_page`, with any miss falling back to the generic reader |
+| Deck site parsers | Shipped: EDHREC, Archidekt, MTGGoldfish, TappedOut, Aetherhub, Commander Spellbook, cEDHstat and YouTube read through their own endpoints behind `read_page`, with any miss falling back to the generic reader. A fetched decklist's names are checked against the local catalog |
 | Deck agent deck editing | Shipped: `edit_deck`, auto-applied, one undo step per edit |
 | Backend-enforced deck mutation and confirmed patches | Not implemented, and not the direction — see ADR 0036 |
 

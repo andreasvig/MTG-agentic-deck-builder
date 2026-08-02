@@ -2889,3 +2889,130 @@ def test_a_part_number_below_one_is_refused_before_any_fetch() -> None:
 
     assert outcome.ok is False
     assert fetcher.urls == []
+
+
+# ---------------------------- a fetched decklist, checked against the catalog
+
+
+def site_page(text: str, cards: tuple[str, ...]) -> WebPage:
+    """A page as a site adapter would hand it over: rendered, with its cards declared."""
+
+    return WebPage(
+        url="https://archidekt.com/decks/1/",
+        title="A deck | Archidekt",
+        text=text,
+        page=1,
+        total_pages=1,
+        truncated=False,
+        from_site_data=True,
+        card_names=cards,
+    )
+
+
+def test_a_fetched_decklist_names_the_cards_the_catalog_does_not_have() -> None:
+    """The bake-off found a complete deck built around "Gretian Titcho", which is
+    Gretchen Titchwillow mangled. Naming the misses makes that a finding the agent
+    already has rather than a warning it has to act on unprompted."""
+
+    page = site_page(
+        "1 Sol Ring\n1 Gretian Titcho",
+        ("Sol Ring", "Gretian Titcho"),
+    )
+    toolbox, _, _ = make_web_toolbox(page=page)
+
+    outcome = asyncio.run(
+        toolbox.run(READ_PAGE, {"url": "https://archidekt.com/decks/1/"}, deck=None)
+    )
+
+    assert "no card called: Gretian Titcho" in outcome.content
+    assert "Sol Ring" not in outcome.content.split("no card called")[1]
+    assert "mangled name is far likelier" in outcome.content
+
+
+def test_a_decklist_the_catalog_fully_knows_says_nothing_extra() -> None:
+    page = site_page("1 Sol Ring\n1 Ancient Den", ("Sol Ring", "Ancient Den"))
+    toolbox, _, _ = make_web_toolbox(page=page)
+
+    outcome = asyncio.run(
+        toolbox.run(READ_PAGE, {"url": "https://archidekt.com/decks/1/"}, deck=None)
+    )
+
+    assert "no card called" not in outcome.content
+
+
+def test_a_curly_apostrophe_is_not_reported_as_a_missing_card() -> None:
+    """A site writes Ashnod's Altar with U+2019 and the catalog stores U+0027.
+    Comparing those without normalising scored real cards as fabrications during the
+    bake-off, which is how a metric ends up measuring its own parser."""
+
+    catalog = StubCardCatalog(
+        cards={SOL_RING: make_card(SOL_RING, "Ashnod's Altar", "Artifact")}
+    )
+    # The U+2019 is the subject of the test, not a typo: the stub catalog matches on a
+    # bare casefold, so this passes only if the name is normalised before the lookup.
+    curly = "Ashnod\u2019s Altar"  # RIGHT SINGLE QUOTATION MARK, spelled as an escape
+    page = site_page(f"1 {curly}", (curly,))
+    toolbox = make_toolbox(
+        card_catalog=catalog,
+        web_search=StubWebSearch(make_answer()),
+        page_fetcher=StubPageFetcher(page),
+    )
+
+    outcome = asyncio.run(
+        toolbox.run(READ_PAGE, {"url": "https://archidekt.com/decks/1/"}, deck=None)
+    )
+
+    assert "no card called" not in outcome.content
+
+
+def test_a_generic_page_is_never_checked_against_the_catalog() -> None:
+    """Only an adapter declares its card names. Prose has none, and inventing some by
+    parsing it is the mistake this deliberately does not make."""
+
+    page = WebPage(
+        url="https://example.com/primer",
+        title="A primer",
+        text="Play 1 Gretian Titcho, it is excellent.",
+        page=1,
+        total_pages=1,
+        truncated=False,
+    )
+    toolbox, _, _ = make_web_toolbox(page=page)
+
+    outcome = asyncio.run(
+        toolbox.run(READ_PAGE, {"url": "https://example.com/primer"}, deck=None)
+    )
+
+    assert "no card called" not in outcome.content
+
+
+def test_a_long_list_of_unknown_names_is_summarised_rather_than_dumped() -> None:
+    unknown = tuple(f"Fake Card {index}" for index in range(12))
+    page = site_page("\n".join(f"1 {name}" for name in unknown), unknown)
+    toolbox, _, _ = make_web_toolbox(page=page)
+
+    outcome = asyncio.run(
+        toolbox.run(READ_PAGE, {"url": "https://archidekt.com/decks/1/"}, deck=None)
+    )
+
+    assert "and 4 more" in outcome.content
+
+
+def test_the_sources_say_which_ones_can_be_read_in_full() -> None:
+    """A ten-source list is otherwise a blind choice, and the difference is large: an
+    Archidekt link comes back as an exact decklist, a forum thread as whatever
+    survives HTML-to-text."""
+
+    answer = make_answer(
+        sources=(
+            ("https://archidekt.com/decks/4444516/", "A deck"),
+            ("https://example.com/thread", "A thread"),
+        )
+    )
+    toolbox, _, _ = make_web_toolbox(answer=answer)
+
+    outcome = asyncio.run(toolbox.run(SEARCH_WEB, {"question": "What plays Grolnok?"}, deck=None))
+    listed = [line for line in outcome.content.splitlines() if line.startswith("  [")]
+
+    assert listed[0].endswith("read in full")
+    assert not listed[1].endswith("read in full")

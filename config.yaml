@@ -343,6 +343,10 @@ agent:
       page_max_characters: 6000
       page_max_bytes: 2000000
       page_timeout_seconds: 20
+      # Reading a five-part page refetches it five times, because nothing is kept
+      # between read_page calls. This reuses an identical fetch for long enough to
+      # walk one document, and no longer.
+      page_cache_seconds: 120
       page_user_agent: >-
         Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML,
         like Gecko) Chrome/126.0.0.0 Safari/537.36

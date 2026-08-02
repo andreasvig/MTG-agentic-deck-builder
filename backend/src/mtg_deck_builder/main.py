@@ -170,6 +170,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     max_characters=deck_agent.tools.web.page_max_characters,
                     max_bytes=deck_agent.tools.web.page_max_bytes,
                     user_agent=deck_agent.tools.web.page_user_agent,
+                    cache_seconds=deck_agent.tools.web.page_cache_seconds,
                 ),
             ),
         )

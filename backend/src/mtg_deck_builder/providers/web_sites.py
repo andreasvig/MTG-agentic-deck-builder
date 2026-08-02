@@ -37,8 +37,9 @@ from html.parser import HTMLParser
 from typing import Any, Final
 from urllib.parse import parse_qs, quote, urlsplit
 
-# Fetch one URL and hand back its bytes. Bound to the caller's guards — scheme, address
-# and byte cap — so an adapter cannot reach anywhere the generic reader could not.
+# Fetch one URL and hand back its bytes, raising `RuntimeError` if it cannot be read.
+# Bound to the caller's guards — scheme, address and byte cap — so an adapter cannot
+# reach anywhere the generic reader could not.
 Getter = Callable[[str, str], bytes]
 
 _JSON: Final = "application/json"
@@ -52,10 +53,18 @@ class AdapterMiss(Exception):
 
 @dataclass(frozen=True)
 class SiteReading:
-    """One page rendered from its own data rather than from its markup."""
+    """One page rendered from its own data rather than from its markup.
+
+    `cards` is the names this adapter *knows* are cards, declared rather than parsed
+    back out of `text`. Re-reading the rendering would mean writing another extractor
+    over prose, and the one written for the Sonar bake-off scored table headings and
+    curly apostrophes as hallucinations before it was fixed twice. The adapter already
+    knows which strings came out of a card field; saying so is exact and free.
+    """
 
     title: str
     text: str
+    cards: tuple[str, ...] = ()
 
 
 def _provenance(what: str) -> str:
@@ -111,14 +120,18 @@ def _edhrec(parts: Any, get: Getter) -> SiteReading:
     cardlists = ((container.get("json_dict") or {}).get("cardlists")) or []
     if not cardlists:
         raise AdapterMiss
+    named: list[str] = []
     for cardlist in cardlists:
         rendered = _edhrec_cardlist(cardlist)
+        named += _edhrec_names(cardlist)
         if not rendered:
             continue
         # A combos page is a run of bare headings, each one a whole combo. Separating
         # those with blank lines would double the length of the part for no reading.
         lines += rendered if len(rendered) == 1 else ["", *rendered]
-    return SiteReading(title=f"{header} | EDHREC", text="\n".join(lines))
+    return SiteReading(
+        title=f"{header} | EDHREC", text="\n".join(lines), cards=tuple(named)
+    )
 
 
 def _edhrec_composition(payload: dict[str, Any]) -> str:
@@ -164,6 +177,22 @@ def _edhrec_cardlist(cardlist: Any) -> list[str]:
     if not named:
         return []
     return [f"## {header}" if header else "## Cards", *rows]
+
+
+def _edhrec_names(cardlist: Any) -> list[str]:
+    """The card names in one list, which is not the same as the lines rendered.
+
+    A combos heading names its pieces and the rows beneath it are then dropped as
+    duplicates, but those pieces are still cards worth checking.
+    """
+
+    if not isinstance(cardlist, dict):
+        return []
+    return [
+        str(view.get("name") or "").strip()
+        for view in (cardlist.get("cardviews") or [])
+        if isinstance(view, dict) and str(view.get("name") or "").strip()
+    ]
 
 
 def _edhrec_stats(view: dict[str, Any]) -> str:
@@ -239,7 +268,11 @@ def _archidekt(parts: Any, get: Getter) -> SiteReading:
         lines.append("Tags: " + ", ".join(tags))
     for group in _ordered_groups(grouped, excluded):
         lines += ["", *_card_block(group, grouped[group], noted=group in excluded)]
-    return SiteReading(title=f"{name} | Archidekt", text="\n".join(lines))
+    return SiteReading(
+        title=f"{name} | Archidekt",
+        text="\n".join(lines),
+        cards=tuple(card for counts in grouped.values() for card in counts),
+    )
 
 
 def _archidekt_meta(payload: dict[str, Any], total: int) -> str:
@@ -351,7 +384,9 @@ def _goldfish(parts: Any, get: Getter) -> SiteReading:
         "",
     ]
     lines += [f"{counts[card]} {card}" for card in sorted(counts)]
-    return SiteReading(title=f"{name} | MTGGoldfish", text="\n".join(lines))
+    return SiteReading(
+        title=f"{name} | MTGGoldfish", text="\n".join(lines), cards=tuple(counts)
+    )
 
 
 # ------------------------------------------------------- plain-text export services
@@ -412,6 +447,13 @@ def _from_export(*, slug: str, site: str, source: str, exported: str) -> SiteRea
     return SiteReading(
         title=name,
         text="\n".join([name, _provenance(source), "", _count(total, "card"), "", *kept]),
+        # Only the lines that actually carried a quantity; an export can hold a board
+        # heading, and a heading is not a card.
+        cards=tuple(
+            line.split(" ", 1)[1].strip()
+            for line, found in zip(kept, quantities, strict=True)
+            if found
+        ),
     )
 
 
@@ -437,6 +479,7 @@ def _spellbook(parts: Any, get: Getter) -> SiteReading:
         return SiteReading(
             title=heading,
             text="\n".join([heading, _spellbook_source, "", *rendered[1]]),
+            cards=tuple(_spellbook_uses(payload)),
         )
 
     if not parts.path.rstrip("/").endswith("/search"):
@@ -456,22 +499,35 @@ def _spellbook(parts: Any, get: Getter) -> SiteReading:
         raise AdapterMiss
     heading = f'Commander Spellbook — combos matching "{query}"'
     lines = [heading, _spellbook_source, ""]
+    used: list[str] = []
     for result in results:
         rendered = _spellbook_combo(result)
         if rendered is not None:
-            lines += [f"## {rendered[0]}"] + rendered[1] + [""]
-    return SiteReading(title=heading, text="\n".join(lines).rstrip())
+            lines += [f"## {rendered[0]}", *rendered[1], ""]
+            used += _spellbook_uses(result)
+    return SiteReading(
+        title=heading, text="\n".join(lines).rstrip(), cards=tuple(used)
+    )
+
+
+def _spellbook_uses(payload: Any) -> list[str]:
+    """The cards a combo is built from, which is the only card field it has."""
+
+    if not isinstance(payload, dict):
+        return []
+    return [
+        name
+        for one in (payload.get("uses") or [])
+        if isinstance(one, dict)
+        for name in [str((one.get("card") or {}).get("name") or "").strip()]
+        if name
+    ]
 
 
 def _spellbook_combo(payload: Any) -> tuple[str, list[str]] | None:
     if not isinstance(payload, dict):
         return None
-    used = [
-        str((one.get("card") or {}).get("name") or "").strip()
-        for one in (payload.get("uses") or [])
-        if isinstance(one, dict)
-    ]
-    used = [name for name in used if name]
+    used = _spellbook_uses(payload)
     if not used:
         return None
     lines = []
@@ -567,7 +623,106 @@ def _cedhstat(parts: Any, get: Getter) -> SiteReading:
         lines += ["", " · ".join(facts)]
     for section in _ordered_groups(sections, set()):
         lines += ["", *_card_block(section, sections[section], noted=False)]
-    return SiteReading(title=f"{name} | cEDHstat", text="\n".join(lines))
+    return SiteReading(
+        title=f"{name} | cEDHstat",
+        text="\n".join(lines),
+        cards=tuple(card for counts in sections.values() for card in counts),
+    )
+
+
+# -------------------------------------------------------------------------- YouTube
+
+
+_YOUTUBE_ID = re.compile(r"^[\w-]{6,20}$")
+# `shortDescription` is the full text; `og:description` is the same thing cut to about
+# 160 characters, so it is only the fallback.
+_YT_SHORT_DESCRIPTION = re.compile(r'"shortDescription":"((?:[^"\\]|\\.)*)"')
+_YT_OG_DESCRIPTION = re.compile(
+    r'<meta[^>]+property="og:description"[^>]+content="([^"]*)"'
+)
+
+
+def _youtube_id(parts: Any) -> str | None:
+    host = (parts.hostname or "").lower().removeprefix("www.").removeprefix("m.")
+    if host == "youtu.be":
+        candidate = parts.path.strip("/").split("/")[0]
+    elif host == "youtube.com":
+        segments = parts.path.strip("/").split("/")
+        if segments and segments[0] in ("shorts", "live", "embed") and len(segments) > 1:
+            candidate = segments[1]
+        else:
+            candidate = (parse_qs(parts.query).get("v") or [""])[0]
+    else:
+        return None
+    return candidate if _YOUTUBE_ID.match(candidate) else None
+
+
+def _youtube(parts: Any, get: Getter) -> SiteReading:
+    """Read what a video *says about itself*, since its page has no readable text.
+
+    YouTube is around 17% of everything a Magic search cites and a plain fetch of a
+    watch page returns its cookie footer with a `200` — a false success. There is no
+    transcript to be had without the private player API (`api/timedtext` now answers
+    `200` with an empty body), but the title, the channel and the description are all
+    public, and on a deck-tech video the description is routinely where the decklist
+    link lives. That is a lead, which is all the web is ever for here.
+    """
+
+    video = _youtube_id(parts)
+    if video is None:
+        raise AdapterMiss
+    # oEmbed is small, keyed on nothing, and gives a clean title and channel. It also
+    # 404s for a video that is gone or private, which is the cheapest way to find out.
+    facts = _json(get(f"https://www.youtube.com/oembed?url={quote(
+        f'https://www.youtube.com/watch?v={video}', safe='')}&format=json", _JSON))
+    title = str(facts.get("title") or "").strip() or f"YouTube video {video}"
+    channel = str(facts.get("author_name") or "").strip()
+
+    lines = [title, _provenance("YouTube's oEmbed record and the video's own page")]
+    if channel:
+        lines += ["", f"Channel: {channel}"]
+    description = _youtube_description(video, get)
+    if description:
+        lines += ["", "Description", description]
+    else:
+        lines += [
+            "",
+            "The description could not be read. There is no transcript either: this "
+            "reader runs no JavaScript, so what the video says is not available.",
+        ]
+    return SiteReading(title=f"{title} | YouTube", text="\n".join(lines))
+
+
+def _youtube_description(video: str, get: Getter) -> str:
+    """Pull the description out of the watch page, which is otherwise unreadable.
+
+    The page is around 1.3 MB and the description sits about 720 KB into it, so this
+    cannot be shortened by reading less. A failure here is not fatal — the title and
+    the channel already came from oEmbed and are worth returning on their own.
+    """
+
+    try:
+        body = get(f"https://www.youtube.com/watch?v={video}", _HTML)
+    except RuntimeError:
+        # The getter reports an unreadable URL as a `RuntimeError`; letting it out of
+        # here would lose the title and channel oEmbed already gave us, and drop the
+        # whole adapter — which for YouTube means falling back to the cookie footer.
+        return ""
+    page = body.decode("utf-8", errors="replace")
+    found = _YT_SHORT_DESCRIPTION.search(page)
+    if found is not None:
+        return _unescape_json_text(found.group(1)).strip()
+    fallback = _YT_OG_DESCRIPTION.search(page)
+    return unescape(fallback.group(1)).strip() if fallback else ""
+
+
+def _unescape_json_text(raw: str) -> str:
+    """Decode one JSON string body without parsing the megabyte around it."""
+
+    try:
+        return str(json.loads(f'"{raw}"'))
+    except ValueError:
+        return raw.replace("\\n", "\n").replace('\\"', '"').replace("\\/", "/")
 
 
 # ----------------------------------------------------------------------- dispatch
@@ -599,6 +754,9 @@ _ADAPTERS: Final[dict[str, Adapter]] = {
     "aetherhub.com": _aetherhub,
     "commanderspellbook.com": _spellbook,
     "cedhstat.com": _cedhstat,
+    "youtube.com": _youtube,
+    "m.youtube.com": _youtube,
+    "youtu.be": _youtube,
 }
 
 

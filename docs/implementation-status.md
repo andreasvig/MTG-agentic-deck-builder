@@ -235,7 +235,11 @@ not the intended end state.
     Commander Spellbook and cEDHstat are read through their own endpoints instead of
     their pages (ADR 0041), which is the difference between an exact decklist and, on
     MTGGoldfish, a deck page with no cards in it. Any miss falls back to the generic
-    read, so a site changing shape degrades rather than breaks.
+    read, so a site changing shape degrades rather than breaks. YouTube is read through
+    oEmbed and its description rather than refused outright. A fetched decklist's names
+    are checked against the local catalog and the misses are named, normalising
+    typographic punctuation first. `pytest -m live` checks every adapter against the
+    real endpoints; the default run excludes it.
   - Both web tools are advertised only when both can run, and every result they return
     ends by saying that nothing in it has been checked against the catalog. Sonar's
     reasoning is sound and its identifiers are not — deck counts wrong by up to 128x, a

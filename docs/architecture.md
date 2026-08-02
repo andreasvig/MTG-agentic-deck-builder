@@ -265,16 +265,27 @@ it answers `200` with its cookie footer, so a plain fetch looks like it worked a
 returns nothing.
 
 A known site is read through its own data first, via `providers/web_sites.py`, and the
-generic extraction above is what everything else gets.
+generic extraction above is what everything else gets. The renderer refusal runs after
+that dispatch, so an adapter can claim a host a plain fetch cannot read.
+
+An identical fetch is reused for `page_cache_seconds`. Pagination refetches by design, so
+without it a five-part page is five identical downloads; with it, the parts of one read
+come from one download and cannot disagree about where the boundaries are.
 
 ### `providers/web_sites.py`
 
-Seven adapters behind `read_page`, one per site, from ADR 0041. Each matches a host and
+Eight adapters behind `read_page`, one per site, from ADR 0041. Each matches a host and
 path, fetches the structured thing behind it and renders readable text: EDHREC's
 `json.edhrec.com` pages, Archidekt's deck API, MTGGoldfish's visual view — whose card
 names live in `img alt` attributes, which is exactly what an HTML-to-text extractor
 throws away — TappedOut's and Aetherhub's text exports, Commander Spellbook's variants
-API and cEDHstat's decklists.
+API, cEDHstat's decklists, and YouTube through oEmbed plus its watch page — where the
+description is routinely where a deck tech keeps its decklist link.
+
+Each adapter declares the card names it read from a card field, rather than those being
+parsed back out of its own rendering, and `read_page` names any the local catalog does
+not have. Names are normalised to the catalog's spelling first, because a site writes
+`Ashnod’s Altar` with a curly apostrophe and the catalog stores a straight one.
 
 This is deliberately not a tool of its own. The agent calls `read_page` with the URL it
 already has, and the same pagination applies to a rendered decklist as to prose.

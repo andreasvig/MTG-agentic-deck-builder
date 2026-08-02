@@ -309,6 +309,12 @@ class DeckAgentWebSettings(BaseModel):
     page_max_characters: Annotated[int, Field(ge=500, le=40000)] = 6000
     page_max_bytes: Annotated[int, Field(ge=10_000, le=10_000_000)] = 2_000_000
     page_timeout_seconds: Annotated[float, Field(gt=0, le=120)] = 20
+    # How long an identical fetch is reused. Pagination refetches by design — nothing
+    # is held between `read_page` calls — so without this, walking a five-part page is
+    # five identical downloads. It also makes the parts of one read come from one
+    # download, which is the only thing that could make their boundaries disagree.
+    # Short on purpose: this spans a read, it is not a store. Zero disables it.
+    page_cache_seconds: Annotated[float, Field(ge=0, le=3600)] = 120
     # Sent when reading a page. A blank or scripted user agent is refused by a good
     # share of the sites worth reading.
     page_user_agent: str = (

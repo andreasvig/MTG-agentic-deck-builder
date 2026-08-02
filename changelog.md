@@ -17,6 +17,18 @@ All notable changes to this project are documented here.
   found Sonar reliably right about mechanics and reliably wrong about identifiers: deck
   counts off by up to 128x, and a real card returned under a name one letter wrong
   (ADR 0040).
+- **YouTube, a fetch cache, and a catalog check on every fetched decklist.** `read_page`
+  now reads a YouTube video through oEmbed and its own description rather than refusing
+  it — 17% of what a Magic search cites is video, and on a deck tech the description is
+  where the decklist link lives. An identical fetch is reused for `page_cache_seconds`
+  (120 by default), which turns walking EDHREC's five-part Sol Ring page from five
+  identical 137 KB downloads into one and stops the parts of a read from disagreeing
+  about their own boundaries. And each adapter now declares the card names it read from
+  a card field, so `read_page` can name the ones the local catalog does not have —
+  normalising typographic punctuation first, without which *Ashnod's Altar* and
+  *Lim-Dûl's Vault* are both scored as fabrications. Search results mark which sources
+  can be read in full. `pytest -m live` checks every adapter against the real endpoints
+  and is excluded from the default run (ADR 0041).
 - **Seven deck sites are read through their own data rather than their pages.** EDHREC,
   Archidekt, MTGGoldfish, TappedOut, Aetherhub, Commander Spellbook and cEDHstat now go
   through adapters behind `read_page` — not a new tool, so the agent keeps calling

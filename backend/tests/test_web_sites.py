@@ -13,7 +13,7 @@ from typing import Any
 
 import pytest
 
-from mtg_deck_builder.providers.web_page import WebPageFetcher
+from mtg_deck_builder.providers.web_page import WebPageFetcher, WebPageUnavailable
 from mtg_deck_builder.providers.web_sites import known_hosts
 
 
@@ -76,6 +76,8 @@ def make_fetcher(
     resolve: Any = public_resolve,
     max_characters: int = 6000,
     max_bytes: int = 2_000_000,
+    cache_seconds: float = 0.0,
+    clock: Any = None,
 ) -> tuple[WebPageFetcher, Server]:
     server = Server(routes)
     fetcher = WebPageFetcher(
@@ -83,8 +85,10 @@ def make_fetcher(
         max_characters=max_characters,
         max_bytes=max_bytes,
         user_agent="test-agent",
+        cache_seconds=cache_seconds,
         open_url=server.open_url,
         resolve=resolve,
+        **({} if clock is None else {"clock": clock}),
     )
     return fetcher, server
 
@@ -651,3 +655,198 @@ def test_a_generic_read_keeps_the_unqualified_caution() -> None:
 
     assert not page.from_site_data
     assert "numbers from the web are often wrong" in rendered
+
+
+# ---------------------------------------------------------------------- the cache
+
+
+def test_walking_a_document_downloads_it_once() -> None:
+    """Pagination refetches by design, which without a cache makes reading a five-part
+    page five identical downloads of the same megabyte."""
+
+    payload = archidekt_payload()
+    payload["cards"] = [
+        {
+            "quantity": 1,
+            "categories": ["Creature"],
+            "card": {"oracleCard": {"name": f"Frog Number {index:03d}"}},
+        }
+        for index in range(120)
+    ]
+    fetcher, server = make_fetcher(
+        {ARCHIDEKT_API: as_json(payload)}, max_characters=400, cache_seconds=60
+    )
+
+    first = read(fetcher, "https://archidekt.com/decks/4444516/")
+    for number in range(1, first.total_pages + 1):
+        read(fetcher, "https://archidekt.com/decks/4444516/", number)
+
+    assert first.total_pages > 3
+    assert server.requested.count(ARCHIDEKT_API) == 1
+
+
+def test_a_fetch_older_than_the_window_is_made_again() -> None:
+    """Short on purpose: this spans one read, it is not a store, so a later read must
+    see a page that has since changed."""
+
+    # Settable rather than a list of readings, so the test says *when* it is without
+    # depending on how many times the clock happens to be consulted.
+    now = [0.0]
+    fetcher, server = make_fetcher(
+        {ARCHIDEKT_API: as_json(archidekt_payload())},
+        cache_seconds=60,
+        clock=lambda: now[0],
+    )
+
+    read(fetcher, "https://archidekt.com/decks/4444516/")
+    read(fetcher, "https://archidekt.com/decks/4444516/")
+    assert server.requested.count(ARCHIDEKT_API) == 1
+
+    now[0] = 100.0
+    read(fetcher, "https://archidekt.com/decks/4444516/")
+
+    assert server.requested.count(ARCHIDEKT_API) == 2
+
+
+def test_the_cache_is_off_when_the_window_is_zero() -> None:
+    fetcher, server = make_fetcher(
+        {ARCHIDEKT_API: as_json(archidekt_payload())}, cache_seconds=0
+    )
+
+    read(fetcher, "https://archidekt.com/decks/4444516/")
+    read(fetcher, "https://archidekt.com/decks/4444516/")
+
+    assert server.requested.count(ARCHIDEKT_API) == 2
+
+
+# --------------------------------------------------------------------- YouTube
+
+
+YT_OEMBED = (
+    "https://www.youtube.com/oembed?url=https%3A%2F%2Fwww.youtube.com%2Fwatch%3F"
+    "v%3DAEzHw3tmZv4&format=json"
+)
+YT_WATCH = "https://www.youtube.com/watch?v=AEzHw3tmZv4"
+YT_FACTS = {"title": "3 Strongest 50€ Budget Commander Decks", "author_name": "Commander Baumi"}
+# The description lives about 720 KB into a 1.3 MB page, as an escaped JSON string.
+YT_PAGE = (
+    b'<html><body><script>var x = {"shortDescription":'
+    b'"Magda: https://archidekt.com/decks/1\\nKutzil: https://archidekt.com/decks/2"}'
+    b"</script></body></html>"
+)
+
+
+def test_a_youtube_video_yields_its_title_channel_and_description() -> None:
+    """YouTube is around 17% of everything a Magic search cites and a plain fetch of a
+    watch page returns its cookie footer with a 200. On a deck tech the description is
+    routinely where the decklist link is."""
+
+    fetcher, _ = make_fetcher(
+        {YT_OEMBED: as_json(YT_FACTS), YT_WATCH: StubResponse(YT_PAGE)}
+    )
+
+    page = read(fetcher, YT_WATCH)
+
+    assert "Channel: Commander Baumi" in page.text
+    assert "Magda: https://archidekt.com/decks/1" in page.text
+    # The escaped newline has to survive as a newline, or the links run together.
+    assert "\nKutzil:" in page.text
+
+
+def test_a_youtube_video_still_reads_when_only_the_description_fails() -> None:
+    """oEmbed already answered. Dropping the whole adapter over the second request
+    would fall through to the cookie footer, which reads as a successful empty page."""
+
+    fetcher, _ = make_fetcher({YT_OEMBED: as_json(YT_FACTS)})
+
+    page = read(fetcher, YT_WATCH)
+
+    assert "Commander Baumi" in page.text
+    assert "no transcript either" in page.text
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://youtu.be/AEzHw3tmZv4",
+        "https://m.youtube.com/watch?v=AEzHw3tmZv4",
+        "https://www.youtube.com/shorts/AEzHw3tmZv4",
+    ],
+)
+def test_every_shape_of_youtube_link_finds_the_same_video(url: str) -> None:
+    fetcher, _ = make_fetcher({YT_OEMBED: as_json(YT_FACTS)})
+
+    assert "Commander Baumi" in read(fetcher, url).text
+
+
+def test_a_youtube_url_that_is_not_a_video_is_refused_not_fetched() -> None:
+    """The refusal runs after the adapters so a watch URL can be read, which means a
+    channel page must still reach it — otherwise a 200 of cookie footer looks like a
+    result."""
+
+    fetcher, server = make_fetcher({})
+
+    with pytest.raises(WebPageUnavailable, match="builds its pages in the browser"):
+        read(fetcher, "https://www.youtube.com/@CommanderBaumi")
+    assert server.requested == []
+
+
+# ------------------------------------------------- the cards an adapter declares
+
+
+def test_an_adapter_declares_its_card_names_rather_than_them_being_reparsed() -> None:
+    """Re-reading the rendering would need another extractor over prose, and a total
+    line like `100 cards · by Vader94` parses as a card called "cards · by Vader94"."""
+
+    fetcher, _ = make_fetcher({ARCHIDEKT_API: as_json(archidekt_payload())})
+
+    page = read(fetcher, "https://archidekt.com/decks/4444516/")
+
+    assert set(page.card_names) == {
+        "Forest", "Sol Ring", "Grolnok, the Omnivore", "Thassa's Oracle",
+    }
+    assert not any(name == "cards" for name in page.card_names)
+    assert not any("·" in name for name in page.card_names)
+
+
+def test_the_declared_names_are_narrowed_to_the_part_being_read() -> None:
+    payload = archidekt_payload()
+    payload["cards"] = [
+        {
+            "quantity": 1,
+            "categories": ["Creature"],
+            "card": {"oracleCard": {"name": f"Frog Number {index:03d}"}},
+        }
+        for index in range(120)
+    ]
+    fetcher, _ = make_fetcher({ARCHIDEKT_API: as_json(payload)}, max_characters=400)
+
+    first = read(fetcher, "https://archidekt.com/decks/4444516/")
+
+    assert first.total_pages > 1
+    assert 0 < len(first.card_names) < 120
+    assert all(name in first.text for name in first.card_names)
+
+
+def test_a_generic_read_declares_no_card_names_at_all() -> None:
+    body = b"<html><body><p>1 Sol Ring is a good card.</p></body></html>"
+    fetcher, _ = make_fetcher({"https://example.com/p": StubResponse(body)})
+
+    assert read(fetcher, "https://example.com/p").card_names == ()
+
+
+def test_a_line_without_a_quantity_is_not_declared_as_a_card() -> None:
+    """Defensive rather than observed: the two live exports checked carry a quantity on
+    every line. But a bare word would be split for a name that is not there, and a
+    board label is not a card even when one turns up between two that are."""
+
+    mixed = b"1 Sol Ring\nSideboard\n8 Forest\n"
+    url = "https://tappedout.net/mtg-decks/mixed/?fmt=txt"
+    fetcher, _ = make_fetcher({url: StubResponse(mixed, "text/plain")})
+
+    page = read(fetcher, "https://tappedout.net/mtg-decks/mixed/")
+
+    assert set(page.card_names) == {"Sol Ring", "Forest"}
+    # Still shown, because dropping a line from a decklist is worse than a stray word.
+    assert "Sideboard" in page.text
+    assert "9 cards" in page.text

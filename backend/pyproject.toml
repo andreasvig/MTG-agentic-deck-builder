@@ -30,8 +30,16 @@ dev = [
 packages = ["src/mtg_deck_builder"]
 
 [tool.pytest.ini_options]
-addopts = ["-ra", "--strict-config", "--strict-markers"]
+addopts = ["-ra", "--strict-config", "--strict-markers", "-m", "not live"]
 testpaths = ["tests"]
+markers = [
+  # Contract checks against the real third-party endpoints the site adapters read.
+  # Excluded by default: they need the network and can fail for reasons that are not
+  # this repository's fault. Run them with `pytest -m live` after touching an adapter,
+  # because every other test in the suite stubs the transport and so cannot notice a
+  # site changing shape underneath us.
+  "live: talks to a real third-party endpoint",
+]
 
 [tool.ruff]
 line-length = 100
