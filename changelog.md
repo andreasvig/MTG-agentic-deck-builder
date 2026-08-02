@@ -6,6 +6,32 @@ All notable changes to this project are documented here.
 
 ### Added
 
+- **Escape cancels the turn the deck agent is working on.** From anywhere in the panel,
+  not only the composer, because a waiting user rarely sits in the textarea — and
+  sending now keeps the focus there, which it did not: clicking Send disables the button
+  clicked, a disabled element cannot hold focus, and the browser dropped it outside the
+  panel where the key reached nothing. A question cancelled within ten seconds goes back
+  to the composer to be edited, and out of the transcript so sending again does not ask
+  it twice. Two exceptions, and only one of them is the clock: a turn that has already
+  changed the deck keeps its question however fast the cancel, because it is the only
+  thing on screen saying why the deck is different.
+
+- **The visual board stacks, and a card can be carried into the chat.** Each card is
+  overlapped by the one below it so all that shows is the band across its top that the
+  card prints its own name and mana cost on, and the card under the pointer opens by
+  pushing the rest of the column down. A land column is now readable at once instead of
+  thirty pictures deep. Which card is open is not state: the pull-up is a percentage
+  margin, which resolves against the column's *width* and is therefore the only way a
+  card's aspect-ratio height is expressible in CSS, and the opening is `:hover +` /
+  `:focus-within +`. Nothing the application draws sits on that band — the count is a
+  badge outside the top-left corner, any warning outside the top-right, and the quantity
+  controls and price are a row *beneath* the open card. A card is picked up by its own
+  art, and the drag means two things depending on where it is let go: dropped on a group
+  it moves there, dropped anywhere on the agent panel it puts the card's name in the
+  composer at the caret, spaced against the words either side of it. And hovering a card
+  the agent named now shows its EUR estimate under the picture — the one number the agent
+  is instructed never to repeat out of a web summary (ADR 0042).
+
 - **The deck agent can reach the open web.** `search_web` runs one Perplexity `sonar`
   search and returns its prose with the citations numbered beneath it in Sonar's own
   order, because its inline markers cite positionally. `read_page` fetches one of those
@@ -357,6 +383,27 @@ All notable changes to this project are documented here.
 
 ### Changed
 
+- **The deck agent is told it has no tools on its last pass, and gets fifteen rounds
+  instead of four.** The final completion of a turn advertises no tools so the turn
+  always ends in prose — but taking the toolbox away silently is not an instruction to
+  answer, and what the model did instead was write the call it wanted into the answer:
+  `to=search_local_cards` followed by an arguments object, which is its own routing
+  syntax with the provider's special tokens stripped. Measured against
+  `openai/gpt-5.6-luna`: 5 of 5 forced final passes leaked, 0 of 3 once the pass carried
+  one sentence saying there are no tools left, while the same conversation *with* tools
+  advertised was clean 4 of 4. The leaks also burned three to seven times the completion
+  tokens of the answers that replaced them. Should one arrive anyway, it is now a
+  contract error rather than an answer, on the same footing as a reply with no content
+  at all (ADR 0029).
+
+- **A card on the visual board has no drag handle: it is dragged by its own art.** The
+  handle used to sit over the card, which on a stacked card means over the one band of it
+  that is always on screen — the band the card prints its name across. The cost is worth
+  stating: the visual board's drag is now the browser's own, and a native drag has no
+  keyboard equivalent, so moving a card between groups without a pointer is the list
+  view's job or the inspector's placement control. Both were already the keyboard path to
+  the command zone.
+
 - Replaced the deck editor's thirty-step in-memory undo stack with the durable diff log.
   Undo now inverts the last recorded entry and applies it instead of restoring a whole
   deck snapshot, which is why it survives a reload. The trade is honest and worth knowing:
@@ -442,6 +489,12 @@ All notable changes to this project are documented here.
   deck assistant.
 
 ### Fixed
+
+- **A card with no image no longer breaks its column.** The art box carries the 488 × 680
+  ratio itself rather than inheriting it from the picture, so a printing the catalog has no
+  art for holds its height instead of collapsing to the placeholder's while the pull-up
+  still subtracts a whole card — which used to haul every later card in that column up out
+  of it.
 
 - Fixed a crash that took the whole deck board down for a deck holding a card with no
   cached details. `getCardPrice` dereferenced `card.prices` with no guard, and the

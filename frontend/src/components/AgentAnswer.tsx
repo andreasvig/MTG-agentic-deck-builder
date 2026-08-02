@@ -4,6 +4,7 @@ import { createPortal } from "react-dom";
 import type { DeckAgentCardLink } from "../domain/agent";
 import { parseAgentText, type AgentTextToken } from "../domain/agentText";
 import type { CardSearchResult } from "../domain/card";
+import { formatEuro, getCardPrice } from "../domain/card";
 import { apiClient, type ApiClient } from "../lib/api";
 import { CardArt } from "./CardArt";
 import { CardSymbolIcon } from "./CardText";
@@ -12,7 +13,14 @@ import { CardSymbolIcon } from "./CardText";
 const PREVIEW_GAP = 12;
 const PREVIEW_MARGIN = 8;
 const PREVIEW_WIDTH = 244;
-const PREVIEW_HEIGHT = 340;
+/**
+ * The art at this width — 244 × 680 / 488 — plus the price line under it.
+ *
+ * It is only ever used to keep the preview on screen, so it has to include everything
+ * the preview draws: sized to the art alone, a preview near the bottom of the window
+ * would be placed legally and then have its price pushed off the edge.
+ */
+const PREVIEW_HEIGHT = 340 + 21;
 
 interface AgentAnswerProps {
   text: string;
@@ -225,6 +233,17 @@ function CardPreview({
       }}
     >
       <CardArt card={card} size="normal" loading="eager" />
+      {/*
+        * What the card costs, under the picture of it. The agent is asked never to
+        * repeat a price out of a web summary, so the one number it may not say is the
+        * one the reader most often wants — and it is already on the card the hover
+        * fetched. Labelled as the catalog labels it everywhere else, an estimate, and
+        * showing an em dash rather than €0.00 for a printing that has no EUR price.
+        */}
+      <p className="deck-agent__card-price">
+        <span>EUR estimate</span>
+        <strong>{formatEuro(getCardPrice(card), "—")}</strong>
+      </p>
     </div>,
     document.body,
   );

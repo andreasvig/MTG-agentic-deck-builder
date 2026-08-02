@@ -24,6 +24,8 @@ import { type ReactNode, useMemo, useState } from "react";
 
 import type { CardSearchResult } from "../domain/card";
 import {
+  CARD_MOVE_DRAG_TYPE,
+  CARD_NAME_DRAG_TYPE,
   formatEuro,
   getCardPrice,
   getKnownCardPrice,
@@ -157,12 +159,16 @@ export function DeckBoard({
     ) : (
       <div className="visual-groups" aria-label="Deck visual groups">
         {groups.map((cardGroup) => (
-          <DroppableVisualGroup group={cardGroup} key={cardGroup.id}>
+          <DroppableVisualGroup
+            group={cardGroup}
+            key={cardGroup.id}
+            onMove={onMove}
+          >
             <GroupHeader group={cardGroup} onSearch={onSearch} />
             {cardGroup.entries.length > 0 ? (
-              <div className="visual-card-grid">
+              <div className="deck-stack">
                 {cardGroup.entries.map((entry) => (
-                  <VisualCard
+                  <StackCard
                     entry={entry}
                     warning={warningCopy(
                       singletonWarnings.has(entry.card.oracle_id),
@@ -210,26 +216,96 @@ export function DeckBoard({
   );
 }
 
+/**
+ * A heading and its stack, and a drop target for a card dragged out of another one.
+ *
+ * Native, unlike the list's group below, because the card it accepts is dragged
+ * natively: a stacked card is picked up by its own art, and the browser turns that into
+ * a drag of its own before any library gets a pointer move to work with. The two sides
+ * meet at `CARD_MOVE_DRAG_TYPE` and nowhere else.
+ *
+ * `dragover` can see the *names* of the types on the drag but not their values, which is
+ * exactly enough: the group knows a card is coming and lights up, and only on the drop
+ * does it learn which card and where it came from.
+ */
 function DroppableVisualGroup({
   group,
+  onMove,
   children,
 }: {
   group: CardGroup;
+  onMove: (scryfallId: string, section: DeckSection) => void;
   children: ReactNode;
 }) {
-  const { isOver, setNodeRef } = useDroppable({
-    id: `group:${group.id}`,
-    data: { type: "group", section: group.section },
-  });
+  const [isOver, setIsOver] = useState(false);
   return (
     <section
-      ref={setNodeRef}
       className={`visual-group ${isOver ? "visual-group--over" : ""}`}
       data-group-id={group.id}
+      onDragOver={(event) => {
+        if (!event.dataTransfer.types.includes(CARD_MOVE_DRAG_TYPE)) {
+          return;
+        }
+        // Both, and in this order: without the `preventDefault` the browser refuses the
+        // drop no matter what the handler below would have done with it.
+        event.preventDefault();
+        event.dataTransfer.dropEffect = "move";
+        setIsOver(true);
+      }}
+      onDragLeave={(event) => {
+        // A drag crossing a card inside the group fires `dragleave` on the section too.
+        // The pointer has only really left when what it entered is outside.
+        if (event.currentTarget.contains(event.relatedTarget as Node | null)) {
+          return;
+        }
+        setIsOver(false);
+      }}
+      onDrop={(event) => {
+        const moved = readCardMove(event.dataTransfer.getData(CARD_MOVE_DRAG_TYPE));
+        if (!moved) {
+          return;
+        }
+        event.preventDefault();
+        setIsOver(false);
+        // A drop onto the section the card is already in is not a move. `moveCard`
+        // declines one anyway, so this is about not asking: dropping a creature back on
+        // `Creature` should not spend a history entry to say nothing.
+        if (moved.section !== group.section) {
+          onMove(moved.scryfallId, group.section);
+        }
+      }}
     >
       {children}
     </section>
   );
+}
+
+/**
+ * The move payload, back out of the drag.
+ *
+ * Anything can be dropped on a page, so this parses rather than trusts: a drag carrying
+ * this type but not this shape is treated as no card at all, and the drop falls through
+ * to the browser.
+ */
+function readCardMove(
+  payload: string,
+): { scryfallId: string; section: DeckSection } | null {
+  if (!payload) {
+    return null;
+  }
+  try {
+    const parsed: unknown = JSON.parse(payload);
+    if (typeof parsed !== "object" || parsed === null) {
+      return null;
+    }
+    const { scryfallId, section } = parsed as Record<string, unknown>;
+    if (typeof scryfallId !== "string" || !isDeckSection(section)) {
+      return null;
+    }
+    return { scryfallId, section };
+  } catch {
+    return null;
+  }
 }
 
 function DroppableListGroup({
@@ -256,7 +332,26 @@ function DroppableListGroup({
   );
 }
 
-function VisualCard({
+/**
+ * One card in a stacked column, showing its own printed top and nothing added over it.
+ *
+ * A card knows how to introduce itself: the name and the mana cost are printed across
+ * the top of every Magic card, in the same places on all of them, so the column reveals
+ * exactly that band of each card and lets the artwork below it be covered. Anything the
+ * application draws over that band — a strip repeating the name, a handle to grab —
+ * competes with the one part of the card that is always on screen. The count and any
+ * warning sit *outside* the corners for the same reason.
+ *
+ * The card is picked up by its art, and the drag means two things depending on where it
+ * is let go: dropped on a group it moves there, dropped on the chat it becomes a
+ * question about the card. One gesture, because the browser will not give a natively
+ * dragged element a second one.
+ *
+ * The opening is CSS, in `.deck-stack` — nothing here knows whether it is the hovered
+ * card. A card that opened by re-rendering would have to own which sibling is open, and
+ * every mouse move across a column would re-render the column.
+ */
+function StackCard({
   entry,
   warning,
   onSelect,
@@ -268,53 +363,75 @@ function VisualCard({
   onSetQuantity: (scryfallId: string, quantity: number) => void;
 }) {
   const card = entry.card.details;
-  const { attributes, isDragging, listeners, setNodeRef } = useDraggable({
-    id: `card:${entry.card.scryfall_id}`,
-    data: {
-      type: "card",
-      scryfallId: entry.card.scryfall_id,
-      // Read from the entry rather than from the group it is rendered under, so a drop
-      // compares the card's own placement against the target and never a heading's.
-      section: entry.section,
-    },
-  });
   if (!card) {
     return null;
   }
   return (
-    <article
-      ref={setNodeRef}
-      className={`deck-card ${isDragging ? "deck-card--dragging" : ""}`}
-    >
-      <button
-        className="deck-card__art"
-        type="button"
-        onClick={() => onSelect(card)}
-        aria-label={`Inspect ${card.name}`}
-      >
-        <CardArt card={card} />
-        {entry.quantity > 1 ? (
-          <span className="deck-card__quantity">{entry.quantity}×</span>
-        ) : null}
+    <article className="stack-card">
+      <div className="stack-card__art">
+        <button
+          className="stack-card__open"
+          type="button"
+          aria-label={`Inspect ${card.name}`}
+          onClick={() => onSelect(card)}
+          /*
+           * `draggable` sits on the button rather than on the image because the image is
+           * not always an image: a printing with no art renders as its name, and that
+           * card is exactly as draggable as any other.
+           */
+          draggable
+          onDragStart={(event) => {
+            event.dataTransfer.setData(CARD_NAME_DRAG_TYPE, card.name);
+            event.dataTransfer.setData(
+              CARD_MOVE_DRAG_TYPE,
+              JSON.stringify({
+                scryfallId: entry.card.scryfall_id,
+                // The entry's own section, not the group it is rendered under, so a drop
+                // compares the card's placement against the target and never a heading's.
+                section: entry.section,
+              }),
+            );
+            event.dataTransfer.setData("text/plain", card.name);
+            // Both, because where it lands decides which it was.
+            event.dataTransfer.effectAllowed = "copyMove";
+          }}
+        >
+          <CardArt card={card} />
+        </button>
+        {/*
+          * Outside the corner rather than inside it, and small. The band this sits on is
+          * the card's printed title, so a badge placed *in* it covers the first letters
+          * of a name — on the one card in the column whose name you were reading.
+          *
+          * Hidden from assistive technology, not because the count does not matter but
+          * because the `output` below announces it already. The eye needs it on a closed
+          * card because the count is the only thing the printing does not say; the ear
+          * does not need it twice on the same card.
+          */}
+        <span className="stack-card__count" aria-hidden="true">
+          {entry.quantity}
+        </span>
+        {/*
+          * The other corner, and unlike the count it is announced: a warning nobody can
+          * see until they hover is a warning about a card they had no reason to hover.
+          * Both badges are `pointer-events: none` in the stylesheet, so neither puts a
+          * dead spot on the corner of a card you are trying to pick up.
+          */}
         {warning ? (
-          <span className="deck-card__warning" title={warning.title}>
-            <AlertTriangle aria-label={warning.label} size={15} />
+          <span className="stack-card__warning" title={warning.title}>
+            <AlertTriangle aria-label={warning.label} size={11} />
           </span>
         ) : null}
-      </button>
-      <div className="deck-card__meta">
-        <button type="button" onClick={() => onSelect(card)}>
-          {card.name}
-        </button>
-        <span>{formatEuro(getCardPrice(card), "—")}</span>
       </div>
-      <div className="deck-card__actions">
+      {/*
+        * Under the card, not over it. Over the art these covered the bottom of the one
+        * card in the column that was open — the card you had just asked to see.
+        */}
+      <div className="stack-card__controls">
         <button
           type="button"
           aria-label={`Decrease ${card.name} quantity`}
-          onClick={() =>
-            onSetQuantity(card.scryfall_id, entry.quantity - 1)
-          }
+          onClick={() => onSetQuantity(card.scryfall_id, entry.quantity - 1)}
         >
           <Minus aria-hidden="true" size={14} />
         </button>
@@ -324,22 +441,13 @@ function VisualCard({
         <button
           type="button"
           aria-label={`Increase ${card.name} quantity`}
-          onClick={() =>
-            onSetQuantity(card.scryfall_id, entry.quantity + 1)
-          }
+          onClick={() => onSetQuantity(card.scryfall_id, entry.quantity + 1)}
         >
           <Plus aria-hidden="true" size={14} />
         </button>
-        <button
-          className="card-drag-handle"
-          type="button"
-          aria-label={`Drag ${card.name}`}
-          title="Move card"
-          {...attributes}
-          {...listeners}
-        >
-          <GripVertical aria-hidden="true" size={15} />
-        </button>
+        <span className="stack-card__price">
+          {formatEuro(getCardPrice(card) * entry.quantity, "—")}
+        </span>
       </div>
     </article>
   );

@@ -343,3 +343,29 @@ export function failedAgentSearchDebugSummary(): SearchDebugSummary {
     },
   };
 }
+
+/**
+ * A stand-in for the browser's `DataTransfer`, which jsdom does not implement.
+ *
+ * It carries the two things a card drag needs from the real one and nothing else: what
+ * `types` a drop target can read before the drop, and the payload it can read after. The
+ * same object travels from the `dragstart` to the `drop`, as it does in a browser, so a
+ * test that drops without a drag having set anything finds it empty — which is what a
+ * drag from somewhere else looks like.
+ */
+export function dataTransfer(seed: Record<string, string> = {}) {
+  const held = new Map(Object.entries(seed));
+  return {
+    dropEffect: "none",
+    effectAllowed: "none",
+    get types(): string[] {
+      return [...held.keys()];
+    },
+    setData(type: string, value: string): void {
+      held.set(type, value);
+    },
+    getData(type: string): string {
+      return held.get(type) ?? "";
+    },
+  };
+}

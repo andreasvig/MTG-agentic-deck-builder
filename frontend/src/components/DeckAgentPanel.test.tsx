@@ -1,4 +1,11 @@
-import { act, render, screen, waitFor } from "@testing-library/react";
+import {
+  act,
+  createEvent,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, expect, it, vi } from "vitest";
 
@@ -16,7 +23,8 @@ import {
   type ApiClient,
   type DeckAgentStreamHandlers,
 } from "../lib/api";
-import { solRing } from "../test/fixtures";
+import { CARD_NAME_DRAG_TYPE } from "../domain/card";
+import { dataTransfer, solRing } from "../test/fixtures";
 import { DeckAgentPanel } from "./DeckAgentPanel";
 
 /**
@@ -1211,4 +1219,181 @@ it("undoes the applied edit from the transcript, on the only block that can", as
       .closest(".deck-agent__edit")
       ?.querySelector("button"),
   ).not.toBeNull();
+});
+
+it("drops a dragged card's name in at the caret", async () => {
+  render(<DeckAgentPanel deckId="deck-a" client={client(vi.fn())} />);
+  const field = screen.getByLabelText("Message the deck agent");
+  await userEvent.type(field, "How does  fit?");
+  // Back to just after "does ", so the drop has somewhere to land that is not the end.
+  await userEvent.keyboard("{ArrowLeft>5/}");
+
+  const panel = screen.getByRole("region", { name: "Deck agent" });
+  const transfer = dataTransfer({ [CARD_NAME_DRAG_TYPE]: "Sol Ring" });
+  fireEvent.dragOver(panel, { dataTransfer: transfer });
+  // The composer says where the card is going to land while it is still in the air.
+  expect(
+    screen.getByPlaceholderText("Drop to add the card's name"),
+  ).toBeInTheDocument();
+
+  fireEvent.drop(panel, { dataTransfer: transfer });
+  expect(field).toHaveValue("How does Sol Ring fit?");
+  // Focused and positioned after the name, so the sentence can be finished by typing.
+  expect(field).toHaveFocus();
+  expect((field as HTMLTextAreaElement).selectionStart).toBe(
+    "How does Sol Ring".length,
+  );
+  expect(
+    screen.queryByPlaceholderText("Drop to add the card's name"),
+  ).not.toBeInTheDocument();
+});
+
+it("spaces a dropped name against the words either side of it", () => {
+  render(<DeckAgentPanel deckId="deck-a" client={client(vi.fn())} />);
+  const panel = screen.getByRole("region", { name: "Deck agent" });
+
+  // Nothing typed, so nothing to space against: the name arrives on its own.
+  fireEvent.drop(panel, {
+    dataTransfer: dataTransfer({ [CARD_NAME_DRAG_TYPE]: "Sol Ring" }),
+  });
+  expect(screen.getByLabelText("Message the deck agent")).toHaveValue("Sol Ring");
+
+  // A second card appends with one space, not two, and not none.
+  fireEvent.drop(panel, {
+    dataTransfer: dataTransfer({ [CARD_NAME_DRAG_TYPE]: "Mana Crypt" }),
+  });
+  expect(screen.getByLabelText("Message the deck agent")).toHaveValue(
+    "Sol Ring Mana Crypt",
+  );
+});
+
+it("leaves a drop that is not a card to the browser", () => {
+  render(<DeckAgentPanel deckId="deck-a" client={client(vi.fn())} />);
+  const panel = screen.getByRole("region", { name: "Deck agent" });
+
+  // Text dragged in from anywhere else: no highlight offered on the way over, and the
+  // draft untouched on the way down. The control for the test above — without it, a
+  // handler that took any drop at all would pass that one just as well.
+  const transfer = dataTransfer({ "text/plain": "https://example.com/deck" });
+  const dragOver = createEvent.dragOver(panel, { dataTransfer: transfer });
+  fireEvent(panel, dragOver);
+  expect(dragOver.defaultPrevented).toBe(false);
+  expect(
+    screen.queryByPlaceholderText("Drop to add the card's name"),
+  ).not.toBeInTheDocument();
+
+  const drop = createEvent.drop(panel, { dataTransfer: transfer });
+  fireEvent(panel, drop);
+  expect(drop.defaultPrevented).toBe(false);
+  expect(screen.getByLabelText("Message the deck agent")).toHaveValue("");
+});
+
+/** Send a question and leave the turn hanging, so a test can interrupt it. */
+async function askAndWait(stream: ReturnType<typeof drivenStream>, question: string) {
+  render(<DeckAgentPanel deckId="deck-a" client={client(stream.chat)} />);
+  await userEvent.type(screen.getByLabelText("Message the deck agent"), question);
+  await userEvent.click(screen.getByLabelText("Send message"));
+  await screen.findByRole("status");
+  return screen.getByRole("region", { name: "Deck agent" });
+}
+
+it("cancels a turn on Escape and hands the question back to be edited", async () => {
+  const stream = drivenStream();
+  const panel = await askAndWait(stream, "waht ramp shoud i add");
+  expect(screen.getByText("esc to cancel")).toBeInTheDocument();
+
+  // From a card the agent named rather than from the composer: the key belongs to the
+  // conversation, and the user may well have clicked away while waiting.
+  await act(async () => {
+    fireEvent.keyDown(panel, { key: "Escape" });
+  });
+
+  expect(screen.queryByText("Thinking…")).not.toBeInTheDocument();
+  // Back in the composer and *out* of the transcript. Both halves matter: a question
+  // left in both places is a question that gets asked twice by the next send.
+  const composer = screen.getByLabelText("Message the deck agent");
+  expect(composer).toHaveValue("waht ramp shoud i add");
+  expect(screen.queryByText("waht ramp shoud i add")).toBe(composer);
+  // Focused with the caret at the end, because it came back to be corrected.
+  expect(composer).toHaveFocus();
+  expect((composer as HTMLTextAreaElement).selectionStart).toBe(
+    "waht ramp shoud i add".length,
+  );
+
+  // And the turn really is abandoned: its answer never lands.
+  await stream.finish(reply("Add {Fellwar Stone}."));
+  expect(screen.queryByText("Add {Fellwar Stone}.")).not.toBeInTheDocument();
+});
+
+it("keeps the question in the transcript when the cancelled turn had already edited the deck", async () => {
+  const stream = drivenStream();
+  render(
+    <DeckAgentPanel
+      deckId="deck-a"
+      client={client(stream.chat)}
+      onDeckEdit={() => appliedSwap()}
+    />,
+  );
+  await userEvent.type(
+    screen.getByLabelText("Message the deck agent"),
+    "add a sol ring",
+  );
+  await userEvent.click(screen.getByLabelText("Send message"));
+  await screen.findByRole("status");
+
+  await stream.deckEdit(deckEdit());
+  await act(async () => {
+    fireEvent.keyDown(
+      screen.getByRole("region", { name: "Deck agent" }),
+      { key: "Escape" },
+    );
+  });
+
+  // The deck changed, so the question stays: it is the only thing on screen saying
+  // why. Withdrawing it would leave a changed deck nothing accounts for — and the
+  // speed of the cancel cannot make that untrue, which is why the window is not the
+  // only condition.
+  expect(screen.getByText("add a sol ring")).toBeInTheDocument();
+  expect(screen.getByLabelText("Message the deck agent")).toHaveValue("");
+  expect(screen.queryByText("Thinking…")).not.toBeInTheDocument();
+});
+
+it("cancels without handing back a question the user asked a while ago", async () => {
+  vi.useFakeTimers({ shouldAdvanceTime: true });
+  try {
+    const stream = drivenStream();
+    const panel = await askAndWait(stream, "what is my curve like");
+
+    // Long enough that this was a real question, abandoned — not a typo caught in the
+    // first breath. The transcript is where an asked question belongs, and sending
+    // again from there retries it.
+    await act(async () => {
+      vi.advanceTimersByTime(30_000);
+    });
+    await act(async () => {
+      fireEvent.keyDown(panel, { key: "Escape" });
+    });
+
+    expect(screen.queryByText("Thinking…")).not.toBeInTheDocument();
+    expect(screen.getByText("what is my curve like")).toBeInTheDocument();
+    expect(screen.getByLabelText("Message the deck agent")).toHaveValue("");
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+it("leaves Escape alone when no turn is in flight", async () => {
+  render(<DeckAgentPanel deckId="deck-a" client={client(vi.fn())} />);
+  const composer = screen.getByLabelText("Message the deck agent");
+  await userEvent.type(composer, "half a question");
+
+  // Nothing to interrupt, so nothing is: a draft is not cleared by a key that cancels
+  // a request, and the panel does not swallow Escape from whatever else might want it.
+  const escape = createEvent.keyDown(
+    screen.getByRole("region", { name: "Deck agent" }),
+    { key: "Escape" },
+  );
+  fireEvent(screen.getByRole("region", { name: "Deck agent" }), escape);
+  expect(escape.defaultPrevented).toBe(false);
+  expect(composer).toHaveValue("half a question");
 });

@@ -1,4 +1,11 @@
-import { render, screen, waitFor, within } from "@testing-library/react";
+import {
+  createEvent,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+  within,
+} from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { StrictMode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -12,9 +19,11 @@ import {
 } from "./domain/deck";
 import { DECK_HISTORY_STORAGE_KEY } from "./domain/history";
 import type { CardSearchResult } from "./domain/card";
+import { CARD_MOVE_DRAG_TYPE, CARD_NAME_DRAG_TYPE } from "./domain/card";
 import {
   cardSearchPage,
   counterspell,
+  dataTransfer,
   gamble,
   ghalta,
   solRing,
@@ -179,9 +188,11 @@ describe("deck workspace", () => {
     });
     // Drag is on in the only view there is, rather than only in a mode that no longer
     // exists — it is how a card reaches the command zone without opening the inspector.
+    // On the card itself: a stacked card has no handle, because the band a handle would
+    // have to sit on is the band the card prints its own name across.
     expect(
-      screen.getByRole("button", { name: "Drag Ghalta, Primal Hunger" }),
-    ).toHaveAttribute("aria-roledescription", "draggable");
+      screen.getByRole("button", { name: "Inspect Ghalta, Primal Hunger" }),
+    ).toHaveAttribute("draggable", "true");
 
     await user.click(screen.getByRole("button", { name: "Rename deck" }));
     const deckName = screen.getByRole("textbox", { name: "Deck name" });
@@ -1591,5 +1602,120 @@ describe("agent deck edits", () => {
 
     await user.click(restored[0]);
     expect(screen.queryByLabelText("1 Sol Ring in deck")).not.toBeInTheDocument();
+  });
+
+  it("stacks a card with nothing drawn over its printed top, and prices the copies", () => {
+    seedDeck({ cards: [{ ...deckEntry(solRing), quantity: 2 }] });
+    render(<App />);
+
+    const card = screen
+      .getByLabelText("2 Sol Ring in deck")
+      .closest("article") as HTMLElement;
+
+    // What a closed card shows is the card. Nothing the application draws repeats the
+    // name over it, and nothing sits on it to pick it up by — the two things that used
+    // to, a title strip and a drag grip, are what the printing already does itself.
+    //
+    // Asserted as the rendered forms rather than as the absence of a class: a strip is a
+    // button carrying the bare name, a grip is a button labelled for dragging.
+    expect(
+      screen.queryByRole("button", { name: "Sol Ring" }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Drag Sol Ring" }),
+    ).not.toBeInTheDocument();
+    expect(within(card).getByRole("img")).toHaveAttribute(
+      "alt",
+      "Sol Ring card",
+    );
+
+    // The count is the one thing the printing cannot say, so it stays — small, in the
+    // corner, and hidden from the reader that already hears it from the `output`.
+    expect(card.querySelector(".stack-card__count")).toHaveTextContent("2");
+
+    // Two copies at €1.10, priced as what is in the deck rather than as one card.
+    // Scoped to the card, because the group subtotal and the deck total both read €2.20
+    // in a deck this size and an unscoped match would be satisfied by either of them.
+    expect(within(card).getByText("€2.20")).toBeInTheDocument();
+  });
+
+  it("moves a card to another group when its art is dropped on that group", () => {
+    seedDeck({ cards: [deckEntry(ghalta)] });
+    const { container } = render(<App />);
+    expect(storedDeck().cards[0].section).toBe("mainboard");
+
+    // The same gesture as carrying a card to the chat, landing somewhere else. There is
+    // no handle to grab any more, so the card's own art is the only thing to drag, and
+    // what makes this a move rather than a question is only which target it is let go
+    // over — the board reads a different type off the drag than the chat does.
+    const transfer = dataTransfer();
+    fireEvent.dragStart(screen.getByRole("button", { name: "Inspect Ghalta, Primal Hunger" }), {
+      dataTransfer: transfer,
+    });
+    expect(JSON.parse(transfer.getData(CARD_MOVE_DRAG_TYPE))).toEqual({
+      scryfallId: ghalta.scryfall_id,
+      section: "mainboard",
+    });
+
+    const commandZone = container.querySelector(
+      '[data-group-id="command_zone"]',
+    ) as HTMLElement;
+    fireEvent.drop(commandZone, { dataTransfer: transfer });
+
+    expect(storedDeck().cards[0].section).toBe("command_zone");
+  });
+
+  it("leaves a drop that is not a card to the browser", () => {
+    seedDeck({ cards: [deckEntry(ghalta)] });
+    const { container } = render(<App />);
+    const commandZone = container.querySelector(
+      '[data-group-id="command_zone"]',
+    ) as HTMLElement;
+
+    // A group is a drop target on a page where anything can be dropped: a link out of
+    // another window, a run of selected text, a file. Refusing those is not enough —
+    // the drop has to be left *unprevented*, or the browser stops doing whatever it
+    // would have done with it and the page silently swallows the gesture.
+    for (const transfer of [
+      dataTransfer({ "text/plain": "https://example.com" }),
+      // Right type, wrong shape. Nothing stops another application from claiming a MIME
+      // type, so the payload is parsed rather than trusted.
+      dataTransfer({ [CARD_MOVE_DRAG_TYPE]: "{ not json" }),
+      dataTransfer({ [CARD_MOVE_DRAG_TYPE]: '{"scryfallId":"x","section":"nowhere"}' }),
+    ]) {
+      const dropped = createEvent.drop(commandZone, { dataTransfer: transfer });
+      fireEvent(commandZone, dropped);
+      expect(dropped.defaultPrevented).toBe(false);
+    }
+
+    expect(storedDeck().cards[0].section).toBe("mainboard");
+  });
+
+  it("puts a card's name in the agent's composer when its art is dropped there", () => {
+    seedDeck({ cards: [deckEntry(solRing), deckEntry(gamble)] });
+    render(<App />);
+
+    // The drag and the drop are two components that know nothing about each other, and
+    // the only thing between them is what the browser carries. Tested here, in the
+    // composition, because that carriage is the whole feature: either half alone passes
+    // a test that says nothing about whether a card can be dragged into a question.
+    const transfer = dataTransfer();
+    fireEvent.dragStart(
+      screen.getByRole("button", { name: "Inspect Sol Ring" }),
+      { dataTransfer: transfer },
+    );
+    expect(transfer.getData(CARD_NAME_DRAG_TYPE)).toBe("Sol Ring");
+    // Also as plain text, so dropping a card somewhere that has never heard of this
+    // application — another tab, a text editor — still yields the name.
+    expect(transfer.getData("text/plain")).toBe("Sol Ring");
+
+    fireEvent.drop(screen.getByRole("region", { name: "Deck agent" }), {
+      dataTransfer: transfer,
+    });
+    expect(screen.getByLabelText("Message the deck agent")).toHaveValue(
+      "Sol Ring",
+    );
+    // Dropped, not added: a card carried to the chat is a card being asked about.
+    expect(storedDeck().cards).toHaveLength(2);
   });
 });

@@ -402,9 +402,12 @@ The conversational deck agent. Trims the posted transcript to the configured mem
 window, keeping the newest end so the current question always survives, then runs a
 bounded tool loop: up to `agent.tools.max_iterations` rounds of asking, running
 whatever tools were requested, and asking again, followed by one completion that
-advertises no tools so the turn always ends in prose. It validates that content came
-back — a reasoning model can answer HTTP 200 with empty content beside a populated
-`reasoning` field, which is a contract error rather than an answer — and sums what
+advertises no tools — and carries `agent.tools.final_pass_instruction`, so that being
+out of rounds reads as an instruction to answer rather than as a toolbox that vanished.
+It validates that content came back — a reasoning model can answer HTTP 200 with empty
+content beside a populated `reasoning` field, and a model out of tools can answer with
+the tool call it wanted written out as prose; both are contract errors rather than
+answers — and sums what
 every completion in the turn cost, counting any that reported no figure. On a turn
 that asked for `debug`, each reported call also carries the arguments the model sent
 and the exact text the tool returned, taken from the call that ran rather than
@@ -665,10 +668,28 @@ when the round called a model, its cost.
 
 ### `components/DeckBoard.tsx`
 
-Visual/list rendering, grouping by derived card type under a permanent Command
+Stacked/list rendering, grouping by derived card type under a permanent Command
 zone heading, sorting, drag-and-drop, keyboard-accessible movement, and
 deck-card actions. Every group is a drop target carrying a `DeckSection`, so a
 drop is only ever a change of section (ADR 0037).
+
+The stacked view overlaps each card with the one below it so all that shows is
+the band the card prints its own name and mana cost across, and the card under
+the pointer opens by pushing the rest of the column down. Which card is open is
+not state: the pull-up is a percentage margin — which resolves against the
+column's *width*, the only way a card's aspect-ratio height is expressible in
+CSS — and the opening is `:hover +` / `:focus-within +`. A closed card's
+quantity controls are a row beneath it collapsed to no height rather than
+switched off, so they stay tab-reachable while being unhittable. Nothing is
+drawn over the printed band: the count and any warning are badges outside the
+top corners.
+
+A stacked card is dragged by its own art, and the same drag serves two targets.
+It carries the card's name for `DeckAgentPanel`, which drops it into the
+composer, and its id and section for the groups here, which are native drop
+targets in the stacked view and dnd-kit ones in the list. One gesture rather
+than two because a natively dragged element gets no pointer events for a second
+drag library to activate on (ADR 0042).
 
 ### `components/CardInspector.tsx`
 

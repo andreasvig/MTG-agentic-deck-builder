@@ -263,7 +263,12 @@ not the intended end state.
   and the exact text the tool returned. Both travel only for a turn whose request set
   `debug`, and an oversized payload is truncated with a visible marker (ADR 0030).
 - A bounded loop of `agent.tools.max_iterations` tool rounds followed by one
-  no-tools completion, so a turn always ends in an answer.
+  no-tools completion, so a turn always ends in an answer. That last pass is told it
+  has no tools as well as shown it, because a model out of rounds otherwise writes the
+  call it wanted into the answer as text (ADR 0029).
+- Escape abandons a turn in flight from anywhere in the agent panel, and hands the
+  question back to the composer to be edited when it is under ten seconds old and the
+  turn has not yet changed the deck.
 
 Missing:
 
@@ -313,8 +318,13 @@ Missing:
 - A permanent Command zone heading above groups derived from card type, which is the
   only grouping there is (ADR 0037).
 - Pointer, touch, and keyboard-accessible card movement between the command zone and
-  the deck, by drag or from the card inspector's placement control.
-- Visual stacks and dense list views.
+  the deck, by drag or from the card inspector's placement control. Keyboard movement is
+  the list view's handles and the inspector: the stacked view's drag is native, and a
+  native drag has no keyboard equivalent.
+- A stacked visual view — each card showing its own printed top, the hovered or focused
+  card opening by pushing the column down — and a dense list view (ADR 0042).
+- Dragging a card by its art moves it between groups, or puts its name in the agent's
+  composer at the caret if it is dropped on the chat.
 - Alphabetic, mana-value, and price sorting.
 - Deck, group, and selected-printing price totals.
 - Singleton warnings.

@@ -25,6 +25,8 @@ export interface DeckAgentChats {
   appendEntry: (deckId: string, entry: DeckAgentTranscriptEntry) => void;
   recordReply: (deckId: string, reply: RecordedReply) => void;
   setDraft: (deckId: string, draft: string) => void;
+  /** Take an unanswered question back out, by content. See the implementation. */
+  withdrawQuestion: (deckId: string, content: string) => void;
   clearChat: (deckId: string) => void;
 }
 
@@ -95,6 +97,39 @@ export function useDeckAgentChats(deckId: string): DeckAgentChats {
     });
   }, []);
 
+  /**
+   * Take an unanswered question back out of the transcript.
+   *
+   * For a turn the user cancelled before it got anywhere: the question goes back to
+   * the composer to be edited, and leaving a copy behind would put it in the
+   * transcript *and* in the draft, so sending again would ask it twice.
+   *
+   * It removes the last entry only when that entry is the question it was given, which
+   * is a contract rather than a race: today the panel clears what a cancel acts on
+   * before any reply is written, so nothing reaches this holding the wrong question.
+   * Named rather than positional so that stays true of the next caller.
+   */
+  const withdrawQuestion = useCallback((id: string, content: string) => {
+    setChats((current) => {
+      const chat = current[id];
+      const last = chat?.entries.at(-1);
+      if (!chat || !last || last.message.role !== "user") {
+        return current;
+      }
+      if (last.message.content !== content) {
+        return current;
+      }
+      return {
+        ...current,
+        [id]: {
+          ...chat,
+          entries: chat.entries.slice(0, -1),
+          updatedAt: new Date().toISOString(),
+        },
+      };
+    });
+  }, []);
+
   const clearChat = useCallback((id: string) => {
     setChats((current) =>
       Object.fromEntries(
@@ -108,6 +143,7 @@ export function useDeckAgentChats(deckId: string): DeckAgentChats {
     appendEntry,
     recordReply,
     setDraft,
+    withdrawQuestion,
     clearChat,
   };
 }

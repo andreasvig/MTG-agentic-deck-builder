@@ -59,7 +59,12 @@ The application currently supports:
 - Drag a card onto Command zone to make it the commander, and onto any card-type
   heading to put it back in the deck. The card inspector has the same control.
 - Group the deck by derived card type, which is the only grouping there is.
-- Switch between visual stacks and a dense list.
+- Switch between a stacked visual view and a dense list. In the stack each card shows
+  only its own printed top — its name and mana cost, as the card prints them — and the
+  one you point at or tab into opens, pushing the rest of the column down. Its copy count
+  is a badge outside the corner, and its price sits under it once it is open.
+- Drag a card by its art: onto a group to move it there, into the chat to put its name in
+  the composer. Hover a card the agent named to see its picture and its EUR estimate.
 - Sort by name, mana value, or price.
 - Step back, forward, and straight to any recorded diff from the History panel between
   the two buttons — including after a reload, because the position is stored with the log.
@@ -287,6 +292,11 @@ The inline trace viewer exposes:
   tool JSON.
 - What the round cost, beside its duration, taken from the provider's reported
   `usage.cost`. A local fuzzy search shows no figure because it called no model.
+
+**Escape abandons a turn** from anywhere in the agent panel. Cancel within ten seconds
+and the question comes back to the composer, out of the transcript, so it can be fixed
+and asked once — unless the turn has already changed the deck, in which case it stays
+where it is as the record of why.
 
 The deck agent panel shows the running cost of the current conversation in its
 header while debug mode is on. A turn that used tools paid for several model

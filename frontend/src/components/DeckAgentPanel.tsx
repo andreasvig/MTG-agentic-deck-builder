@@ -20,6 +20,7 @@ import type {
 } from "../domain/agent";
 import { formatModelCostUsd, isRefusedDeckEdit } from "../domain/agent";
 import type { CardSearchResult } from "../domain/card";
+import { CARD_NAME_DRAG_TYPE } from "../domain/card";
 import { useDeckAgentChats } from "../hooks/useDeckAgentChats";
 import { apiClient, type ApiClient } from "../lib/api";
 import { AgentAnswer } from "./AgentAnswer";
@@ -33,6 +34,29 @@ interface LiveTurn {
 }
 
 const NO_LIVE_TURN: LiveTurn = { text: "", toolCalls: [], appliedEdits: [] };
+
+/** A turn in flight, and what cancelling it is still allowed to undo. */
+interface InFlightTurn {
+  content: string;
+  deckId: string;
+  startedAt: number;
+  editApplied: boolean;
+}
+
+/**
+ * How long after sending a cancel still hands the question back to be edited.
+ *
+ * A cancel inside this is someone catching a typo or a wrong word before the answer
+ * lands, and the question they meant to ask is the one they are about to type. Later
+ * than this it is a question that was really asked and then abandoned, and its place
+ * is the transcript, where sending again retries it.
+ *
+ * Ten seconds rather than the two or three that "immediately" suggests, because at
+ * `xhigh` effort the first tool call can take that long on its own — a window shorter
+ * than the model's own latency would only ever be open before anything had happened,
+ * which is not the same thing as before the user had noticed.
+ */
+const WITHDRAW_WINDOW_MS = 10_000;
 
 interface DeckAgentPanelProps {
   client?: ApiClient;
@@ -111,12 +135,39 @@ export function DeckAgentPanel({
   undoableEditId = null,
   readDeckHistory,
 }: DeckAgentPanelProps) {
-  const { chat, appendEntry, recordReply, setDraft, clearChat } =
-    useDeckAgentChats(deckId);
+  const {
+    chat,
+    appendEntry,
+    recordReply,
+    setDraft,
+    withdrawQuestion,
+    clearChat,
+  } = useDeckAgentChats(deckId);
   const [pending, setPending] = useState(false);
   const [live, setLive] = useState<LiveTurn>(NO_LIVE_TURN);
   const [error, setError] = useState<string | null>(null);
+  /** A card is being dragged over the panel, so the composer says where it will land. */
+  const [cardOver, setCardOver] = useState(false);
+  /**
+   * Where the caret goes once something has written the draft for the user: a dropped
+   * card's name, or a question taken back off a cancelled turn.
+   *
+   * The textarea's value is controlled, so a selection set straight after `setDraft`
+   * would be set on the value that replaced and then thrown away by the render that
+   * follows. Held as state instead and applied by the effect below, which runs after the
+   * new value is in the DOM.
+   */
+  const [caretTarget, setCaretTarget] = useState<number | null>(null);
+  const composer = useRef<HTMLTextAreaElement | null>(null);
   const pendingRequest = useRef<AbortController | null>(null);
+  /**
+   * The question a turn in flight is answering, and what has happened to it so far.
+   *
+   * Kept so that cancelling can hand the question back rather than leaving the user to
+   * retype it. A ref because the canceller is a keystroke handler that must see the
+   * turn as it is *now*, not as it was when the handler was last rendered.
+   */
+  const inFlight = useRef<InFlightTurn | null>(null);
   /**
    * Which deck is open *now*, rather than which one a turn in flight was asked about.
    *
@@ -153,6 +204,78 @@ export function DeckAgentPanel({
     }
   }, [entries, live, pending]);
 
+  useEffect(() => {
+    if (caretTarget === null) {
+      return;
+    }
+    setCaretTarget(null);
+    const field = composer.current;
+    if (!field) {
+      return;
+    }
+    // Focused as well as positioned: a name dropped into a composer nobody is typing in
+    // leaves the user one keystroke from continuing the sentence, which is the whole
+    // point of dropping it there rather than clicking the card. A question handed back
+    // by a cancel is the same — it came back to be edited.
+    field.focus();
+    field.setSelectionRange(caretTarget, caretTarget);
+  }, [caretTarget]);
+
+  /**
+   * Put a dragged card's name in the draft, at the caret when there is one.
+   *
+   * Spaced on whichever sides need it, so dropping into the middle of a sentence reads
+   * as a word rather than joining the one beside it. The caret lands after the name.
+   */
+  const dropCardName = useCallback(
+    (name: string) => {
+      const field = composer.current;
+      const at =
+        field && document.activeElement === field
+          ? (field.selectionStart ?? draft.length)
+          : draft.length;
+      const before = draft.slice(0, at);
+      const after = draft.slice(at);
+      const lead = before && !/\s$/.test(before) ? " " : "";
+      const trail = after && !/^\s/.test(after) ? " " : "";
+      setDraft(deckId, `${before}${lead}${name}${trail}${after}`);
+      setCaretTarget(before.length + lead.length + name.length);
+    },
+    [deckId, draft, setDraft],
+  );
+
+  /**
+   * Abandon the turn in flight, and give the question back if it is still the user's
+   * to take back.
+   *
+   * Two conditions, and they are not the same condition. The window is what the user
+   * asked for and is about intent: a question cancelled in the first breath was a
+   * mistake being corrected, while one cancelled a minute in is a question that was
+   * genuinely asked and whose transcript entry is the record of asking it.
+   *
+   * The edit is the hard one. Once a turn has changed the deck, its question is the
+   * only thing on screen explaining why the deck is different, so withdrawing it would
+   * leave a change nothing accounts for. That holds however fast the user was.
+   */
+  const cancel = useCallback(() => {
+    const turn = inFlight.current;
+    pendingRequest.current?.abort();
+    pendingRequest.current = null;
+    inFlight.current = null;
+    setPending(false);
+    setLive(NO_LIVE_TURN);
+    setError(null);
+    if (!turn || turn.editApplied) {
+      return;
+    }
+    if (Date.now() - turn.startedAt > WITHDRAW_WINDOW_MS) {
+      return;
+    }
+    withdrawQuestion(turn.deckId, turn.content);
+    setDraft(turn.deckId, turn.content);
+    setCaretTarget(turn.content.length);
+  }, [setDraft, withdrawQuestion]);
+
   const resetChat = useCallback(() => {
     pendingRequest.current?.abort();
     pendingRequest.current = null;
@@ -187,12 +310,32 @@ export function DeckAgentPanel({
     const appliedEdits: DeckAgentAppliedEdit[] = [];
     const controller = new AbortController();
     pendingRequest.current = controller;
+    inFlight.current = {
+      content,
+      deckId: turnDeckId,
+      startedAt: Date.now(),
+      editApplied: false,
+    };
     appendEntry(turnDeckId, {
       message: { role: "user", content },
       toolCalls: [],
       cardLinks: [],
     });
     setDraft(turnDeckId, "");
+    /*
+     * Focus goes to the composer, and this is load-bearing rather than a nicety.
+     *
+     * Sending by *clicking* disables the button that was clicked, and a disabled
+     * element cannot hold focus: the browser drops it to `<body>`, outside this panel,
+     * where the Escape handler below never sees it. So the most ordinary way to send a
+     * question — type, click, change your mind — left the shortcut dead. Measured in a
+     * real browser; jsdom has no such rule and reported it working from every path.
+     *
+     * Unconditional because `send` has no caller from outside the panel: it runs on
+     * this form's submit, which is the button or Enter in the composer, and focus is
+     * already in here for both.
+     */
+    setCaretTarget(0);
     setPending(true);
     setLive(NO_LIVE_TURN);
     setError(null);
@@ -236,6 +379,11 @@ export function DeckAgentPanel({
               return;
             }
             appliedEdits.push(block);
+            // From here the question cannot be taken back, however fast the cancel:
+            // it is the only account of why this deck is now different.
+            if (inFlight.current) {
+              inFlight.current.editApplied = true;
+            }
             setLive((current) => ({
               ...current,
               appliedEdits: [...current.appliedEdits, block],
@@ -287,6 +435,7 @@ export function DeckAgentPanel({
     } finally {
       if (pendingRequest.current === controller) {
         pendingRequest.current = null;
+        inFlight.current = null;
         setPending(false);
         // The turn is committed — or failed — so the live copy has served its
         // purpose. Leaving it would show the answer twice.
@@ -313,7 +462,65 @@ export function DeckAgentPanel({
   }
 
   return (
-    <section className="deck-agent" aria-labelledby="deck-agent-heading">
+    <section
+      className={`deck-agent ${cardOver ? "deck-agent--card-over" : ""}`}
+      aria-labelledby="deck-agent-heading"
+      /*
+       * Escape abandons the turn in flight. On the panel rather than on the composer,
+       * because the key belongs to the conversation and not to the textarea: the user
+       * may well have tabbed to a card the agent named while waiting.
+       *
+       * Bubbled to, not captured: anything inside that has its own use for Escape — a
+       * dialog opened from a card link — handles it and stops it, and this never sees
+       * it. That is the right order. A key with two meanings should mean the innermost.
+       */
+      onKeyDown={(event) => {
+        if (event.key !== "Escape" || !pending) {
+          return;
+        }
+        event.preventDefault();
+        cancel();
+      }}
+      /*
+       * The whole panel takes the drop, and the composer is where it lands. A drag ends
+       * where the hand stops, not where the target is, so a zone the size of the panel
+       * is the difference between dropping a card and missing the textarea by 20px.
+       *
+       * Only a card, and only ever appended to the draft: a link or a run of text
+       * dragged in from elsewhere is left to the browser, which puts it where it was
+       * dropped or nowhere.
+       */
+      onDragOver={(event) => {
+        if (!event.dataTransfer.types.includes(CARD_NAME_DRAG_TYPE)) {
+          return;
+        }
+        // Both required, and for different reasons: without the default prevented the
+        // drop event never fires at all, and `copy` is what stops the cursor claiming
+        // the card is about to be moved out of the deck.
+        event.preventDefault();
+        event.dataTransfer.dropEffect = "copy";
+        setCardOver(true);
+      }}
+      onDragLeave={(event) => {
+        // Crossing into a child of the panel fires `dragleave` on the panel too, which
+        // would flicker the highlight off over every message in the transcript.
+        if (event.currentTarget.contains(event.relatedTarget as Node | null)) {
+          return;
+        }
+        setCardOver(false);
+      }}
+      onDrop={(event) => {
+        const name = event.dataTransfer.getData(CARD_NAME_DRAG_TYPE).trim();
+        setCardOver(false);
+        if (!name) {
+          return;
+        }
+        // Prevented only once there is a name to insert. A drop this panel is not going
+        // to act on is a drop the browser should still handle its own way.
+        event.preventDefault();
+        dropCardName(name);
+      }}
+    >
       <header className="deck-agent__header">
         <h2 id="deck-agent-heading">
           <Bot aria-hidden="true" size={15} />
@@ -453,6 +660,11 @@ export function DeckAgentPanel({
         {pending && !live.text ? (
           <p className="deck-agent__thinking" role="status">
             Thinking…
+            {/*
+              * Inside the status, so it is announced with it rather than being a
+              * shortcut only a sighted user is told about.
+              */}
+            <span className="deck-agent__interrupt">esc to cancel</span>
           </p>
         ) : null}
         {error ? (
@@ -470,8 +682,11 @@ export function DeckAgentPanel({
         }}
       >
         <textarea
+          ref={composer}
           aria-label="Message the deck agent"
-          placeholder="Ask the deck agent"
+          placeholder={
+            cardOver ? "Drop to add the card's name" : "Ask the deck agent"
+          }
           rows={2}
           maxLength={8_000}
           value={draft}

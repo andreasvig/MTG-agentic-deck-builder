@@ -193,9 +193,9 @@ async function dragTo(page: Page, source: Locator, target: Locator) {
   );
   await page.waitForTimeout(100);
   await page.mouse.up();
-  // dnd-kit suppresses the click that follows a pointer-up on a draggable node and drops
-  // that suppression a tick later, so without this the first click after any drag is
-  // swallowed — including a click on the card's own art, which sits inside the draggable.
+  // The list's handles are dnd-kit, which suppresses the click following a pointer-up on
+  // a draggable node and drops that suppression a tick later. Without this the first
+  // click after any drag is swallowed — including a click on the card's own art.
   await page.waitForTimeout(150);
 }
 
@@ -364,12 +364,13 @@ test("desktop deck-building flow remains fast and reversible", async ({
 
   // Drag is on in the only view there is, and the command zone is the one thing it can
   // mean. In a real browser, because jsdom computes no layout and a drop target with no
-  // geometry cannot be dropped on.
+  // geometry cannot be dropped on — and because this is a *native* drag now, dispatched
+  // by the browser off the card's own art rather than by a library off a handle.
   const commandZone = page.locator('[data-group-id="command_zone"]');
   const artifactGroup = page.locator('[data-group-id="type-Artifact"]');
   await dragTo(
     page,
-    page.getByRole("button", { name: "Drag Sol Ring" }),
+    page.getByRole("button", { name: "Inspect Sol Ring" }),
     commandZone,
   );
   await expect(
@@ -383,7 +384,7 @@ test("desktop deck-building flow remains fast and reversible", async ({
   // thing such a drop can mean.
   await dragTo(
     page,
-    page.getByRole("button", { name: "Drag Sol Ring" }),
+    page.getByRole("button", { name: "Inspect Sol Ring" }),
     page.locator('[data-group-id="type-Creature"]'),
   );
   await expect(
@@ -1405,7 +1406,7 @@ test("mobile keeps primary deck actions reachable and contained", async ({
   await mobileDeckName.press("Escape");
 
   const cardOptions = page.getByRole("button", {
-    name: "Drag Llanowar Elves",
+    name: "Inspect Llanowar Elves",
   });
   await expect(cardOptions).toBeVisible();
   // The groups are a horizontal scroll-snap track on mobile, and the Command zone heading
@@ -1653,4 +1654,218 @@ test("deck agent names cards, previews them on hover and opens them on click", a
     path: testInfo.outputPath("agent-card-opened.png"),
     fullPage: false,
   });
+});
+
+test("a stacked column shows each card's own printed top and opens the one under the pointer", async ({
+  page,
+}) => {
+  // In a real browser, because none of this exists in jsdom: the stack is a percentage
+  // margin resolved against the column's width, and jsdom computes no layout at all.
+  await clearDeck(page);
+  await page.addInitScript(
+    ([withArt, withoutArt]) => {
+      // Its own `details` per entry, named and identified to match. Sharing one object
+      // gave three cards the same name, and every label the component builds comes from
+      // `details` rather than from the entry around it.
+      const entry = (card: object, name: string, id: string) => ({
+        card: {
+          oracle_id: id,
+          scryfall_id: `p-${id}`,
+          name,
+          details: { ...card, name, oracle_id: id, scryfall_id: `p-${id}` },
+        },
+        quantity: 1,
+        section: "mainboard",
+      });
+      const deck = {
+        id: "stacked",
+        name: "Stacked",
+        format: "commander",
+        cards: [
+          entry(withArt, "Aaa Sol Ring", "o-a"),
+          // No image at all, which used to collapse the card and haul every later strip
+          // in the column up out of it — the box carries the aspect ratio, not the art.
+          entry(withoutArt, "Bbb No Art", "o-b"),
+          entry(withArt, "Ccc Sol Ring", "o-c"),
+          entry(withArt, "Ddd Sol Ring", "o-d"),
+        ],
+        created_at: "2026-01-01T00:00:00.000Z",
+        updated_at: "2026-01-01T00:00:00.000Z",
+      };
+      window.localStorage.setItem("manabase.active-deck.v1", JSON.stringify(deck));
+      window.localStorage.setItem(
+        "manabase.deck-library.v2",
+        JSON.stringify({ active_deck_id: "stacked", decks: [deck] }),
+      );
+    },
+    [
+      { ...solRing, name: "Aaa Sol Ring" },
+      { ...solRing, name: "Bbb No Art", image_uris: null, card_faces: [] },
+    ],
+  );
+  await page.goto("/");
+
+  const cards = page.locator(".stack-card");
+  await expect(cards).toHaveCount(4);
+  const gap = async (upper: number, lower: number) =>
+    (await cards.nth(lower).boundingBox())!.y -
+    (await cards.nth(upper).boundingBox())!.y;
+
+  // Every closed card shows the band across its top and nothing else, the one with no
+  // art included. Equal gaps are the whole claim: an unequal one means a card is showing
+  // more or less of itself than the pull-up above it subtracts.
+  const resting = [await gap(0, 1), await gap(1, 2), await gap(2, 3)];
+  expect(resting[0]).toBeCloseTo(resting[1], 0);
+  expect(resting[1]).toBeCloseTo(resting[2], 0);
+  expect(resting[0]).toBeLessThan(60);
+
+  /**
+   * Whether a pointer aimed at a point on an element would actually reach it.
+   *
+   * `toBeVisible` cannot answer this: the quantity controls are faded to nothing inside
+   * a row collapsed to no height, and an element clipped away still has a box of its
+   * own. What matters is what the browser hit-tests there.
+   *
+   * `at: "top"` aims at the band a closed card shows rather than at its centre, which on
+   * every card but the last one is underneath the card below it.
+   */
+  const pressable = (label: string, at: "centre" | "top" = "centre") =>
+    page.evaluate(
+      ({ aria, where }) => {
+        const button = document.querySelector<HTMLElement>(`[aria-label="${aria}"]`);
+        if (!button) return "missing";
+        const box = button.getBoundingClientRect();
+        const hit = document.elementFromPoint(
+          box.left + box.width / 2,
+          where === "top" ? box.top + 8 : box.top + box.height / 2,
+        );
+        return hit === button || button.contains(hit);
+      },
+      { aria: label, where: at },
+    );
+
+  // A closed card's quantity controls cannot be pressed by aiming where they would be.
+  //
+  // Both cards, and the last one is the one that matters. A covered card is protected by
+  // the card lying on top of it whatever the CSS does, so asserting only on the first
+  // card passes even with the clip removed — measured, as a mutation that deleted
+  // `overflow: hidden` and left this green. The last card in a column has nothing over
+  // it, so it is the only place the clip is the thing doing the work.
+  expect(await pressable("Increase Ddd Sol Ring quantity")).toBe(false);
+  expect(await pressable("Increase Aaa Sol Ring quantity")).toBe(false);
+
+  // The card itself is what gets picked up, and the band it shows while closed is enough
+  // to pick it up by — without that, a card could not be moved between groups until it
+  // had been opened, which is a two-step aim. This is the claim the drag handle used to
+  // carry, made against the card instead now that there is no handle.
+  expect(await pressable("Inspect Aaa Sol Ring", "top")).toBe(true);
+  expect(await pressable("Inspect Ddd Sol Ring", "top")).toBe(true);
+  expect(
+    await page
+      .locator('[aria-label="Inspect Aaa Sol Ring"]')
+      .getAttribute("draggable"),
+  ).toBe("true");
+
+  // The count badge clears the card's printed name. It is the only thing drawn on a
+  // closed card, and the band it sits beside is where the card writes its own title, so
+  // "small, in the corner" is a geometric claim: the badge ends inside the frame, before
+  // the leftmost place a printed name begins.
+  const badge = (await page
+    .locator(".stack-card")
+    .nth(3)
+    .locator(".stack-card__count")
+    .boundingBox())!;
+  const lastCard = (await cards.nth(3).boundingBox())!;
+  expect(badge.x + badge.width).toBeLessThan(lastCard.x + lastCard.width * 0.08);
+  expect(badge.y).toBeLessThan(lastCard.y);
+
+  // Hovering the second card's visible band opens it and pushes the rest of the column
+  // down. Polled rather than read once, because the margin and the controls are
+  // transitioned: sampled a frame after the event, every one of these reads mid-animation.
+  await cards.nth(1).hover({ position: { x: 30, y: 8 } });
+  await expect.poll(() => gap(1, 2)).toBeGreaterThan(resting[1] * 2);
+  await expect.poll(() => pressable("Increase Bbb No Art quantity")).toBe(true);
+  // …and only that one: the cards above it have not moved.
+  expect(await gap(0, 1)).toBeCloseTo(resting[0], 0);
+
+  // The controls are under the card, not over it. Measured against the art rather than
+  // against the card, because the card's own box is what grew to hold them: an overlay
+  // is inside the art it covers, and this has to be below its bottom edge.
+  const artBottom = (await page
+    .locator(".stack-card")
+    .nth(1)
+    .locator(".stack-card__art")
+    .boundingBox())!;
+  const controls = (await page
+    .locator('[aria-label="Increase Bbb No Art quantity"]')
+    .boundingBox())!;
+  expect(controls.y).toBeGreaterThanOrEqual(artBottom.y + artBottom.height - 1);
+
+  // Focus does the same, so tabbing into a column cannot land on a control nobody can
+  // see. This is why the controls collapse rather than being switched off.
+  // The third card, not the last one: what opening a card moves is the card *below* it,
+  // and the last card in a column has none — so focusing that one would prove nothing.
+  await page.locator('[aria-label="Increase Ccc Sol Ring quantity"]').focus();
+  await expect.poll(() => pressable("Increase Ccc Sol Ring quantity")).toBe(true);
+  await expect.poll(() => gap(2, 3)).toBeGreaterThan(resting[2] * 2);
+});
+
+test("escape cancels a turn and hands the question back to the composer", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await clearDeck(page);
+
+  // A turn that never answers, so the test decides when it ends. jsdom cannot judge
+  // any of what follows: a real keydown reaching a real focused element, and where
+  // the caret sits in a textarea the browser laid out.
+  let aborted = false;
+  // At page level: a route sitting in its handler is not told the client hung up, so
+  // the request object it holds never reports the failure. The page does.
+  page.on("requestfailed", (request) => {
+    if (request.url().includes("/agent/chat/stream")) {
+      aborted = true;
+    }
+  });
+  await page.route("**/api/v1/agent/chat/stream", async (route) => {
+    await new Promise((resolve) => setTimeout(resolve, 30_000));
+    await route.abort().catch(() => {});
+  });
+
+  await page.goto("/");
+  const panel = page.getByRole("region", { name: "Deck agent" });
+  const composer = panel.getByRole("textbox", { name: "Message the deck agent" });
+
+  await composer.fill("waht ramp shoud i add");
+  await panel.getByRole("button", { name: "Send message" }).click();
+  await expect(panel.getByText("Thinking…")).toBeVisible();
+  // The shortcut is offered where the waiting is, rather than being folklore.
+  await expect(panel.getByText("esc to cancel")).toBeVisible();
+  // In the transcript, out of the composer: the ordinary state of a sent question.
+  await expect(panel.locator(".deck-agent__message--user")).toContainText(
+    "waht ramp shoud i add",
+  );
+  await expect(composer).toHaveValue("");
+
+  // Sent by *clicking*, which is the path that broke: the click disables the button
+  // it landed on, a disabled element cannot hold focus, and the browser drops focus to
+  // `<body>` — outside the panel, where Escape reaches nothing. So sending keeps the
+  // panel focused, and this asserts that rather than assuming it.
+  await expect(composer).toBeFocused();
+  await page.keyboard.press("Escape");
+
+  await expect(panel.getByText("Thinking…")).toHaveCount(0);
+  await expect(composer).toHaveValue("waht ramp shoud i add");
+  await expect(panel.locator(".deck-agent__message--user")).toHaveCount(0);
+  // Focused with the caret at the end, so the typo is one keystroke from being fixed.
+  await expect(composer).toBeFocused();
+  expect(
+    await composer.evaluate((node) => (node as HTMLTextAreaElement).selectionStart),
+  ).toBe("waht ramp shoud i add".length);
+  // The request really was dropped rather than left running behind the panel.
+  await expect.poll(() => aborted).toBe(true);
+
+  // And it is genuinely editable: corrected and sent again as one question.
+  await composer.fill("what ramp should I add");
+  await expect(panel.getByRole("button", { name: "Send message" })).toBeEnabled();
 });

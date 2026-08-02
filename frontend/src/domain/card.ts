@@ -256,6 +256,28 @@ export interface SearchDebugTrace {
   result: Record<string, unknown>;
 }
 
+/**
+ * The drag payload a card's art carries: the card's name, nothing else.
+ *
+ * Its own type alongside `text/plain` so a drop can tell a card apart from any other
+ * text the browser will happily hand it — a selection out of the transcript, a link
+ * dragged in from another window. `types` is readable during `dragover` while
+ * `getData` is not, which is what makes a drop target able to say yes before the drop.
+ */
+export const CARD_NAME_DRAG_TYPE = "application/x-mtg-card-name";
+
+/**
+ * The second payload on the same drag: which card this is and where it currently sits,
+ * as JSON, for a drop that moves it rather than talks about it.
+ *
+ * One gesture carries both because a card can only have one. Picking a card up by its
+ * art is a native drag the moment the pointer moves, and a native drag stops the pointer
+ * events any second drag library would need — so the board and the chat cannot each own
+ * their own. They read different types off the same `DataTransfer` instead, and the
+ * target under the cursor decides which of the two the drag turned out to be.
+ */
+export const CARD_MOVE_DRAG_TYPE = "application/x-mtg-card-move";
+
 export function getCardImage(
   card: CardSearchResult,
   size: "small" | "normal" | "large" = "normal",

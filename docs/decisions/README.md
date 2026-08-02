@@ -56,7 +56,8 @@ tradeoffs; they are not task lists.
 | [0038](0038-history-is-a-cursor-the-deck-travels-along.md) | Accepted | History is a cursor: back, forward, and a jump to any recorded diff |
 | [0039](0039-deck-listing-extras-asked-for-not-sent.md) | Accepted | `read_deck` extras are asked for; the curve is a table, and cards carry costs and prices |
 | [0040](0040-web-research-through-sonar.md) | Accepted | `search_web` and `read_page` on Perplexity `sonar`; the catalog stays the authority |
-| [0041](0041-deck-sites-are-read-through-their-own-data.md) | Accepted | Seven deck sites read through their own endpoints behind `read_page`, never a second tool |
+| [0041](0041-deck-sites-are-read-through-their-own-data.md) | Accepted | Eight deck sites read through their own endpoints behind `read_page`, never a second tool |
+| [0042](0042-the-visual-board-is-a-stack.md) | Accepted | The visual board stacks, each card showing its own printed top; a card is dragged by its art |
 
 ## Updating Decisions
 

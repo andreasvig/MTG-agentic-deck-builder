@@ -133,4 +133,37 @@ describe("AgentAnswer", () => {
     expect(screen.queryByRole("tooltip")).toBeNull();
     expect(screen.getByRole("button", { name: "Sol Ring" })).toBeInTheDocument();
   });
+
+  it("prices the card under its picture, and says nothing rather than €0.00", async () => {
+    const user = userEvent.setup();
+    renderInStrictMode(
+      <AgentAnswer text="Play {Sol Ring}." links={LINKS} client={clientWith()} />,
+    );
+
+    await user.hover(screen.getByRole("button", { name: "Sol Ring" }));
+    const preview = await screen.findByRole("tooltip");
+    // Labelled as the catalog labels it, an estimate, and inside the preview rather
+    // than in the sentence: the price belongs to the card being looked at.
+    expect(preview).toHaveTextContent("EUR estimate");
+    expect(preview).toHaveTextContent("€1.10");
+  });
+
+  it("says nothing rather than €0.00 for a printing with no EUR price", async () => {
+    // `formatEuro` treats zero and missing alike, so absent has to be the thing it
+    // renders — a card priced at nothing reads as a card that is free.
+    const user = userEvent.setup();
+    const unpriced = { ...solRing, prices: { ...solRing.prices, eur: null } };
+    renderInStrictMode(
+      <AgentAnswer
+        text="Play {Sol Ring}."
+        links={LINKS}
+        client={clientWith(vi.fn().mockResolvedValue(unpriced))}
+      />,
+    );
+
+    await user.hover(screen.getByRole("button", { name: "Sol Ring" }));
+    const preview = await screen.findByRole("tooltip");
+    await waitFor(() => expect(preview).toHaveTextContent("—"));
+    expect(preview).not.toHaveTextContent("€0.00");
+  });
 });
