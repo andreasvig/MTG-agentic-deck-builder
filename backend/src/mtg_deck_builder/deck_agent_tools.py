@@ -1,4 +1,4 @@
-"""The deck agent's access to local card data: its five tools, and name resolution.
+"""The deck agent's access to its data: seven tools, and name resolution.
 
 `read_deck` and `read_history` are answered entirely from what the browser posted
 with the turn — the backend holds no deck and no history of one — while `see_cards`
@@ -19,6 +19,14 @@ user cannot see. Command-zone legality and group existence stay in
 `search_cards` is the search agent's own engine with the filters moved: the
 interface owns the immutable half for a panel search, and here the model owns all
 of it, commander included. Nothing in `agentic_card_search` changes for it.
+
+`search_web` and `read_page` are the only two tools that leave this machine, and the
+only two whose results are not authoritative. They exist for the question the catalog
+cannot answer — what people have built, argued about and written up — and they are
+advertised as a pair, because a search that produces links is half a tool without a
+way to follow them. Every result they return carries the same closing caution, since
+the measured failure mode is not bad reasoning but wrong identifiers; see
+`docs/decisions/0040-web-research-through-sonar.md`.
 
 Every tool result is compact text rather than JSON. The model reads it either way,
 and text costs a fraction of the tokens for a hundred-card deck.
@@ -72,13 +80,17 @@ from mtg_deck_builder.edhrec_catalog import (
     EdhrecCommanderService,
 )
 from mtg_deck_builder.providers.tool_schema import provider_tool_schema
+from mtg_deck_builder.providers.web_page import WebPageFetcher, WebPageUnavailable
 from mtg_deck_builder.tagger_catalog import SQLiteTaggerCatalog, TaggerCatalogUnavailable
+from mtg_deck_builder.web_search import WebSearchService, WebSearchUnavailable
 
 READ_DECK = "read_deck"
 SEE_CARDS = "see_cards"
 SEARCH_CARDS = "search_cards"
 EDIT_DECK = "edit_deck"
 READ_HISTORY = "read_history"
+SEARCH_WEB = "search_web"
+READ_PAGE = "read_page"
 
 # The type that names each card's section of the deck list. Order is precedence, not
 # display: a card is filed under the first type its type line mentions, so an
@@ -290,6 +302,42 @@ class ReadDeckArguments(DeckAgentModel):
     extra_info: list[DeckExtraInfo] = Field(default_factory=list)
 
 
+class SearchWebArguments(DeckAgentModel):
+    """One question for the open web, in the model's own words.
+
+    A question rather than keywords: Sonar searches on its own behalf and answers in
+    prose, so `best commander for a dredge deck` is a worse input than the sentence a
+    player would actually ask.
+    """
+
+    question: Annotated[
+        str,
+        StringConstraints(strip_whitespace=True, min_length=8, max_length=500),
+    ]
+
+
+class ReadPageArguments(DeckAgentModel):
+    """One page to read, named by a URL that came from somewhere real.
+
+    The URL bound is generous because decklist URLs carry long slugs and query strings,
+    and truncating one produces a 404 rather than a shorter page.
+
+    `page` walks a long document instead of losing its tail: each part ends by naming
+    the next, so reading on is another tool call rather than a truncation the reader
+    cannot do anything about. Nothing is held between calls — asking for part 2 fetches
+    the URL again and re-splits it — so the parts are only stable while the page is.
+    The ceiling is a runaway guard: at the configured part size it is far more text than
+    any turn could use, and a document longer than that is one the agent should be
+    searching rather than reading end to end.
+    """
+
+    url: Annotated[
+        str,
+        StringConstraints(strip_whitespace=True, min_length=8, max_length=2000),
+    ]
+    page: Annotated[int, Field(ge=1, le=100)] = 1
+
+
 class SeeCardsArguments(DeckAgentModel):
     """Which cards to look up, and how much to report about each."""
 
@@ -416,12 +464,16 @@ class DeckAgentToolbox:
         edhrec_service: EdhrecCommanderService | None,
         settings: DeckAgentToolSettings,
         local_tool: LocalCardSearchTool | None = None,
+        web_search: WebSearchService | None = None,
+        page_fetcher: WebPageFetcher | None = None,
     ) -> None:
         self._card_catalog = card_catalog
         self._tagger_catalog = tagger_catalog
         self._edhrec_service = edhrec_service
         self._settings = settings
         self._local_tool = local_tool
+        self._web_search = web_search
+        self._page_fetcher = page_fetcher
 
     @property
     def enabled(self) -> bool:
@@ -458,7 +510,9 @@ class DeckAgentToolbox:
         `search_cards` is advertised only when the shared search engine was wired
         in. An advertised tool that always fails costs the model an iteration and
         teaches it nothing, so a missing engine means a missing tool rather than a
-        broken one.
+        broken one. The two web tools follow the same rule and are advertised as a
+        pair: `search_web` exists to produce links and `read_page` exists to follow
+        them, so offering one without the other is offering half a workflow.
         """
 
         definitions = [
@@ -509,7 +563,38 @@ class DeckAgentToolbox:
                     },
                 }
             )
+        if self._web_enabled:
+            definitions.extend(
+                [
+                    {
+                        "type": "function",
+                        "function": {
+                            "name": SEARCH_WEB,
+                            "description": self._settings.search_web_description,
+                            "parameters": provider_tool_schema(SearchWebArguments),
+                        },
+                    },
+                    {
+                        "type": "function",
+                        "function": {
+                            "name": READ_PAGE,
+                            "description": self._settings.read_page_description,
+                            "parameters": provider_tool_schema(ReadPageArguments),
+                        },
+                    },
+                ]
+            )
         return definitions
+
+    @property
+    def _web_enabled(self) -> bool:
+        """Report whether both halves of web research can run."""
+
+        return (
+            self._web_search is not None
+            and self._web_search.enabled
+            and self._page_fetcher is not None
+        )
 
     async def run(
         self,
@@ -555,6 +640,14 @@ class DeckAgentToolbox:
                     ReadHistoryArguments.model_validate(arguments),
                     deck,
                     history,
+                )
+            if name == SEARCH_WEB:
+                return await self._search_web(
+                    SearchWebArguments.model_validate(arguments),
+                )
+            if name == READ_PAGE:
+                return await self._read_page(
+                    ReadPageArguments.model_validate(arguments),
                 )
         except ValidationError as exc:
             return ToolOutcome(
@@ -1432,6 +1525,39 @@ class DeckAgentToolbox:
         entries = await self._card_catalog.entries()
         return {entry.card.oracle_id: entry.card for entry in entries}
 
+    async def _search_web(self, arguments: SearchWebArguments) -> ToolOutcome:
+        """Ask Sonar one question, and hand back its answer with its sources."""
+
+        if self._web_search is None or not self._web_search.enabled:
+            raise DeckAgentToolError("Web search is unavailable.")
+        try:
+            answer = await self._web_search.search(arguments.question)
+        except WebSearchUnavailable as exc:
+            raise DeckAgentToolError(str(exc)) from exc
+        return ToolOutcome(
+            signature=_search_web_signature(arguments.question),
+            content="\n".join(_web_answer_lines(answer)),
+        )
+
+    async def _read_page(self, arguments: ReadPageArguments) -> ToolOutcome:
+        """Read one page as text, so a source can be checked rather than trusted."""
+
+        if self._page_fetcher is None:
+            raise DeckAgentToolError("Reading web pages is unavailable.")
+        try:
+            page = await self._page_fetcher.fetch(arguments.url, arguments.page)
+        except WebPageUnavailable as exc:
+            # The requested part number belongs on the failed line too: "there is no
+            # part 4" is unreadable next to a signature that does not say 4 was asked
+            # for.
+            raise DeckAgentToolError(str(exc)) from exc
+        return ToolOutcome(
+            signature=_read_page_signature(
+                arguments.url, page=page.page, total=page.total_pages
+            ),
+            content="\n".join(_page_lines(page)),
+        )
+
 
 def _as_uuid(value: str) -> UUID | None:
     try:
@@ -2281,6 +2407,119 @@ def _commander_legality(card: CardSearchResult) -> str:
     return str(legality) if legality is not None else "not reported."
 
 
+# What every web-search result ends with. This is not a politeness: the tier bake-off
+# found Sonar's prose reliably right about mechanics and reliably wrong about
+# identifiers — deck counts off by up to 128x, and a real card returned under an
+# invented name. The model cannot tell those apart by reading, so the boundary is
+# stated with the result rather than left to the system prompt alone.
+_WEB_CAUTION = (
+    "None of the above has been checked against the local catalog. Card names and "
+    "numbers from the web are often wrong even when the reasoning is sound, so look "
+    "up any card you mean to name with see_cards or search_cards before you use it."
+)
+
+# What a page read through a site's own data ends with instead. The blanket caution
+# above would be false here and the model would be right to distrust it: these counts
+# are the site's own, not a summary's restatement of them. The half that still holds is
+# the half about names, because a database spells cards its own way and the catalog is
+# still what the deck is built from.
+_SITE_DATA_CAUTION = (
+    "The above came from the site's own data, so its counts and its list are that "
+    "site's real figures rather than a summary of them. The names are still that "
+    "site's spelling: look up any card you mean to name with see_cards or "
+    "search_cards before you use it."
+)
+
+
+def _web_answer_lines(answer: Any) -> list[str]:
+    """Render one Sonar answer: its prose, its numbered sources, then the caution.
+
+    The sources are numbered from one in the order Sonar returned them, because its
+    prose cites them as `[1]`, `[2]` inline. Renumbering or sorting them would point
+    every one of those markers at the wrong page.
+    """
+
+    lines = [answer.summary]
+    if answer.sources:
+        lines.append("")
+        lines.append("Sources")
+        for index, source in enumerate(answer.sources, start=1):
+            title = source.title or "untitled"
+            lines.append(f"  [{index}] {title}")
+            lines.append(f"      {source.url}")
+        lines.append("")
+        lines.append(f"Call {READ_PAGE} with any of these URLs to read it yourself.")
+    else:
+        lines.append("")
+        lines.append("The search returned no sources, so none of this can be checked.")
+    lines.append("")
+    lines.append(_WEB_CAUTION)
+    return lines
+
+
+def _page_lines(page: Any) -> list[str]:
+    """Render one part of a page: what it was, its text, and the way to read on.
+
+    A long document is walked rather than cut off, so the last line of a part that has
+    a successor is the call that fetches it. Stated as the exact arguments to send,
+    because "there is more" without the way to get it is what truncation already was.
+    """
+
+    heading = page.title or "Untitled page"
+    if page.total_pages > 1:
+        heading = f"{heading} — part {page.page} of {page.total_pages}"
+    lines = [heading, page.url, "", page.text, ""]
+    if page.has_more_pages:
+        lines.append(
+            f"Part {page.page} of {page.total_pages} ends here. Call {READ_PAGE} again "
+            f'with the same url and page: {page.page + 1} to read on.'
+        )
+    elif page.total_pages > 1:
+        lines.append(f"That is the end of the page, {page.total_pages} parts in total.")
+    if page.truncated:
+        # A separate claim from having more parts: the download itself hit its cap, so
+        # the last part is not the end of the document either.
+        lines.append(
+            "The page was too large to fetch whole, so there is more of it that no "
+            "part will reach."
+        )
+    lines.append("")
+    lines.append(
+        _SITE_DATA_CAUTION if getattr(page, "from_site_data", False) else _WEB_CAUTION
+    )
+    return lines
+
+
+def _search_web_signature(question: str) -> str:
+    return _bounded(f"{SEARCH_WEB}({_elided(question)})")
+
+
+def _read_page_signature(
+    url: str,
+    *,
+    page: int | None = None,
+    total: int | None = None,
+) -> str:
+    """Name the page by its host and path, which is what a reader recognises.
+
+    The part number is shown only when there is more than one, so an ordinary read
+    stays a bare URL and a paginated one says where in the document this call landed.
+    """
+
+    trimmed = url.strip()
+    for prefix in ("https://", "http://"):
+        if trimmed.lower().startswith(prefix):
+            trimmed = trimmed[len(prefix) :]
+            break
+    named = _elided(trimmed.removeprefix("www."))
+    if total is not None and total > 1:
+        return _bounded(f"{READ_PAGE}({named} · part {page} of {total})")
+    if total is None and page is not None and page > 1:
+        # The failure path, where the fetch never reported a total.
+        return _bounded(f"{READ_PAGE}({named} · part {page})")
+    return _bounded(f"{READ_PAGE}({named})")
+
+
 def _signature(name: object, arguments: dict[str, Any]) -> str:
     if name == READ_DECK:
         # Built from the raw argument, because this is the path taken when validation
@@ -2309,6 +2548,25 @@ def _signature(name: object, arguments: dict[str, Any]) -> str:
             f"{READ_HISTORY}({limit} sessions)"
             if isinstance(limit, int)
             else f"{READ_HISTORY}(?)"
+        )
+    # Both web signatures are built from the raw argument, because this is the path
+    # taken when validation is what failed and the rejected text is the whole point.
+    if name == SEARCH_WEB:
+        question = arguments.get("question")
+        return (
+            _search_web_signature(question)
+            if isinstance(question, str) and question.strip()
+            else f"{SEARCH_WEB}(?)"
+        )
+    if name == READ_PAGE:
+        url = arguments.get("url")
+        asked = arguments.get("page")
+        return (
+            _read_page_signature(
+                url, page=asked if isinstance(asked, int) and not isinstance(asked, bool) else None
+            )
+            if isinstance(url, str) and url.strip()
+            else f"{READ_PAGE}(?)"
         )
     return _bounded(f"{name}(…)")
 

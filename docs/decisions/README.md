@@ -55,6 +55,8 @@ tradeoffs; they are not task lists.
 | [0037](0037-one-placement-axis-and-a-commander-the-agent-can-set.md) | Accepted | Custom groups removed; placement is a section, and the agent can set the commander |
 | [0038](0038-history-is-a-cursor-the-deck-travels-along.md) | Accepted | History is a cursor: back, forward, and a jump to any recorded diff |
 | [0039](0039-deck-listing-extras-asked-for-not-sent.md) | Accepted | `read_deck` extras are asked for; the curve is a table, and cards carry costs and prices |
+| [0040](0040-web-research-through-sonar.md) | Accepted | `search_web` and `read_page` on Perplexity `sonar`; the catalog stays the authority |
+| [0041](0041-deck-sites-are-read-through-their-own-data.md) | Accepted | Seven deck sites read through their own endpoints behind `read_page`, never a second tool |
 
 ## Updating Decisions
 

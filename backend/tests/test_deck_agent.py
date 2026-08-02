@@ -333,6 +333,72 @@ def test_settings_load_the_repository_agent_yaml() -> None:
         assert detail in settings.agent.tools.see_cards_description
 
 
+def test_the_prompt_keeps_the_web_on_the_other_side_of_the_catalog() -> None:
+    """The web tools are the only ones whose results are not authoritative.
+
+    The rule that guards this used to read "never recommend a card you have not seen
+    in a tool result this turn", which `search_web` quietly satisfies — its results
+    are tool results. If that sentence stops naming the local tools, the loophole is
+    back and the agent may recommend a card that only ever existed in a summary.
+    """
+
+    settings = Settings()
+    prompt = settings.agent.system_prompt
+
+    assert "# Using the web" in prompt
+    # The block scalar strips the indentation this file writes, so a heading in the
+    # loaded prompt is flush left. Splitting on the indented form matched nothing and
+    # silently made `section` the whole rest of the prompt.
+    section = prompt.split("# Using the web", 1)[1].split("\n# ", 1)[0]
+    assert 0 < len(section) < len(prompt) / 2
+    # The identifier failure is what the section exists for: names and numbers.
+    assert "see_cards` or `search_cards`" in section
+    assert "Never repeat a number from a *summary* as a fact." in section
+
+    # ADR 0041 carved out one exception: a `read_page` result rendered from a site's
+    # own database holds that site's real figures. The carve-out is only safe while it
+    # keys on the marker the model can actually see, and while it stops at numbers —
+    # a database's spelling of a card is still not the catalog's. Both halves are
+    # asserted on the sentence that grants it, not on the section around it.
+    granting = [line for line in section.splitlines() if '"Read from ' in line]
+    assert len(granting) == 1
+    assert "see_cards" in granting[0]
+
+    recommendation = next(
+        line for line in prompt.splitlines() if "Never recommend a card" in line
+    )
+    for local in ("read_deck", "see_cards", "search_cards"):
+        assert local in recommendation
+    assert "search_web" in recommendation
+
+    for tool in ("search_web", "read_page"):
+        assert tool in prompt
+    web = settings.agent.tools
+    assert "see_cards" in web.search_web_description
+    assert "JavaScript" in web.read_page_description
+
+
+def test_the_configured_sonar_tier_is_the_one_the_bake_off_chose() -> None:
+    """`sonar` was measured against every tier OpenRouter carries, in ADR 0040.
+
+    Pinned because the alternatives are not interchangeable: `sonar-pro-search` costs
+    roughly ten times as much per call, and `sonar-reasoning-pro` returned empty or
+    truncated bodies on about a third of calls. Either would be a real regression
+    arriving as a one-word config edit.
+    """
+
+    web = Settings().agent.tools.web
+
+    assert web.model == "perplexity/sonar"
+    assert web.enabled is True
+    assert web.max_sources >= 5
+    # The reader has to be able to fill its character budget from one fetch.
+    assert web.page_max_bytes > web.page_max_characters
+    prompt = web.system_prompt.casefold()
+    assert "cite" in prompt
+    assert "never state a deck count" in prompt
+
+
 def test_the_prompt_teaches_the_three_rules_that_make_editing_safe() -> None:
     settings = Settings()
     prompt = settings.agent.system_prompt

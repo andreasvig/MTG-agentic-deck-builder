@@ -218,6 +218,28 @@ not the intended end state.
     one-line reason. A client that posted no history reads differently from a deck with
     no recorded edits, because the two lead somewhere different. `read_deck`'s footer
     points at it only when history is present.
+  - `search_web(question)` — one Perplexity `sonar` search, returned as prose with its
+    citations numbered beneath it in Sonar's own order, because its inline markers cite
+    positionally. Chosen over the three other Sonar tiers OpenRouter carries by
+    measurement (ADR 0040): about $0.006 and five seconds a call, against $0.056 and
+    26 seconds for `sonar-pro-search` reaching the same conclusions.
+  - `read_page(url, page)` — one page fetched as plain text, so a cited source can be
+    read rather than trusted. A long document is split into parts rather than cut off,
+    and every part with a successor ends by naming the call that fetches it, so the
+    agent reads on for as long as it needs. Nothing is held between calls: the next part
+    refetches and re-splits, so breaks are deterministic and land on line endings.
+    Asking past the last part fails and names the real count. No JavaScript: a page that
+    builds itself in the browser is reported as such. `www.reddit.com` is rewritten to
+    `old.reddit.com`, and hosts that need a renderer are refused by name rather than
+    returning their cookie footer. EDHREC, Archidekt, MTGGoldfish, TappedOut, Aetherhub,
+    Commander Spellbook and cEDHstat are read through their own endpoints instead of
+    their pages (ADR 0041), which is the difference between an exact decklist and, on
+    MTGGoldfish, a deck page with no cards in it. Any miss falls back to the generic
+    read, so a site changing shape degrades rather than breaks.
+  - Both web tools are advertised only when both can run, and every result they return
+    ends by saying that nothing in it has been checked against the catalog. Sonar's
+    reasoning is sound and its identifiers are not — deck counts wrong by up to 128x, a
+    real card returned under an invented name — and neither is visible to a reader.
 - The browser posts a deck snapshot with each turn, carrying identity and placement
   only; names, types, rules and prices are resolved from the local catalog. It posts the
   deck's history log alongside it, pruned newest-first to the backend's three bounds —

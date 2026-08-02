@@ -23,10 +23,12 @@ from mtg_deck_builder.edhrec_catalog import (
 )
 from mtg_deck_builder.providers.edhrec import EdhrecJsonClient
 from mtg_deck_builder.providers.openrouter import OpenRouterClient
+from mtg_deck_builder.providers.web_page import WebPageFetcher
 from mtg_deck_builder.search import FuzzyTitleSearchProvider
 from mtg_deck_builder.search_debug import JsonlSearchDebugLogger
 from mtg_deck_builder.semantic_index import SemanticCardIndex
 from mtg_deck_builder.tagger_catalog import SQLiteTaggerCatalog
+from mtg_deck_builder.web_search import WebSearchService
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -147,6 +149,27 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     weighted_weights=agentic.ranking.weighted,
                     semantic_index=semantic_index,
                     tagger_catalog=tagger_catalog,
+                ),
+                # A third client, for the same reason the chat agent has its own: a
+                # Sonar search answers in seconds where an xhigh reply takes minutes,
+                # and one shared deadline would have to be the longer of the two.
+                web_search=WebSearchService(
+                    model_client=(
+                        OpenRouterClient(
+                            api_key=api_key,
+                            base_url=runtime_settings.openrouter_base_url,
+                            timeout_seconds=deck_agent.tools.web.timeout_seconds,
+                        )
+                        if api_key
+                        else None
+                    ),
+                    settings=deck_agent.tools.web,
+                ),
+                page_fetcher=WebPageFetcher(
+                    timeout_seconds=deck_agent.tools.web.page_timeout_seconds,
+                    max_characters=deck_agent.tools.web.page_max_characters,
+                    max_bytes=deck_agent.tools.web.page_max_bytes,
+                    user_agent=deck_agent.tools.web.page_user_agent,
                 ),
             ),
         )

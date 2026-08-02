@@ -27,6 +27,8 @@ The first manual editing slice is usable and tested.
 | Progressive one-tool agentic card search | Shipped |
 | Deck agent chat | Shipped, desktop only, streamed, one saved conversation per deck |
 | Deck agent read-only tools | Shipped: `read_deck` (with `extra_info` for costs, the curve and prices), `see_cards`, `search_cards`, `read_history` |
+| Deck agent web research | Shipped: `search_web` on Perplexity `sonar` with its sources, `read_page` for a plain fetch of one, paginated so a long page is read on rather than cut off — leads only, never card data |
+| Deck site parsers | Shipped: EDHREC, Archidekt, MTGGoldfish, TappedOut, Aetherhub, Commander Spellbook and cEDHstat read through their own endpoints behind `read_page`, with any miss falling back to the generic reader |
 | Deck agent deck editing | Shipped: `edit_deck`, auto-applied, one undo step per edit |
 | Backend-enforced deck mutation and confirmed patches | Not implemented, and not the direction — see ADR 0036 |
 
@@ -371,13 +373,16 @@ backend/
   src/mtg_deck_builder/
     api/               HTTP translation
     domain/            Strict public/domain contracts
-    providers/         Scryfall and provider boundaries
+    providers/         Scryfall and provider boundaries, plus web_page.py (one page
+                       as text) and web_sites.py (deck sites via their own endpoints)
     config.py          Validated runtime settings
     main.py            FastAPI lifecycle and dependencies
     search.py          Fuzzy title matching
     search_debug.py    JSONL trace construction
     deck_agent.py      Conversational deck agent and its tool loop
-    deck_agent_tools.py  read_deck, see_cards, search_cards, read_history, edit_deck
+    deck_agent_tools.py  read_deck, see_cards, search_cards, read_history, edit_deck,
+                         search_web, read_page
+    web_search.py      Perplexity Sonar search, with its citations
     semantic_index.py  Local embedding index and cosine sorting
   tests/               Backend contract and behavior tests
 frontend/
@@ -437,8 +442,9 @@ recorded in
   a turn is thinking, so the panel reports that it is thinking rather than narrating it.
 - The deck agent's panel is desktop-only. It can read the open deck (`read_deck`), look
   cards up (`see_cards`), search the whole catalog under filters it writes itself
-  (`search_cards`), read what has already been done (`read_history`) and change the deck
-  (`edit_deck`) — but not everything an edit could be. It sets the count a card should be
+  (`search_cards`), read what has already been done (`read_history`), search the open web
+  for brews and write-ups (`search_web`), read one of those pages (`read_page`) and change
+  the deck (`edit_deck`) — but not everything an edit could be. It sets the count a card should be
   at and which of the two zones it sits in, it does not reorder anything, and Partner and
   background command zones are unhandled here as they are in the other tools.
 - Deck history is browser-local and per deck, so it does not survive a browser wipe and

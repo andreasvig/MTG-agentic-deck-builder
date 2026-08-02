@@ -15,7 +15,9 @@ from mtg_deck_builder.deck_agent_tools import (
     EDIT_DECK,
     READ_DECK,
     READ_HISTORY,
+    READ_PAGE,
     SEARCH_CARDS,
+    SEARCH_WEB,
     SEE_CARDS,
     DeckAgentToolbox,
     SearchCardsArguments,
@@ -49,8 +51,14 @@ from mtg_deck_builder.edhrec_catalog import (
     EdhrecSimilarCardList,
     EdhrecSimilarSuggestion,
 )
+from mtg_deck_builder.providers.web_page import WebPage, WebPageUnavailable
 from mtg_deck_builder.semantic_index import SemanticScoreResult
 from mtg_deck_builder.tagger_catalog import TaggerCatalogUnavailable
+from mtg_deck_builder.web_search import (
+    WebSearchAnswer,
+    WebSearchUnavailable,
+    WebSource,
+)
 
 GHALTA = UUID("11111111-1111-4111-8111-111111111111")
 SOL_RING = UUID("22222222-2222-4222-8222-222222222222")
@@ -346,6 +354,8 @@ def make_toolbox(
     tagger_catalog: Any = None,
     edhrec_service: Any = None,
     local_tool: Any = None,
+    web_search: Any = None,
+    page_fetcher: Any = None,
     **settings: Any,
 ) -> DeckAgentToolbox:
     return DeckAgentToolbox(
@@ -354,7 +364,76 @@ def make_toolbox(
         edhrec_service=StubEdhrecService() if edhrec_service is None else edhrec_service,
         settings=DeckAgentToolSettings(**settings),
         local_tool=local_tool,
+        web_search=web_search,
+        page_fetcher=page_fetcher,
     )
+
+
+class StubWebSearch:
+    """Stand in for the Sonar service without reaching OpenRouter."""
+
+    def __init__(self, answer: Any = None, *, enabled: bool = True) -> None:
+        self._answer = answer
+        self.enabled = enabled
+        self.questions: list[str] = []
+
+    async def search(self, question: str) -> Any:
+        self.questions.append(question)
+        if isinstance(self._answer, Exception):
+            raise self._answer
+        return self._answer
+
+
+class StubPageFetcher:
+    """Stand in for the page reader without reaching the network."""
+
+    def __init__(self, page: Any = None) -> None:
+        self._page = page
+        self.urls: list[str] = []
+        self.asked: list[int] = []
+
+    async def fetch(self, url: str, page: int = 1) -> Any:
+        self.urls.append(url)
+        self.asked.append(page)
+        if isinstance(self._page, Exception):
+            raise self._page
+        return self._page
+
+
+def make_answer(
+    summary: str = "Grolnok is the one people actually build.[1]",
+    sources: tuple[tuple[str, str | None], ...] = (
+        ("https://edhrec.com/commanders/grolnok", "Grolnok on EDHREC"),
+        ("https://tappedout.net/mtg-decks/croak/", None),
+    ),
+) -> WebSearchAnswer:
+    return WebSearchAnswer(
+        summary=summary,
+        sources=tuple(WebSource(url=url, title=title) for url, title in sources),
+        cost_usd=0.0056,
+    )
+
+
+def make_web_toolbox(
+    *,
+    answer: Any = None,
+    page: Any = None,
+    enabled: bool = True,
+) -> tuple[DeckAgentToolbox, StubWebSearch, StubPageFetcher]:
+    search = StubWebSearch(make_answer() if answer is None else answer, enabled=enabled)
+    fetcher = StubPageFetcher(
+        WebPage(
+            url="https://edhrec.com/commanders/grolnok",
+            title="Grolnok, the Omnivore (Commander)",
+            text="Mill yourself, then croak the permanents back.",
+            page=1,
+            total_pages=1,
+            truncated=False,
+        )
+        if page is None
+        else page
+    )
+    return make_toolbox(web_search=search, page_fetcher=fetcher), search, fetcher
 
 
 def make_deck(*, commander: bool = True) -> DeckAgentDeckSnapshot:
@@ -2568,3 +2647,245 @@ def test_read_deck_points_at_read_history_only_when_there_is_history() -> None:
 def test_history_bounds_must_agree() -> None:
     with pytest.raises(ValueError):
         DeckAgentToolSettings(read_history_default_sessions=20, history_max_sessions=10)
+
+
+def test_the_web_tools_are_advertised_only_when_both_halves_are_wired() -> None:
+    # A search that produces links is half a tool without a way to follow them, so
+    # neither is offered unless both can run.
+    both, _, _ = make_web_toolbox()
+    neither = make_toolbox()
+    search_only = make_toolbox(web_search=StubWebSearch(make_answer()))
+    unconfigured, _, _ = make_web_toolbox(enabled=False)
+
+    def names(toolbox: DeckAgentToolbox) -> set[str]:
+        return {definition["function"]["name"] for definition in toolbox.definitions()}
+
+    assert {SEARCH_WEB, READ_PAGE} <= names(both)
+    assert not ({SEARCH_WEB, READ_PAGE} & names(neither))
+    assert not ({SEARCH_WEB, READ_PAGE} & names(search_only))
+    assert not ({SEARCH_WEB, READ_PAGE} & names(unconfigured))
+
+
+def test_a_web_search_numbers_its_sources_for_the_markers_in_the_prose() -> None:
+    toolbox, search, _ = make_web_toolbox()
+
+    outcome = asyncio.run(
+        toolbox.run(
+            SEARCH_WEB,
+            {"question": "Has anyone built a strong Dredge deck in Commander?"},
+            deck=None,
+        )
+    )
+
+    assert outcome.ok is True
+    assert search.questions == ["Has anyone built a strong Dredge deck in Commander?"]
+    assert "Grolnok is the one people actually build.[1]" in outcome.content
+    assert "  [1] Grolnok on EDHREC" in outcome.content
+    assert "      https://edhrec.com/commanders/grolnok" in outcome.content
+    # A citation with no title still has to be numbered, or every later marker in the
+    # summary points one place too high.
+    assert "  [2] untitled" in outcome.content
+    assert f"Call {READ_PAGE} with any of these URLs" in outcome.content
+
+
+def test_a_web_search_result_says_nothing_in_it_has_been_checked() -> None:
+    # The measured failure mode is a correct-sounding answer with a wrong identifier,
+    # which the model cannot detect by reading. The boundary travels with the result.
+    toolbox, _, _ = make_web_toolbox()
+
+    outcome = asyncio.run(
+        toolbox.run(SEARCH_WEB, {"question": "What defines the Grolnok archetype?"}, deck=None)
+    )
+
+    assert "has been checked against the local catalog" in outcome.content
+    assert "see_cards or search_cards" in outcome.content
+
+
+def test_a_web_search_with_no_sources_says_it_cannot_be_checked() -> None:
+    toolbox, _, _ = make_web_toolbox(answer=make_answer(sources=()))
+
+    outcome = asyncio.run(
+        toolbox.run(SEARCH_WEB, {"question": "What defines the Grolnok archetype?"}, deck=None)
+    )
+
+    assert "returned no sources" in outcome.content
+    assert f"Call {READ_PAGE}" not in outcome.content
+
+
+def test_reading_a_page_carries_its_title_url_and_text() -> None:
+    toolbox, _, fetcher = make_web_toolbox()
+
+    outcome = asyncio.run(
+        toolbox.run(
+            READ_PAGE, {"url": "https://edhrec.com/commanders/grolnok"}, deck=None
+        )
+    )
+
+    assert outcome.ok is True
+    assert fetcher.urls == ["https://edhrec.com/commanders/grolnok"]
+    assert outcome.content.startswith("Grolnok, the Omnivore (Commander)")
+    assert "https://edhrec.com/commanders/grolnok" in outcome.content
+    assert "croak the permanents back" in outcome.content
+    assert "was longer than this" not in outcome.content
+
+
+def test_a_part_with_a_successor_names_the_call_that_fetches_it() -> None:
+    # The whole point of paginating: "there is more" without the way to get it is
+    # exactly the truncation this replaced.
+    toolbox, _, _ = make_web_toolbox(
+        page=WebPage(
+            url="https://x.example/p",
+            title="Long primer",
+            text="the first part",
+            page=2,
+            total_pages=5,
+            truncated=False,
+        )
+    )
+
+    outcome = asyncio.run(
+        toolbox.run(READ_PAGE, {"url": "https://x.example/p", "page": 2}, deck=None)
+    )
+
+    assert "Long primer — part 2 of 5" in outcome.content
+    assert (
+        f"Part 2 of 5 ends here. Call {READ_PAGE} again with the same url and "
+        "page: 3 to read on." in outcome.content
+    )
+    assert outcome.signature == f"{READ_PAGE}(x.example/p · part 2 of 5)"
+
+
+def test_the_last_part_says_so_instead_of_offering_another() -> None:
+    toolbox, _, _ = make_web_toolbox(
+        page=WebPage(
+            url="https://x.example/p",
+            title="Long primer",
+            text="the end",
+            page=3,
+            total_pages=3,
+            truncated=False,
+        )
+    )
+
+    outcome = asyncio.run(
+        toolbox.run(READ_PAGE, {"url": "https://x.example/p", "page": 3}, deck=None)
+    )
+
+    assert "That is the end of the page, 3 parts in total." in outcome.content
+    assert "page: 4" not in outcome.content
+
+
+def test_a_download_cut_by_the_byte_cap_is_a_separate_claim_from_more_parts() -> None:
+    # `truncated` must not collapse into `has_more_pages`: this is the last part AND
+    # the document still continues past what was ever fetched.
+    toolbox, _, _ = make_web_toolbox(
+        page=WebPage(
+            url="https://x.example/p",
+            title="Huge",
+            text="the end of what we got",
+            page=4,
+            total_pages=4,
+            truncated=True,
+        )
+    )
+
+    outcome = asyncio.run(
+        toolbox.run(READ_PAGE, {"url": "https://x.example/p", "page": 4}, deck=None)
+    )
+
+    assert "That is the end of the page, 4 parts in total." in outcome.content
+    assert "too large to fetch whole" in outcome.content
+    assert "page: 5" not in outcome.content
+
+
+def test_a_failed_search_is_reported_without_ending_the_turn() -> None:
+    toolbox, _, _ = make_web_toolbox(
+        answer=WebSearchUnavailable("The web search came back empty.")
+    )
+
+    outcome = asyncio.run(
+        toolbox.run(SEARCH_WEB, {"question": "What defines the Grolnok archetype?"}, deck=None)
+    )
+
+    assert outcome.ok is False
+    assert outcome.content == "The web search came back empty."
+    assert outcome.signature.startswith(f"{SEARCH_WEB}(")
+
+
+def test_a_blocked_page_is_reported_without_ending_the_turn() -> None:
+    toolbox, _, _ = make_web_toolbox(
+        page=WebPageUnavailable(
+            "That page returned HTTP 403. Many sites block automated readers this way."
+        )
+    )
+
+    outcome = asyncio.run(toolbox.run(READ_PAGE, {"url": "https://x.example/p"}, deck=None))
+
+    assert outcome.ok is False
+    assert "403" in outcome.content
+
+
+def test_a_web_signature_names_the_page_without_its_scheme() -> None:
+    toolbox, _, _ = make_web_toolbox()
+
+    outcome = asyncio.run(
+        toolbox.run(
+            READ_PAGE, {"url": "https://www.edhrec.com/commanders/grolnok"}, deck=None
+        )
+    )
+
+    assert outcome.signature == f"{READ_PAGE}(edhrec.com/commanders/grolnok)"
+
+
+def test_a_rejected_web_argument_stays_readable_in_the_transcript() -> None:
+    toolbox, search, fetcher = make_web_toolbox()
+
+    short = asyncio.run(toolbox.run(SEARCH_WEB, {"question": "dredge"}, deck=None))
+    missing = asyncio.run(toolbox.run(READ_PAGE, {}, deck=None))
+
+    assert short.ok is False
+    # Built from the raw argument: the rejected text is the whole point of the line.
+    assert short.signature == f"{SEARCH_WEB}(dredge)"
+    assert missing.ok is False
+    assert missing.signature == f"{READ_PAGE}(?)"
+    # Neither reached the network.
+    assert search.questions == []
+    assert fetcher.urls == []
+
+
+def test_the_requested_part_reaches_the_reader_and_defaults_to_the_first() -> None:
+    toolbox, _, fetcher = make_web_toolbox()
+
+    asyncio.run(toolbox.run(READ_PAGE, {"url": "https://x.example/p"}, deck=None))
+    asyncio.run(
+        toolbox.run(READ_PAGE, {"url": "https://x.example/p", "page": 7}, deck=None)
+    )
+
+    assert fetcher.asked == [1, 7]
+
+
+def test_a_part_number_out_of_range_is_refused_with_the_number_asked_for() -> None:
+    # The message names the real count; the signature has to name what was asked, or
+    # "there is no part 9" sits next to a line that never mentions 9.
+    toolbox, _, _ = make_web_toolbox(
+        page=WebPageUnavailable("That page has only 2 parts, so there is no part 9 to read.")
+    )
+
+    outcome = asyncio.run(
+        toolbox.run(READ_PAGE, {"url": "https://x.example/p", "page": 9}, deck=None)
+    )
+
+    assert outcome.ok is False
+    assert "only 2 parts" in outcome.content
+    assert outcome.signature == f"{READ_PAGE}(x.example/p · part 9)"
+
+
+def test_a_part_number_below_one_is_refused_before_any_fetch() -> None:
+    toolbox, _, fetcher = make_web_toolbox()
+
+    outcome = asyncio.run(
+        toolbox.run(READ_PAGE, {"url": "https://x.example/p", "page": 0}, deck=None)
+    )
+
+    assert outcome.ok is False
+    assert fetcher.urls == []

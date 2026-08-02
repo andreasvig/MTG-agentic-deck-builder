@@ -279,6 +279,59 @@ class AgenticSearchSettings(BaseModel):
 ReasoningEffort = Literal["none", "minimal", "low", "medium", "high", "xhigh", "max"]
 
 
+class DeckAgentWebSettings(BaseModel):
+    """How the agent reaches the open web: one Sonar search, one plain page read.
+
+    `model` is a Perplexity Sonar tier on OpenRouter, chosen by the bake-off recorded
+    in `docs/decisions/0040-web-research-through-sonar.md`. Changing it changes what a
+    turn costs by up to a factor of ten, so it is a config decision rather than a
+    constant, and the two pro tiers are the ones worth trying if plain `sonar` ever
+    proves too shallow.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = True
+    model: str = "perplexity/sonar"
+    # Sonar bills per search on top of tokens, and the search fee dominates: a trivial
+    # call still costs about half a cent. This is the ceiling on the prose, not on the
+    # searching, so raising it buys detail rather than better sources.
+    max_tokens: Annotated[int, Field(ge=128, le=8000)] = 1200
+    # A search runs several fetches upstream before it answers, so it is slower than a
+    # bare completion — but far faster than the agent's own reasoning pass.
+    timeout_seconds: Annotated[float, Field(gt=0, le=180)] = 60
+    # How many citations travel into the tool result. Sonar returns roughly ten per
+    # call on this tier; the cap exists so a long list cannot crowd out the summary.
+    max_sources: Annotated[int, Field(ge=1, le=25)] = 10
+    # What `read_page` will pull from one URL. The character cap is what the model
+    # reads; the byte cap bounds what is pulled into memory before decoding, and has to
+    # be the larger of the two because markup is most of a page.
+    page_max_characters: Annotated[int, Field(ge=500, le=40000)] = 6000
+    page_max_bytes: Annotated[int, Field(ge=10_000, le=10_000_000)] = 2_000_000
+    page_timeout_seconds: Annotated[float, Field(gt=0, le=120)] = 20
+    # Sent when reading a page. A blank or scripted user agent is refused by a good
+    # share of the sites worth reading.
+    page_user_agent: str = (
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
+    )
+    system_prompt: str = "You are a Magic: The Gathering research assistant."
+
+    @field_validator("model", "system_prompt", "page_user_agent")
+    @classmethod
+    def required_text_must_not_be_blank(cls, value: str) -> str:
+        stripped = value.strip()
+        if not stripped:
+            raise ValueError("value must not be blank")
+        return stripped
+
+    @model_validator(mode="after")
+    def page_bounds_must_agree(self) -> "DeckAgentWebSettings":
+        if self.page_max_bytes <= self.page_max_characters:
+            raise ValueError("page_max_bytes must exceed page_max_characters")
+        return self
+
+
 class DeckAgentToolSettings(BaseModel):
     """What the deck agent may read and change, and how hard it may work at it.
 
@@ -319,11 +372,14 @@ class DeckAgentToolSettings(BaseModel):
     history_max_sessions: Annotated[int, Field(ge=1, le=MAX_HISTORY_SESSIONS)] = (
         MAX_HISTORY_SESSIONS
     )
+    web: DeckAgentWebSettings = Field(default_factory=DeckAgentWebSettings)
     read_deck_description: str = "List the open deck by card type."
     see_cards_description: str = "Look up details for named cards."
     search_cards_description: str = "Search the local card catalog."
     edit_deck_description: str = "Change what the open deck holds."
     read_history_description: str = "Read the open deck's recorded edits."
+    search_web_description: str = "Search the web for Magic writing and decklists."
+    read_page_description: str = "Read one web page as text."
 
     @field_validator(
         "read_deck_description",
@@ -331,6 +387,8 @@ class DeckAgentToolSettings(BaseModel):
         "search_cards_description",
         "edit_deck_description",
         "read_history_description",
+        "search_web_description",
+        "read_page_description",
     )
     @classmethod
     def description_must_not_be_blank(cls, value: str) -> str:

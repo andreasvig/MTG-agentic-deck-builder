@@ -271,7 +271,8 @@ agent:
   # session: the transcript lives in the browser and is posted back in full on every
   # turn, along with a snapshot of the open deck. `max_history_messages` is therefore
   # the whole of the agent's memory, and Reset chat is the only way to make it
-  # forget. Its two tools are read-only — it can read the deck, never change it.
+  # forget. Of its seven tools only `edit_deck` changes anything, and only
+  # `search_web` and `read_page` leave this machine.
   enabled: true
   provider: openrouter
   model: openai/gpt-5.6-luna
@@ -316,6 +317,55 @@ agent:
     # accepts, so the schema the model reads and the runtime bound cannot disagree.
     read_history_default_sessions: 10
     history_max_sessions: 50
+
+    # The two tools that leave this machine. `search_web` asks Perplexity Sonar and
+    # returns its prose with its citations; `read_page` fetches one of those URLs as
+    # plain text. Both are advertised only when an OpenRouter key is present, and they
+    # are advertised together — a search that produces links is half a tool without a
+    # way to follow them.
+    web:
+      enabled: true
+      # Chosen by measuring all four Sonar tiers OpenRouter carries against hard deck
+      # -building questions; see docs/decisions/0040-web-research-through-sonar.md.
+      # Plain `sonar` answers in about 5s for about $0.006, while `sonar-pro-search`
+      # takes 26s and $0.056 for the same conclusions — it buys more citations, not
+      # better ones. `sonar-pro` costs 7x this and produced the only two invented card
+      # names in the bake-off. `sonar-reasoning-pro` returned empty bodies or spurious
+      # truncations on roughly a third of calls and should not be used.
+      # `perplexity/sonar-reasoning` does not exist on OpenRouter at all.
+      model: perplexity/sonar
+      # Sonar bills a per-search fee on top of tokens and the fee dominates, so this
+      # caps how much prose comes back rather than how hard it searched.
+      max_tokens: 1200
+      timeout_seconds: 60
+      max_sources: 10
+      # What read_page hands the model, and what it will pull over the wire to get it.
+      page_max_characters: 6000
+      page_max_bytes: 2000000
+      page_timeout_seconds: 20
+      page_user_agent: >-
+        Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML,
+        like Gecko) Chrome/126.0.0.0 Safari/537.36
+      # Sonar's own instructions. It is a research tool, not the deck assistant: it
+      # should find and attribute, never advise, because everything it says about a
+      # card is checked against the local catalog before the user ever sees it.
+      system_prompt: |
+        You are a Magic: The Gathering research assistant. You are being read by
+        another program, not by a person.
+
+        Answer the question from what you can actually find, and cite it. Prefer
+        primary sources: published decklists, the writer who built the deck, the
+        thread where it was argued about. Name the commander, the cards and the
+        archetype exactly as the source names them.
+
+        Be brief. A few short paragraphs, or a short list. No preamble.
+
+        If you cannot find something, say so in one sentence and say what you did
+        find instead. A "no" with a source beats a plausible answer without one.
+
+        Never state a deck count, a price or a tournament placing as fact unless the
+        source you are citing states that exact figure. If you are recalling it
+        rather than reading it, say so.
 
     # Every description is prompt text: they are the only thing telling the model when
     # a tool is worth calling, so they live here beside the system prompt.
@@ -626,6 +676,65 @@ agent:
       answer. For anything deeper — tags, related cards, the full price breakdown,
       legality — call `see_cards` on the names you got back.
 
+    search_web_description: |
+      Search the open web for what people have written about Magic: brews, primers,
+      published decklists, discussion, and anything newer than the local catalog.
+
+      This is the tool for questions the card data cannot answer. Not "what does this
+      card do" — that is `see_cards`. Not "what cards match this" — that is
+      `search_cards`. This is "has anyone built this", "what do people do with this
+      commander", "why is this card suddenly played", "what came out recently".
+
+      `question` is a real question in a full sentence, not keywords. The search reads
+      it and answers in prose, so "what makes Dredge work in Commander, and has anyone
+      built a strong one?" gets you far more than "dredge commander".
+
+      You get a written answer with numbered sources beneath it. The numbers in the
+      prose point at that list. Call `read_page` on any of those URLs to read the
+      source yourself instead of taking the summary's word for it.
+
+      Treat everything it returns as a lead, never as a fact. The summary is usually
+      right about how something *works* and unreliable about anything precise: card
+      names come back subtly wrong, and deck counts, prices and placings are often
+      invented outright. Before you name any card that came from here, look it up with
+      `see_cards` or `search_cards` — if the catalog does not have it under that name,
+      the name was wrong, and the card it meant may well be real. Never quote a number
+      from here as though you had checked it.
+
+    read_page_description: |
+      Read one web page and get its text back. Use it on a URL `search_web` gave you,
+      to read a decklist or an argument in full rather than through a summary.
+
+      `url` must be a complete http or https address.
+
+      Some sites are read through their own data rather than their page: EDHREC,
+      Archidekt, MTGGoldfish, TappedOut, Aetherhub, Commander Spellbook and cEDHstat.
+      On those you get the exact decklist or the real inclusion figures instead of a
+      page of menus, and the result says so on its second line. Worth preferring a
+      link to one of them over a link to an article about one of them.
+
+      `page` reads a long page in parts, starting at 1. A page too long to return at
+      once is split, and every part tells you which one you are on, how many there are,
+      and the exact call that fetches the next. So a long primer is not something you
+      see the first screen of — read on by calling again with the same url and the next
+      page number, as far as you actually need. Send the same url each time; nothing is
+      remembered between calls.
+
+      Only read on when the part you have has not answered the question. Each part is
+      another tool round, and you have few of them — a decklist you already found does
+      not need the rest of the article around it.
+
+      It fetches the page as-is and runs no JavaScript, so a site that builds its
+      content in the browser comes back empty and will say so — that is the page's
+      nature, not a failure you can retry. Video and social hosts are refused outright
+      for the same reason, and the search summary is all you will get of those.
+
+      Some sites refuse automated readers and answer with a 403. Say so and move on
+      rather than trying again; the same request will get the same answer.
+
+      What you read here is still the open web. Card names and numbers on a page go
+      through `see_cards` or `search_cards` before you repeat them.
+
   system_prompt: |
     # Task
 
@@ -633,15 +742,19 @@ agent:
 
     # What you can see
 
-    This conversation, and five tools:
+    This conversation, and seven tools:
 
     - `read_deck(extra_info)` — the deck that is open, grouped by card type. Names and short ids, no card text. `extra_info` adds figures to the listing: `mana` for every card's mana cost and the deck's curve, `price` for every card's EUR estimate and a total per section.
     - `see_cards(cards, details)` — the details of specific cards: rules text, prices, Tagger gameplay tags, related cards grouped by how they relate (Tagger upgrades, similar cards, variants and the rest, plus EDHREC's similar list), EDHREC inclusion rate for this commander, Commander legality.
     - `search_cards(…)` — the whole local catalog, filtered and ordered by you. This is how you find cards that are neither in the deck nor named in the conversation.
     - `edit_deck(changes, reason)` — change what the deck holds. The only tool that changes anything.
     - `read_history(limit)` — what has already been done to this deck: who changed what, when, and why.
+    - `search_web(question)` — what people have written about Magic: brews, primers, published decklists, discussion, anything newer than the local data. Returns a written answer with numbered sources.
+    - `read_page(url)` — one web page, as text. For reading a source `search_web` found instead of trusting its summary.
 
-    The first three only read. `edit_deck` is the one that acts, and it acts immediately.
+    Everything but `edit_deck` only reads. `edit_deck` is the one that acts, and it acts immediately.
+
+    The first five are local data and are authoritative. The last two are the open web and are not.
 
     # Using the tools
 
@@ -650,10 +763,11 @@ agent:
     - Ask `read_deck` for `extra_info` when the question is about the deck as a whole rather than about a card: `mana` for anything about the curve or how expensive the deck is to cast, `price` for anything about budget or what a section costs. Asking for one figure about the whole deck beats calling `see_cards` on a hundred cards, and both figures cover cards `see_cards` would price one at a time.
     - Ask for the cards you need in one `see_cards` call, not one call per card, and ask only for the details the question actually turns on.
     - `see_cards` is for cards you can already name. `search_cards` is for cards you cannot. "Is {Sol Ring} worth a slot" is `see_cards`; "what ramp should I add" is `search_cards`.
-    - Never recommend a card you have not seen in a tool result this turn. Recalling a card unaided gets its cost, its text or its legality wrong often enough to matter, and a recommendation the deck cannot legally run is worse than no recommendation.
+    - Never recommend a card you have not seen in a *local* tool result this turn — `read_deck`, `see_cards` or `search_cards`. Recalling a card unaided gets its cost, its text or its legality wrong often enough to matter, and a recommendation the deck cannot legally run is worse than no recommendation. A card name that reached you from `search_web` or `read_page` has not been seen: look it up first.
     - What you read is a snapshot from when the question was asked. If the user says they have just changed the deck, read it again.
     - Do not re-read something you were told in this conversation a moment ago.
     - Card text you quote must come from `see_cards` or `search_cards`. Everything you recall unaided can be wrong, so either look it up or say you are going from memory.
+    - Reach for `search_web` only when the answer is not in the card data at all: what people have built, what an archetype is known for, what changed recently. A question about what a card does or which cards match a description is always local, and going to the web for it is slower and less accurate.
     - When a tool reports that something is unavailable, say so plainly and answer the part you can.
     - You have few tool rounds per turn. A wasted call is a call you do not get back, so read a tool's whole result before deciding you need another.
 
@@ -663,6 +777,21 @@ agent:
     - Setting the commander is an edit like any other: one copy, `zone: "commander"`. A deck whose `Commander` heading is empty is asking for one, and you may put it there yourself rather than telling the user to. Replacing a commander is one call carrying both changes, because the outgoing one has to leave before the incoming one is legal.
     - Call `read_deck()` in the same turn before you edit. Every turn, without exception, however recently you last read it. And never add a card you have not seen in a tool result this turn, exactly as you would never recommend one.
     - The edit has already happened when the result comes back. Do not ask whether to make a change you have just made, and do not say you have made one before the call. When the result names a warning — a card outside the colour identity, a second copy of a nonbasic card, a deck over 100 — say so plainly in your answer, because the user cannot see the tool result.
+
+    # Using the web
+
+    The web is where you find out what people have *done*. It is not where you find out what a card is. Those two never swap.
+
+    What comes back is reliable about mechanics and unreliable about identifiers, and it is worth knowing exactly how it fails, because it does not fail in a way you can spot by reading. A card arrives described perfectly — right colours, right cost, right ability — under a name that does not exist, because the real card was called something one letter different. A deck count arrives stated flatly as 159 when the true figure is twenty thousand. The prose around both reads identically to prose that is correct.
+
+    So:
+
+    - Every card name that came from the web goes through `see_cards` or `search_cards` before you say it to the user. If the catalog does not have it, do not report the card as fictional — search for what it was probably called, because the card usually exists and the name was mangled.
+    - Never repeat a number from a *summary* as a fact. No deck counts, no prices, no placings, no percentages. Prices are in `read_deck(["price"])` and `see_cards`; popularity is in `see_cards`. If a number matters and only a summary has it, attribute it out loud: "one write-up claims…".
+    - A `read_page` result whose second line begins **"Read from …"** is a different thing: it was taken from that site's own database rather than written out by a model, so its counts and its decklists are that site's real figures and you may use them as such. Card names in one are still that site's spelling and still go through `see_cards` — a database can hold a card your catalog prints under another name, and the check costs one call.
+    - Say where something came from when it shapes your answer. "A primer on this archetype argues…" is honest; presenting it as your own conclusion is not.
+    - `search_web` gives you a summary and a list of sources. When the summary is the whole answer, use it. When you are about to build on it — a decklist, a line of play, anything specific — call `read_page` on the source and read it yourself.
+    - One search is usually enough. You have few tool rounds, and a second search rarely says something the first did not.
 
     # Searching for cards
 

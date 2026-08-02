@@ -45,6 +45,8 @@ FastAPI (127.0.0.1:43127/api/v1)
        |                           read_history (posted history log, newest first)
        |                           edit_deck (resolves a change against the posted
        |                                      snapshot; mutates nothing)
+       |                           search_web (Perplexity sonar; summary + sources)
+       |                           read_page (plain fetch of one cited URL)
        |-- one final completion advertising no tools, so a turn always answers
        |-- streamed: `tool` as each call runs, `text` as the answer is written,
        |             `deck_edit` the moment edit_deck succeeds
@@ -240,6 +242,55 @@ completion. Cost is taken from the provider's own accounting rather than compute
 from token counts, and an unreported figure returns `None` rather than `0.0` so it
 can never be summed as though it were free (ADR 0028).
 
+### `providers/web_page.py`
+
+Reads one page as text for `read_page`: stdlib `urllib` and `HTMLParser`, no new
+dependency and no JavaScript. The URL comes from a model, so the scheme is restricted to
+http(s), the resolved address must be public — this app's own API is on loopback — the
+body is capped in bytes before it is read, and only HTML and plain text are accepted.
+
+A document longer than one part is paginated rather than truncated. Nothing is kept
+between calls — part 2 refetches the URL and splits it again — so the split has to be
+deterministic on the text or consecutive parts would overlap or skip, and breaks land on
+a line ending where one falls in the back half of the window so a decklist is never cut
+through a card name. A part number past the end fails and names the real count. That is
+a separate report from `truncated`, which means the download hit its byte cap and there
+is text no part will ever reach.
+
+Two accommodations come from measuring what Sonar actually cites. `www.reddit.com` is
+rewritten to `old.reddit.com`, which serves the same thread as server-rendered HTML;
+Reddit is the most-cited domain and the modern front end returns no readable text at
+all. Hosts that build their pages in the browser are refused by name, YouTube above all:
+it answers `200` with its cookie footer, so a plain fetch looks like it worked and
+returns nothing.
+
+A known site is read through its own data first, via `providers/web_sites.py`, and the
+generic extraction above is what everything else gets.
+
+### `providers/web_sites.py`
+
+Seven adapters behind `read_page`, one per site, from ADR 0041. Each matches a host and
+path, fetches the structured thing behind it and renders readable text: EDHREC's
+`json.edhrec.com` pages, Archidekt's deck API, MTGGoldfish's visual view — whose card
+names live in `img alt` attributes, which is exactly what an HTML-to-text extractor
+throws away — TappedOut's and Aetherhub's text exports, Commander Spellbook's variants
+API and cEDHstat's decklists.
+
+This is deliberately not a tool of its own. The agent calls `read_page` with the URL it
+already has, and the same pagination applies to a rendered decklist as to prose.
+
+Every miss falls back. An unmatched path, an unparseable payload, a download the byte
+cap cut, an endpoint that errors — each returns the page to the generic reader instead
+of failing, so a site changing shape degrades rather than breaks. Adapters are handed a
+getter bound to the fetcher, so an endpoint passes the same scheme, address and byte
+checks as any other URL.
+
+Each result's second line begins "Read from …", and the system prompt turns on it: a
+summary's numbers may not be repeated as fact, while these are the site's own figures.
+Card names are the exception either way and still go through `see_cards`. Nothing that
+changes between two reads is rendered — Archidekt's view count is left out, because
+pagination refetches and a moving number would shift every boundary after it.
+
 ### `providers/tagger.py`
 
 Owns Scryfall's read-only Oracle-tag bulk request plus Tagger's website GraphQL
@@ -352,7 +403,10 @@ log from the request into the toolbox so `read_history` can answer from it (ADR 
 
 ### `deck_agent_tools.py`
 
-The agent's five tools (ADRs 0029, 0035, 0036 and 0039), four of them read-only. `read_deck` is answered entirely from the
+The agent's seven tools (ADRs 0029, 0035, 0036, 0039 and 0040), six of them read-only
+and five of them local. `search_web` and `read_page` are the only two that leave this
+machine and the only two whose results are not authoritative; both are described at the
+end of this section. `read_deck` is answered entirely from the
 deck snapshot the browser posted with the turn, resolved against the local catalog so
 names and types come from the catalog rather than the client; it returns the deck
 grouped by primary type with short ids and no card text. Its one argument, `extra_info`,
@@ -401,6 +455,32 @@ invisibly. Command-zone legality and group existence stay in the frontend's
 `Me`, and a client that posted no history reads differently from a deck with no recorded
 edits, because the two lead somewhere different. `read_deck`'s footer points at it only
 when history is present.
+
+`search_web` and `read_page` are the two tools from ADR 0040, and the only two that
+leave this machine. `search_web` asks Perplexity `sonar` through `web_search.py` and
+renders the answer as prose, its citations numbered beneath it in the order Sonar
+returned them — its markers cite positionally, so the order is load-bearing — and an
+offer to read any of them. `read_page` fetches one URL through `providers/web_page.py`, one part at a time: a long
+document is split rather than cut off, and each part with a successor ends by naming the
+call that fetches it. Seven deck sites are read through their own endpoints rather than
+their markup (ADR 0041, `providers/web_sites.py`) — on MTGGoldfish the generic reader
+returns a deck page containing no cards at all.
+Both are advertised only when both can run, because a search that produces links is half
+a tool without a way to follow them.
+
+Every result from either ends with the same sentence: nothing in it has been checked
+against the catalog. That is not decoration. The tier bake-off found Sonar reliably
+right about mechanics and reliably wrong about identifiers — deck counts off by up to
+128x, and a real card returned under a name that does not exist — and neither failure is
+visible to a reader. The catalog remains the authority on every fact a card carries.
+
+### `web_search.py`
+
+One Sonar call per `search_web`, over its own `OpenRouterClient` so a five-second search
+does not inherit the chat agent's three-minute deadline. Returns the summary, the
+citations read off `message.annotations`, and what OpenRouter charged. An empty body
+with `finish_reason: stop` is raised rather than returned — observed live, and a blank
+tool result is indistinguishable from "nothing found".
 
 ### `agentic_search_debug.py`
 

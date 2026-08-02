@@ -6,6 +6,27 @@ All notable changes to this project are documented here.
 
 ### Added
 
+- **The deck agent can reach the open web.** `search_web` runs one Perplexity `sonar`
+  search and returns its prose with the citations numbered beneath it in Sonar's own
+  order, because its inline markers cite positionally. `read_page` fetches one of those
+  URLs as text, paginated rather than truncated: every part with a successor ends by
+  naming the exact call that fetches the next, so a long primer is read on rather than
+  cut off. The tier was chosen by measurement — about $0.006 and five seconds a call,
+  against $0.056 and 26 seconds for `sonar-pro-search` reaching the same conclusions.
+  Every web result ends by saying nothing in it has been checked, because the bake-off
+  found Sonar reliably right about mechanics and reliably wrong about identifiers: deck
+  counts off by up to 128x, and a real card returned under a name one letter wrong
+  (ADR 0040).
+- **Seven deck sites are read through their own data rather than their pages.** EDHREC,
+  Archidekt, MTGGoldfish, TappedOut, Aetherhub, Commander Spellbook and cEDHstat now go
+  through adapters behind `read_page` — not a new tool, so the agent keeps calling
+  `read_page` with the URL it already has. This is a correctness fix, not a tidy-up: on
+  MTGGoldfish the card names live in `img alt` attributes, which an HTML-to-text
+  extractor discards, so the generic reader returned a deck page with the price, the
+  type counts and **no cards at all**. EDHREC's real inclusion figures are now read from
+  its own API instead of being restated by a model. Any miss — an unmatched path, an
+  unparseable payload, a capped download — falls back to the generic reader, so a site
+  changing shape degrades rather than breaks (ADR 0041).
 - **The deck agent can now edit the deck, and its edits apply themselves.** `edit_deck`
   takes one declarative change per card — the copy count you want *afterwards*, so add is
   `1`, cut is `0`, a move is the same count with a new group — plus one reason per call
