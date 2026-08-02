@@ -296,9 +296,18 @@ agent:
     enabled: true
     # Rounds of tool use allowed before the agent must answer. Each round is one
     # more completion, so this is the ceiling on what a turn costs and how long it
-    # takes. The final pass advertises no tools at all, so the turn always ends in
-    # an answer rather than in another tool call.
-    max_iterations: 4
+    # takes — and `timeout_seconds` below bounds one completion, not the turn, so the
+    # worst case is this number times that. The final pass advertises no tools at all,
+    # so the turn always ends in an answer rather than in another tool call.
+    max_iterations: 15
+    # What the model is told on that final pass. An empty toolbox on its own reads as
+    # tools that vanished rather than as an instruction to answer: measured on
+    # 2026-08-02, without this the model wrote its next tool call into the answer as
+    # text in 5 of 5 forced final passes, and with it in 0 of 3.
+    final_pass_instruction: >-
+      You have no tools for this reply. Answer now, in prose, from the tool results
+      already in this conversation. If something could not be checked, say so in a
+      sentence and answer the part you can. Do not write a tool call.
     # Cards per see_cards call. Going over truncates and says so in the tool result,
     # so the agent knows to ask again rather than assuming it saw everything.
     see_cards_max_cards: 12
@@ -773,7 +782,7 @@ agent:
     - Card text you quote must come from `see_cards` or `search_cards`. Everything you recall unaided can be wrong, so either look it up or say you are going from memory.
     - Reach for `search_web` only when the answer is not in the card data at all: what people have built, what an archetype is known for, what changed recently. A question about what a card does or which cards match a description is always local, and going to the web for it is slower and less accurate.
     - When a tool reports that something is unavailable, say so plainly and answer the part you can.
-    - You have few tool rounds per turn. A wasted call is a call you do not get back, so read a tool's whole result before deciding you need another.
+    - A tool round is not free: each one is another completion and more time the user spends waiting. Read a tool's whole result before deciding you need another.
 
     # Editing the deck
 
@@ -795,7 +804,7 @@ agent:
     - A `read_page` result whose second line begins **"Read from …"** is a different thing: it was taken from that site's own database rather than written out by a model, so its counts and its decklists are that site's real figures and you may use them as such. Card names in one are still that site's spelling and still go through `see_cards` — a database can hold a card your catalog prints under another name, and the check costs one call.
     - Say where something came from when it shapes your answer. "A primer on this archetype argues…" is honest; presenting it as your own conclusion is not.
     - `search_web` gives you a summary and a list of sources. When the summary is the whole answer, use it. When you are about to build on it — a decklist, a line of play, anything specific — call `read_page` on the source and read it yourself.
-    - One search is usually enough. You have few tool rounds, and a second search rarely says something the first did not.
+    - One search is usually enough: a second rarely says something the first did not, and it is another wait.
 
     # Searching for cards
 

@@ -664,6 +664,64 @@ def test_a_model_that_never_stops_calling_tools_still_answers() -> None:
     assert "tools" not in client.payloads[-1]
     assert len(reply.tool_calls) == 3
 
+    # And it is told so, not only shown so. Measured against the real model: a
+    # conversation ending in tool results with the toolbox silently gone got the next
+    # tool call written into the answer as prose in 5 of 5 forced final passes.
+    #
+    # The whole conversation is still there under it — the instruction is appended for
+    # this one call rather than replacing what the model has read.
+    final = client.payloads[-1]["messages"]
+    assert final[-1] == {
+        "role": "system",
+        "content": DeckAgentSettings().tools.final_pass_instruction,
+    }
+    assert [message["role"] for message in final[:2]] == ["system", "user"]
+    # ...and only there. A round that still has tools left is not told it has none.
+    for payload in client.payloads[:-1]:
+        assert all(
+            message["content"] != final[-1]["content"] for message in payload["messages"]
+        )
+
+
+def test_service_rejects_a_tool_call_written_as_prose() -> None:
+    # The failure the final-pass instruction exists to prevent, arriving anyway. This
+    # is the model's own routing syntax with the provider's special tokens stripped,
+    # copied from a real reply: it validates as a successful completion and is not
+    # something a person can read, which is the same contract error as an empty one.
+    client = StubModelClient(
+        [
+            _answer_response(
+                'to=search_local_cards  (json)\n'
+                '{"semantic_sort":"mana rock, ramp","sort_by":"weighted"}'
+            )
+        ]
+    )
+    service = DeckAgentService(model_client=client, settings=_settings())
+
+    with pytest.raises(DeckAgentUnavailable) as error:
+        asyncio.run(service.chat(_request("What ramp should I add?")))
+
+    assert error.value.contract_error is True
+
+
+def test_service_keeps_an_answer_that_merely_mentions_a_tool() -> None:
+    # The near miss that a looser rule would eat. An answer wrongly rejected is worse
+    # than the failure above, which the instruction already prevents, so the test is
+    # shapes prose cannot contain — not the tool names, which prose says all the time.
+    client = StubModelClient(
+        [
+            _answer_response(
+                "I read your deck with read_deck() and looked {Sol Ring} up. "
+                "The ramp to add is {Fellwar Stone}."
+            )
+        ]
+    )
+    service = DeckAgentService(model_client=client, settings=_settings())
+
+    reply = asyncio.run(service.chat(_request("What ramp should I add?")))
+
+    assert reply.message.content.startswith("I read your deck with read_deck()")
+
 
 def test_tools_are_not_advertised_when_the_toolbox_is_disabled() -> None:
     client = StubModelClient()
@@ -1375,6 +1433,11 @@ def test_settings_load_the_repository_tool_yaml() -> None:
 
     assert tools.enabled is True
     assert tools.max_iterations >= 1
+    # The shipped instruction, not the code default. They are the same words today and
+    # are two separate strings — the test above pins the wiring to whatever the service
+    # was given, so nothing there would notice `config.yaml` losing this. Without one,
+    # the turn goes back to ending in a tool call written out as prose.
+    assert "Do not write a tool call." in tools.final_pass_instruction
     assert tools.see_cards_max_cards >= 1
     assert tools.see_cards_default_details == ["rules"]
 

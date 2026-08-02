@@ -350,8 +350,25 @@ class DeckAgentToolSettings(BaseModel):
 
     enabled: bool = True
     # How many times the agent may call tools before it must answer. Each iteration
-    # is one more completion, so this is the turn's cost and latency ceiling.
-    max_iterations: Annotated[int, Field(ge=1, le=12)] = 4
+    # is one more completion, so this is the turn's cost and latency ceiling — and the
+    # latency half is the one that bites: `timeout_seconds` bounds a single completion,
+    # not the turn, so the worst case here is this number times that.
+    max_iterations: Annotated[int, Field(ge=1, le=24)] = 4
+    # What the model is told on the pass that advertises no tools, so that being out of
+    # rounds reads as an instruction to answer rather than as a toolbox that vanished.
+    #
+    # Measured, 2026-08-02: without it, `openai/gpt-5.6-luna` wrote its next tool call
+    # into the answer as text in 5 of 5 forced final passes — `to=search_local_cards`
+    # followed by an arguments object, which is the model's own channel syntax with the
+    # special tokens stripped. With it, 0 of 3. The same conversation *with* tools
+    # advertised was clean 4 of 4, so the trigger is the empty toolbox rather than the
+    # question. Kept as prompt text next to the tool descriptions for the same reason
+    # they are here: it is the wording that has to be tunable, not the mechanism.
+    final_pass_instruction: str = (
+        "You have no tools for this reply. Answer now, in prose, from the tool "
+        "results already in this conversation. If something could not be checked, "
+        "say so in a sentence and answer the part you can. Do not write a tool call."
+    )
     # A cap on cards per `see_cards` call. Exceeding it truncates and says so in the
     # tool result, rather than quietly returning less than was asked for.
     see_cards_max_cards: Annotated[int, Field(ge=1, le=50)] = 12

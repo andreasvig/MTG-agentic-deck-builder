@@ -235,7 +235,23 @@ class DeckAgentService:
         # Out of tool rounds. This last pass advertises no tools at all, so a model
         # that would keep calling them forever still has to answer, and the turn ends
         # in prose rather than in nothing the user can read.
-        message, cost = await self._round(conversation, None, emit_text)
+        #
+        # Told so, as well as shown so. A conversation that ends in tool results with
+        # no tools attached is not self-explanatory: the model is mid-task, its own
+        # instructions require a lookup it can no longer make, and the observed result
+        # is that it writes the call it wanted as prose. Saying it in words is what
+        # turns an empty toolbox into an instruction to answer.
+        message, cost = await self._round(
+            [
+                *conversation,
+                {
+                    "role": "system",
+                    "content": self._settings.tools.final_pass_instruction,
+                },
+            ],
+            None,
+            emit_text,
+        )
         costs.append(cost)
         return await self._reply(
             text=_reply_text(message),
@@ -449,6 +465,10 @@ def _reply_text(message: dict[str, Any]) -> str:
     A reasoning model can spend its whole budget thinking and return empty content
     with a populated `reasoning` field, which validates as a successful response but
     has nothing to show. That counts as a contract error, not as an answer.
+
+    So does an answer that is a tool call written out as prose. Both are the same
+    failure wearing different clothes: a completion that satisfies the schema and is
+    not something a person can read.
     """
 
     content = message.get("content")
@@ -457,7 +477,26 @@ def _reply_text(message: dict[str, Any]) -> str:
             "The deck agent returned an empty message.",
             contract_error=True,
         )
-    return content.strip()
+    text = content.strip()
+    if _LEAKED_TOOL_CALL.search(text):
+        raise DeckAgentUnavailable(
+            "The deck agent tried to call a tool instead of answering.",
+            contract_error=True,
+        )
+    return text
+
+
+#: A tool call the model wrote into its answer rather than making.
+#:
+#: Both halves are shapes that cannot occur in prose, which is the whole test — a
+#: looser rule would reject real answers, and an answer wrongly rejected is worse than
+#: this failure, which the final-pass instruction already prevents.
+#:
+#: `to=<name>` at the start of a line is the model's own routing syntax with its
+#: special tokens stripped by the provider; U+FFFC is the object-replacement character
+#: those tokens are replaced *with*, so it is a direct sighting of the same event. Both
+#: were observed in the wild on 2026-08-02 before the instruction was added.
+_LEAKED_TOOL_CALL = re.compile(r"^\s*to=\S|￼", re.MULTILINE)
 
 
 def _tool_call_requests(

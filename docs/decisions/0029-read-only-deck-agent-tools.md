@@ -70,10 +70,24 @@ just changed something.
 
 ## One bounded loop per turn, always ending in prose
 
-A turn is now `agent.tools.max_iterations` (default 4) rounds of *ask → run tools →
-ask again*, followed by **one final completion that advertises no tools at all**. A
-model that would keep calling tools forever still has to answer, so a turn can never
-end with nothing the user can read.
+A turn is now `agent.tools.max_iterations` rounds of *ask → run tools → ask again*,
+followed by **one final completion that advertises no tools at all**. A model that
+would keep calling tools forever still has to answer, so a turn can never end with
+nothing the user can read.
+
+That last pass also carries `agent.tools.final_pass_instruction`, which tells the model
+in words what the missing toolbox tells it in structure. Taking the tools away is not
+self-explanatory: the model is mid-task, its own instructions require a lookup it can no
+longer make, and what it does instead is write the call it wanted as prose —
+`to=search_local_cards` and an arguments object, delivered as the answer. Measured
+2026-08-02 against `openai/gpt-5.6-luna`: 5 of 5 forced final passes leaked without the
+instruction, 0 of 3 with it, while the same conversation *with* tools advertised was
+clean 4 of 4. The leaking replies also cost three to seven times as many completion
+tokens as the answers that replaced them.
+
+The tier matters too — `gpt-5.6-terra`, at ten times the price, was clean 3 of 3 on the
+same prompt — but the instruction fixes it on the cheap tier for nothing, and the trap
+is one this loop sets rather than one the model brings.
 
 Consequences:
 
