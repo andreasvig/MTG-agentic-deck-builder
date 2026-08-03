@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import type {
   DeckAgentAppliedEdit,
@@ -36,10 +36,51 @@ interface LiveTurn {
 
 const NO_LIVE_TURN: LiveTurn = { text: "", toolCalls: [], appliedEdits: [] };
 
-/** A turn in flight: the question it is answering, and the deck it is about. */
-interface InFlightTurn {
-  content: string;
-  deckId: string;
+/**
+ * How many decks may have the agent working at once.
+ *
+ * Not a taste limit. HTTP/1.1 allows a browser roughly six connections per origin, and a
+ * streamed turn holds one of them open for its whole duration — every tool round and the
+ * written answer. Three leaves half that budget for what the user is doing while they wait:
+ * card searches, card images, the health poll. Six turns would answer nothing on time and
+ * starve the board of the lookups it is made of.
+ */
+const MAX_CONCURRENT_TURNS = 3;
+
+/** Why a fourth deck's question is refused, in the words the composer says it in. */
+const TOO_MANY_TURNS =
+  `The agent is already working on ${MAX_CONCURRENT_TURNS} decks. A turn holds one of the ` +
+  "browser's few connections to the card service open until it finishes, so a fourth would " +
+  "start starving card searches. Your question is still here — send it when one finishes.";
+
+/**
+ * One entry per deck that is in this state, and no entry at all for every other deck.
+ *
+ * A turn belongs to its deck rather than to the panel, so each piece of turn state is keyed:
+ * the panel renders the open deck's turn and every other deck's keeps running. Absent is
+ * the ordinary case and means "this deck has no turn", which is why nothing here carries a
+ * per-deck default — the reader supplies one.
+ */
+type ByDeck<T> = Record<string, T>;
+
+/** One deck's entry set, every other deck's left exactly as it was. */
+function withDeck<T>(current: ByDeck<T>, deckId: string, value: T): ByDeck<T> {
+  return { ...current, [deckId]: value };
+}
+
+/**
+ * One deck's entry removed.
+ *
+ * The very same object back when there was nothing to remove, so a clear for a deck that
+ * had no turn is not a state change and cannot re-render the panel — which matters because
+ * clearing runs from a stream's `finally`, on whichever turn happens to settle.
+ */
+function withoutDeck<T>(current: ByDeck<T>, deckId: string): ByDeck<T> {
+  if (!(deckId in current)) {
+    return current;
+  }
+  const { [deckId]: _removed, ...rest } = current;
+  return rest;
 }
 
 /** Whether a turn has produced anything at all: what decides a cancel's two paths. */
@@ -73,8 +114,16 @@ interface DeckAgentPanelProps {
    * `null` answers that there is nothing to record, which is what an edit the deck already
    * matched leaves behind. A refusal is a block too — see `refusedDeckEdit` — because an
    * edit that did not happen still has to be said.
+   *
+   * The deck id is the deck the *turn* was asked about, which is not always the deck on
+   * screen: a turn keeps running after the user moves on, and its edit belongs to the deck
+   * it was asked about. Handed over explicitly rather than left to the receiver's idea of
+   * which deck is open, because the receiver's idea is right only until the user switches.
    */
-  onDeckEdit?: (edit: DeckAgentDeckEdit) => DeckAgentAppliedEdit | null;
+  onDeckEdit?: (
+    edit: DeckAgentDeckEdit,
+    deckId: string,
+  ) => DeckAgentAppliedEdit | null;
   /** Reverse the deck's last recorded change, behind the transcript's Undo. */
   onUndoDeckEdit?: () => void;
   /**
@@ -93,6 +142,16 @@ interface DeckAgentPanelProps {
    * edit stale, and the missing edit would be the one just made.
    */
   readDeckHistory?: () => DeckAgentDeckHistory | null;
+  /**
+   * Which decks have a turn running, whenever that set changes.
+   *
+   * The panel owns turn state and the deck list is nowhere near it, so the fact travels
+   * outward as a report rather than the state being lifted: a running turn is otherwise
+   * invisible the moment the user opens another deck. Reported as the whole set rather than
+   * as a start/stop pair, so a listener cannot drift out of step with it — and it is the
+   * panel's only outward interest in a turn it is not rendering.
+   */
+  onActiveTurnsChange?: (deckIds: string[]) => void;
 }
 
 /**
@@ -103,6 +162,14 @@ interface DeckAgentPanelProps {
  * chat** is simply forgetting it locally. It is kept per deck, so switching decks
  * switches conversation. The deck snapshot travels the same way, which is why the
  * agent's tools always read the deck as it is right now.
+ *
+ * A turn belongs to its deck too, and that is the stronger statement of the two: switching
+ * decks leaves the turn running, and coming back finds it further along than it was left.
+ * Every piece of turn state below is keyed by deck id for exactly that reason, so
+ * `MAX_CONCURRENT_TURNS` decks can be working at once. This reverses ADR 0030's "a reply in
+ * flight is abandoned on a deck switch", whose reason — answering into a deck the user has
+ * left is worse than not answering — assumed the answer had nowhere else to land. It has: the
+ * deck it was asked about, which owns both the transcript and the turn (ADR 0045).
  *
  * A turn is streamed: each tool call shows the moment it runs, and the answer
  * appears as it is written. An **answered** turn is committed from the finished reply, so
@@ -131,6 +198,7 @@ export function DeckAgentPanel({
   onUndoDeckEdit,
   undoableEditId = null,
   readDeckHistory,
+  onActiveTurnsChange,
 }: DeckAgentPanelProps) {
   const {
     chat,
@@ -141,9 +209,18 @@ export function DeckAgentPanel({
     withdrawQuestion,
     clearChat,
   } = useDeckAgentChats(deckId);
-  const [pending, setPending] = useState(false);
-  const [live, setLive] = useState<LiveTurn>(NO_LIVE_TURN);
-  const [error, setError] = useState<string | null>(null);
+  /*
+   * The three states a turn has, each keyed by the deck the turn is about.
+   *
+   * `error` is keyed with the others, and that is not symmetry for its own sake: a
+   * background turn that fails must not put its error on the deck the user happens to be
+   * looking at, and clearing it on a deck switch would throw away the only account a failed
+   * background turn leaves. It waits in its own deck's view until the user goes back — which
+   * is the whole of that surface, and the known limit of it.
+   */
+  const [pending, setPending] = useState<ByDeck<true>>({});
+  const [live, setLive] = useState<ByDeck<LiveTurn>>({});
+  const [error, setError] = useState<ByDeck<string>>({});
   /** A card is being dragged over the panel, so the composer says where it will land. */
   const [cardOver, setCardOver] = useState(false);
   /**
@@ -157,20 +234,23 @@ export function DeckAgentPanel({
    */
   const [caretTarget, setCaretTarget] = useState<number | null>(null);
   const composer = useRef<HTMLTextAreaElement | null>(null);
-  const pendingRequest = useRef<AbortController | null>(null);
+  /** Each running turn's controller, by deck. Only what is in here can be aborted. */
+  const pendingRequests = useRef(new Map<string, AbortController>());
   /**
-   * The question a turn in flight is answering, and the deck it was asked about.
+   * The question each turn in flight is answering, by the deck it was asked about.
    *
    * Kept so that cancelling can hand the question back rather than leaving the user to
    * retype it, and so that a turn committed by a cancel lands in its own deck's
    * transcript. A ref because the canceller is a keystroke handler that must see the
-   * turn as it is *now*, not as it was when the handler was last rendered.
+   * turn as it is *now*, not as it was when the handler was last rendered — and because its
+   * size is what the concurrency cap is counted from, at the instant a send is attempted
+   * rather than at the last render.
    */
-  const inFlight = useRef<InFlightTurn | null>(null);
+  const inFlight = useRef(new Map<string, string>());
   /**
-   * The same live turn as the state above, readable synchronously.
+   * The same live turns as the state above, readable synchronously.
    *
-   * Held twice because it is read by two things with different needs. The render needs
+   * Held twice because they are read by two things with different needs. The render needs
    * state; the canceller needs the turn as it is at the instant the key was pressed, and
    * a cancel is by definition a race with the stream. A keydown dispatched between a
    * chunk arriving and React committing it would run a handler closed over the previous
@@ -178,67 +258,86 @@ export function DeckAgentPanel({
    * was reacting to. Dropping it would drop a paid `search_web` result out of the replay
    * this whole feature exists to keep.
    *
-   * Written only by `updateLive`, so the two cannot disagree.
+   * Written only by `updateLive` and `clearLive`, so the two cannot disagree.
    */
-  const liveTurn = useRef<LiveTurn>(NO_LIVE_TURN);
-  /**
-   * Which deck is open *now*, rather than which one a turn in flight was asked about.
-   *
-   * `deckId` inside `send` is the value that turn captured, so comparing it with itself
-   * proves nothing. Written from the deck-switch effect, whose cleanup is also what aborts
-   * the request, so by the time any later frame of an abandoned turn could arrive this is
-   * already the deck the user moved to.
-   */
-  const openDeckId = useRef(deckId);
+  const liveTurns = useRef(new Map<string, LiveTurn>());
   const transcript = useRef<HTMLDivElement>(null);
   const entries = chat.entries;
   // The unsent question belongs to the deck it is about, so it waits in that
   // deck's chat rather than following the user to the next one.
   const draft = chat.draft;
+  // What the panel renders: the open deck's turn. Every other deck's is still in the maps
+  // above, still being written to by its own stream.
+  const openPending = pending[deckId] === true;
+  const openLive = live[deckId] ?? NO_LIVE_TURN;
+  const openError = error[deckId] ?? null;
 
   /**
-   * Advance the live turn, in both the ref and the state, from its current value.
+   * Advance one deck's live turn, in both the ref and the state, from its current value.
    *
    * The single writer of either. An updater rather than a value because every caller is
    * accumulating — another chunk, another call — and the caller is the stream, which has
-   * no render of its own to read the previous value from.
+   * no render of its own to read the previous value from. The state is written through an
+   * updater for the same reason one step up: two decks' streams can advance between two
+   * renders, and a written-out object would drop whichever one lost the race.
    */
-  const updateLive = useCallback((next: (current: LiveTurn) => LiveTurn) => {
-    liveTurn.current = next(liveTurn.current);
-    setLive(liveTurn.current);
+  const updateLive = useCallback(
+    (turnDeckId: string, next: (current: LiveTurn) => LiveTurn) => {
+      const advanced = next(liveTurns.current.get(turnDeckId) ?? NO_LIVE_TURN);
+      liveTurns.current.set(turnDeckId, advanced);
+      setLive((current) => withDeck(current, turnDeckId, advanced));
+    },
+    [],
+  );
+
+  /** Forget one deck's live turn, once it has been committed or thrown away. */
+  const clearLive = useCallback((turnDeckId: string) => {
+    liveTurns.current.delete(turnDeckId);
+    setLive((current) => withoutDeck(current, turnDeckId));
   }, []);
 
-  // Switching decks abandons a question already in flight rather than answering it
-  // into a deck the user has left. The question itself stays in the transcript it
-  // was asked in, so going back and sending again retries it.
+  /*
+   * A deck switch leaves every turn running. Only unmount stops one.
+   *
+   * This effect used to key on `deckId` and abort in its cleanup, which is what made a deck
+   * switch a cancel — ADR 0030, "a reply in flight is abandoned on a deck switch". ADR 0045
+   * reverses it: two decks building at once is the feature, and a turn that dies because the
+   * user looked at something else is the opposite of it. Nothing about a deck switch is
+   * handled here any more, because there is nothing left to handle: the state is keyed by
+   * deck, so the open deck's view is a lookup rather than something that has to be cleared.
+   *
+   * The empty dependency list is the whole mechanism. It runs once, and its cleanup runs
+   * once — at unmount, where every turn must stop, because from then on nothing can receive
+   * a frame or commit what one carried.
+   */
   useEffect(() => {
-    openDeckId.current = deckId;
-    setPending(false);
-    /*
-     * The abandoned turn goes with it, question and stream alike.
-     *
-     * No state today reaches a cancel holding this: `cancel`'s only caller is guarded by
-     * `pending`, which this block clears in the same breath, and a commit is filed against
-     * the deck the turn was *asked* about rather than the deck on screen — so even a
-     * same-batch race could not land it in the wrong chat. Kept because that guard is the
-     * only thing making it unreachable. A defence worth keeping is worth an accurate
-     * reason: the next reader believes the one that is written down.
-     */
-    inFlight.current = null;
-    updateLive(() => NO_LIVE_TURN);
-    setError(null);
+    const requests = pendingRequests.current;
     return () => {
-      pendingRequest.current?.abort();
-      pendingRequest.current = null;
+      for (const controller of requests.values()) {
+        controller.abort();
+      }
+      requests.clear();
     };
-  }, [deckId, updateLive]);
+  }, []);
+
+  /**
+   * Which decks have the agent working, reported outward whenever that set changes.
+   *
+   * Sorted, so the same set is the same array: this lands in a parent's state, and an array
+   * whose order wandered between renders would re-render forever.
+   */
+  const runningDeckIds = useMemo(() => Object.keys(pending).sort(), [pending]);
+
+  useEffect(() => {
+    onActiveTurnsChange?.(runningDeckIds);
+  }, [onActiveTurnsChange, runningDeckIds]);
 
   useEffect(() => {
     const element = transcript.current;
     if (element) {
       element.scrollTop = element.scrollHeight;
     }
-  }, [entries, live, pending]);
+  }, [entries, openLive, openPending]);
 
   useEffect(() => {
     if (caretTarget === null) {
@@ -302,17 +401,27 @@ export function DeckAgentPanel({
    * withdrawing it would leave a change nothing explains.
    */
   const cancel = useCallback(() => {
-    const turn = inFlight.current;
+    /*
+     * The open deck's turn, and no other deck's.
+     *
+     * Escape belongs to the conversation on screen: a turn running on a deck the user is not
+     * looking at is not the one they are reacting to, and stopping it would make a deck
+     * switch a cancel again by another route. There is deliberately no way to cancel a
+     * background turn — the deck list's dot says one is running and switching to it is one
+     * click, which is enough until it is not.
+     */
+    const turnDeckId = deckId;
+    const question = inFlight.current.get(turnDeckId);
     // Read before anything is cleared, and from the ref rather than from state: this is
-    // the turn as it stands at the instant of the key press. See `liveTurn`.
-    const live = liveTurn.current;
-    pendingRequest.current?.abort();
-    pendingRequest.current = null;
-    inFlight.current = null;
-    setPending(false);
-    updateLive(() => NO_LIVE_TURN);
-    setError(null);
-    if (!turn) {
+    // the turn as it stands at the instant of the key press. See `liveTurns`.
+    const live = liveTurns.current.get(turnDeckId) ?? NO_LIVE_TURN;
+    pendingRequests.current.get(turnDeckId)?.abort();
+    pendingRequests.current.delete(turnDeckId);
+    inFlight.current.delete(turnDeckId);
+    setPending((current) => withoutDeck(current, turnDeckId));
+    clearLive(turnDeckId);
+    setError((current) => withoutDeck(current, turnDeckId));
+    if (question === undefined) {
       return;
     }
     if (hasStreamed(live)) {
@@ -330,36 +439,61 @@ export function DeckAgentPanel({
           : {}),
         interrupted: true,
       };
-      recordInterruptedTurn(turn.deckId, committed);
+      recordInterruptedTurn(turnDeckId, committed);
       return;
     }
-    withdrawQuestion(turn.deckId, turn.content);
-    setDraft(turn.deckId, turn.content);
-    setCaretTarget(turn.content.length);
-  }, [recordInterruptedTurn, setDraft, updateLive, withdrawQuestion]);
+    withdrawQuestion(turnDeckId, question);
+    setDraft(turnDeckId, question);
+    setCaretTarget(question.length);
+  }, [
+    clearLive,
+    deckId,
+    recordInterruptedTurn,
+    setDraft,
+    withdrawQuestion,
+  ]);
 
   const resetChat = useCallback(() => {
-    pendingRequest.current?.abort();
-    pendingRequest.current = null;
+    // Every line here is scoped to the open deck, and `clearChat` was the one that already
+    // was: **Reset chat** clears one conversation, so it must stop one turn. A global clear
+    // beside a per-deck one would silently kill whatever another deck was working on.
+    pendingRequests.current.get(deckId)?.abort();
+    pendingRequests.current.delete(deckId);
     /*
      * Along with the question it was answering.
      *
-     * Unreachable today for the same reason as the clear above, and worth stating exactly:
-     * `cancel` is the only reader, its only caller is guarded by `pending`, and the line
-     * below clears that here too. Kept because the guard is the only thing making it so.
+     * There is no state today in which this matters, and the claim is worth being exact
+     * about: `cancel` is the only reader, its only caller is guarded by this deck's
+     * `pending`, and the line below clears that in the same block — so nothing can reach
+     * `cancel` holding a question this reset has thrown away. It is kept because that guard
+     * is the only thing making it so. A defence whose reason is "unreachable" is worth
+     * keeping; one whose reason is wrong is worse than none, because the next reader
+     * believes it.
      */
-    inFlight.current = null;
+    inFlight.current.delete(deckId);
     // The spend belongs to the conversation being reset, not to the session, so
     // dropping the conversation drops its total with it.
     clearChat(deckId);
-    setPending(false);
-    updateLive(() => NO_LIVE_TURN);
-    setError(null);
-  }, [clearChat, deckId, updateLive]);
+    setPending((current) => withoutDeck(current, deckId));
+    clearLive(deckId);
+    setError((current) => withoutDeck(current, deckId));
+  }, [clearChat, clearLive, deckId]);
 
   const send = useCallback(async () => {
     const content = draft.trim();
-    if (!content || pending || !client.streamDeckAgentChat) {
+    if (!content || openPending || !client.streamDeckAgentChat) {
+      return;
+    }
+    /*
+     * Refused rather than queued, and the question stays in the composer.
+     *
+     * Counted from the ref rather than from `pending`, because two sends in one tick would
+     * both read the same rendered state and both start. The draft is left alone on purpose:
+     * a question silently swallowed by a limit is worse than one the user still has, and the
+     * reason is said out loud rather than expressed as a disabled button.
+     */
+    if (inFlight.current.size >= MAX_CONCURRENT_TURNS) {
+      setError((current) => withDeck(current, deckId, TOO_MANY_TURNS));
       return;
     }
     // The sent transcript has to include this turn, because the reply is answered
@@ -402,8 +536,8 @@ export function DeckAgentPanel({
     // the deck has already taken must not be the thing the transcript forgets.
     const appliedEdits: DeckAgentAppliedEdit[] = [];
     const controller = new AbortController();
-    pendingRequest.current = controller;
-    inFlight.current = { content, deckId: turnDeckId };
+    pendingRequests.current.set(turnDeckId, controller);
+    inFlight.current.set(turnDeckId, content);
     appendEntry(turnDeckId, {
       message: { role: "user", content },
       toolCalls: [],
@@ -424,22 +558,25 @@ export function DeckAgentPanel({
      * already in here for both.
      */
     setCaretTarget(0);
-    setPending(true);
-    updateLive(() => NO_LIVE_TURN);
-    setError(null);
+    setPending((current) => withDeck(current, turnDeckId, true));
+    clearLive(turnDeckId);
+    setError((current) => withoutDeck(current, turnDeckId));
     try {
       const reply = await client.streamDeckAgentChat(
         conversation,
         deck,
         {
           onText: (chunk) => {
-            updateLive((current) => ({ ...current, text: current.text + chunk }));
+            updateLive(turnDeckId, (current) => ({
+              ...current,
+              text: current.text + chunk,
+            }));
           },
           onToolCall: (call) => {
             // Text written before a tool call was preamble, not the answer: the
             // committed turn keeps only the final round's prose, so the live view
             // drops it here and ends up showing exactly what gets stored.
-            updateLive((current) => ({
+            updateLive(turnDeckId, (current) => ({
               ...current,
               text: "",
               toolCalls: [
@@ -452,20 +589,19 @@ export function DeckAgentPanel({
             }));
           },
           onDeckEdit: (edit) => {
-            // A frame that outlived its turn is dropped rather than applied. Switching
-            // decks aborts the request and a spec-compliant fetch then errors the body,
-            // so this should be unreachable — but "should be" here rests on abort
-            // semantics in another module, and what it would cost is an agent edit landing
-            // on a deck the user is now looking at, recorded in that deck's history as
-            // though they had asked for it. Cheap to make structural rather than
-            // circumstantial.
-            if (turnDeckId !== openDeckId.current) {
-              return;
-            }
+            /*
+             * Applied to the deck the turn was asked about, whether or not it is the deck on
+             * screen. There used to be a guard here dropping an edit whose deck was not
+             * open, on the reasoning that such a frame had outlived its turn — true while a
+             * deck switch aborted the request, and the exact case this phase supports now.
+             * What keeps the old worry answered is that the edit is *named*: it goes to
+             * `turnDeckId` rather than to whichever deck happens to be open, so it can no
+             * longer land on a deck nobody asked about.
+             */
             // Handed outward first and written down second, from the answer. The deck is
             // the authority on what an edit does, and a transcript that described the
             // change before the deck had been offered it would be describing an intention.
-            const block = onDeckEdit?.(edit) ?? null;
+            const block = onDeckEdit?.(edit, turnDeckId) ?? null;
             // Absent when the deck neither took nor refused anything: it already matched
             // the edit, so there is nothing to describe, and a block here would be the
             // transcript inventing a change out of a request.
@@ -477,7 +613,7 @@ export function DeckAgentPanel({
             // the only account of why this deck is now different. No flag says so — the
             // block below is on the live turn, and a cancel keeps a turn that has anything
             // on it. One condition rather than two, and the same one.
-            updateLive((current) => ({
+            updateLive(turnDeckId, (current) => ({
               ...current,
               appliedEdits: [...current.appliedEdits, block],
             }));
@@ -519,28 +655,35 @@ export function DeckAgentPanel({
         return;
       }
       // The question stays in the transcript so it can be retried by sending
-      // again, rather than being lost with the failure.
-      setError(
-        caught instanceof Error
-          ? caught.message
-          : "The deck agent is temporarily unavailable.",
+      // again, rather than being lost with the failure. Filed against the deck it was
+      // asked about, which may no longer be the one on screen: a failure is part of that
+      // conversation's account of itself and belongs to it.
+      setError((current) =>
+        withDeck(
+          current,
+          turnDeckId,
+          caught instanceof Error
+            ? caught.message
+            : "The deck agent is temporarily unavailable.",
+        ),
       );
     } finally {
       // Only for the turn this controller belongs to, which is what keeps a cancel and
-      // this block from both committing. A cancel has already nulled `pendingRequest`
-      // and cleared the live turn by the time the aborted promise settles, so this
-      // recognises the turn as no longer its own and touches nothing.
-      if (pendingRequest.current === controller) {
-        pendingRequest.current = null;
-        inFlight.current = null;
-        setPending(false);
+      // this block from both committing. A cancel has already dropped this deck's entry from
+      // `pendingRequests` and cleared its live turn by the time the aborted promise settles,
+      // so this recognises the turn as no longer its own and touches nothing.
+      if (pendingRequests.current.get(turnDeckId) === controller) {
+        pendingRequests.current.delete(turnDeckId);
+        inFlight.current.delete(turnDeckId);
+        setPending((current) => withoutDeck(current, turnDeckId));
         // The turn is committed — or failed — so the live copy has served its
         // purpose. Leaving it would show the answer twice.
-        updateLive(() => NO_LIVE_TURN);
+        clearLive(turnDeckId);
       }
     }
   }, [
     appendEntry,
+    clearLive,
     client,
     debugEnabled,
     deck,
@@ -548,7 +691,7 @@ export function DeckAgentPanel({
     draft,
     entries,
     onDeckEdit,
-    pending,
+    openPending,
     readDeckHistory,
     recordReply,
     setDraft,
@@ -573,7 +716,7 @@ export function DeckAgentPanel({
        * it. That is the right order. A key with two meanings should mean the innermost.
        */
       onKeyDown={(event) => {
-        if (event.key !== "Escape" || !pending) {
+        if (event.key !== "Escape" || !openPending) {
           return;
         }
         event.preventDefault();
@@ -640,7 +783,7 @@ export function DeckAgentPanel({
         <button
           className="deck-agent__reset"
           type="button"
-          disabled={entries.length === 0 && !error}
+          disabled={entries.length === 0 && !openError}
           onClick={resetChat}
         >
           <Icon name="reset" aria-hidden="true" size={13} />
@@ -729,9 +872,11 @@ export function DeckAgentPanel({
           * that announced every chunk would be unusable. The committed turn is
           * announced once, whole, the moment it lands.
           */}
-        {live.toolCalls.length > 0 || live.text || live.appliedEdits.length > 0 ? (
+        {openLive.toolCalls.length > 0 ||
+        openLive.text ||
+        openLive.appliedEdits.length > 0 ? (
           <div aria-hidden="true">
-            {live.toolCalls.map((call, callIndex) => (
+            {openLive.toolCalls.map((call, callIndex) => (
               <ToolCallLine
                 call={call}
                 debugEnabled={debugEnabled}
@@ -743,13 +888,13 @@ export function DeckAgentPanel({
               * committed block carries that, and a button inside a hidden region is
               * one nobody can press anyway.
               */}
-            {live.appliedEdits.map((applied, editIndex) => (
+            {openLive.appliedEdits.map((applied, editIndex) => (
               <AppliedEditBlock
                 applied={applied}
                 key={`live-edit-${editIndex}-${applied.reason}`}
               />
             ))}
-            {live.text ? (
+            {openLive.text ? (
               <article className="deck-agent__message deck-agent__message--assistant">
                 <span className="deck-agent__author">Agent</span>
                 <p>
@@ -759,14 +904,14 @@ export function DeckAgentPanel({
                     * ones — braces already gone — and only the ability to open a
                     * card arrives at the end.
                     */}
-                  <AgentAnswer text={live.text} client={client} />
+                  <AgentAnswer text={openLive.text} client={client} />
                   <span className="deck-agent__caret" />
                 </p>
               </article>
             ) : null}
           </div>
         ) : null}
-        {pending && !live.text ? (
+        {openPending && !openLive.text ? (
           <p className="deck-agent__thinking" role="status">
             Thinking…
             {/*
@@ -776,9 +921,9 @@ export function DeckAgentPanel({
             <span className="deck-agent__interrupt">esc to cancel</span>
           </p>
         ) : null}
-        {error ? (
+        {openError ? (
           <p className="deck-agent__error" role="alert">
-            {error}
+            {openError}
           </p>
         ) : null}
       </div>
@@ -810,7 +955,7 @@ export function DeckAgentPanel({
         <button
           className="deck-agent__send"
           type="submit"
-          disabled={pending || draft.trim().length === 0}
+          disabled={openPending || draft.trim().length === 0}
           aria-label="Send message"
           title="Send message"
         >

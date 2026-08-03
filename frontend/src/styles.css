@@ -295,10 +295,40 @@ select {
   object-position: center;
 }
 
-.deck-link > span:last-child {
+/*
+ * The name and count column, which takes whatever room the row has left.
+ *
+ * Not `:last-child` any more: a deck with a turn running has the activity dot after it, and
+ * a positional selector would then style the dot and let the name stop shrinking.
+ */
+.deck-link > span:nth-child(2) {
   display: grid;
   min-width: 0;
+  flex: 1;
   gap: 2px;
+}
+
+/*
+ * A turn is running on this deck.
+ *
+ * The same seven-pixel square the card service uses in the footnote, and pulsing for the
+ * same reason: it says *working*, not *ready*. Pushed to the end of the row rather than put
+ * beside the name, so a long deck name still truncates against the panel edge instead of
+ * against a dot.
+ */
+.deck-link__working {
+  width: 7px;
+  height: 7px;
+  flex: 0 0 auto;
+  margin-left: auto;
+  background: #8a6a1d;
+  animation: status-pulse 1.4s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .deck-link__working {
+    animation: none;
+  }
 }
 
 .deck-link strong,

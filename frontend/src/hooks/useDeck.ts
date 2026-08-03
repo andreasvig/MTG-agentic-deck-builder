@@ -459,11 +459,35 @@ export function useDeck() {
    * from: the caller needs it because a refused edit nobody was told about becomes a lasting
    * claim somewhere else that the edit happened, and an edit described from the request
    * rather than from the record names cards the deck did not move.
+   *
+   * `deckId` names the deck to edit, and defaults to the active one. It exists because an
+   * agent turn belongs to its deck rather than to whichever deck is open: a turn started on
+   * one deck goes on running after the user opens another, and an edit it makes belongs to
+   * the deck it was asked about. Omitting it is the ordinary path and is exactly what it was
+   * before — the active deck, resolved here at the moment of the edit rather than captured
+   * by a caller. A deck id that names nothing is refused rather than falling back to the
+   * active deck: a named edit landing on the wrong deck is the failure this parameter exists
+   * to prevent, and a deck deleted mid-turn is how it would happen.
    */
   const applyEdit = useCallback(
-    (prepare: DeckEditPlanner, actor: DeckHistoryActor): DeckEditOutcome => {
+    (
+      prepare: DeckEditPlanner,
+      actor: DeckHistoryActor,
+      deckId?: string,
+    ): DeckEditOutcome => {
       const current = latest.current;
-      const plan = prepare(activeDeck(current.library));
+      const target =
+        deckId === undefined
+          ? activeDeck(current.library)
+          : current.library.decks.find((deck) => deck.id === deckId);
+      if (!target) {
+        return {
+          applied: false,
+          reason:
+            "That deck is no longer in the library, so the edit was not applied.",
+        };
+      }
+      const plan = prepare(target);
       if ("error" in plan) {
         // The deck was never asked, so it announces nothing: this refusal happened before
         // the edit got as far as the deck. Reported all the same, because the caller is
@@ -474,6 +498,7 @@ export function useDeck() {
         current,
         deckEditMutation(plan),
         { actor, reason: plan.reason },
+        target.id,
       );
       commit(next);
       return outcome;
@@ -880,13 +905,33 @@ function deckReducer(state: DeckState, action: DeckAction): DeckState {
  * the log and the record the caller was given are one object and cannot come to disagree. That
  * is the whole reason the outcome is produced here instead of beside the call: a second run
  * over a second deck is exactly how a transcript came to describe an edit that never happened.
+ *
+ * `targetDeckId` names the deck the mutation is about, defaulting to the active one. The deck
+ * it resolves to is the deck the mutation reads, the deck the diff is derived from, the log the
+ * entry is appended to and the deck `replaceDeck` puts back — all of them follow the target,
+ * because a change recorded against a deck it did not happen to is worse than no record.
  */
 function commitMutation(
   state: DeckState,
   mutation: DeckMutation,
   record: { actor: DeckHistoryActor; reason?: string },
+  targetDeckId?: string,
 ): { state: DeckState; outcome: DeckEditOutcome } {
-  const current = activeDeck(state.library);
+  const open = activeDeck(state.library);
+  const current =
+    targetDeckId === undefined
+      ? open
+      : (state.library.decks.find((deck) => deck.id === targetDeckId) ?? open);
+  /**
+   * Name the deck when it is not the one the user is looking at.
+   *
+   * "3 cards added" about a deck that is not on screen is worse than saying nothing: the
+   * user reads it against the board in front of them and finds it untrue. The same holds for
+   * a refusal, which is why both branches go through this — a sentence explaining why an
+   * edit did not happen is about a particular deck or it is about nothing.
+   */
+  const sentence = (said: string) =>
+    current.id === open.id ? said : `${current.name}: ${said}`;
   const result = mutation(current);
   if (!result) {
     // Nothing to do and nothing to say: a mutation that declines is not a refusal.
@@ -896,9 +941,11 @@ function commitMutation(
     return {
       state: {
         ...state,
-        announcement: result.error,
+        announcement: sentence(result.error),
         announcementTone: "error",
       },
+      // The reason travels unnamed: it is handed to one caller about one edit it asked for,
+      // and the transcript block it becomes is already inside that deck's conversation.
       outcome: { applied: false, reason: result.error },
     };
   }
@@ -941,7 +988,7 @@ function commitMutation(
               DECK_HISTORY_PAYLOAD_CAP,
             ),
           },
-      announcement: result.announcement,
+      announcement: sentence(result.announcement),
       announcementTone: "status",
     },
     // No entry means nothing happened, and the empty diff is what says so. Reporting the

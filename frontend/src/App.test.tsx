@@ -1,4 +1,5 @@
 import {
+  act,
   createEvent,
   fireEvent,
   render,
@@ -1634,6 +1635,292 @@ describe("agent deck edits", () => {
 
     await user.click(restored[0]);
     expect(screen.queryByLabelText("1 Sol Ring in deck")).not.toBeInTheDocument();
+  });
+
+  /**
+   * Streamed turns the test feeds frame by frame, so a turn can be left open.
+   *
+   * `serveAgentTurn` hands the client a body that is already complete, which is enough while a
+   * turn cannot outlive the deck it was asked about. A background turn does exactly that, so
+   * it has to still be running when the user switches decks — and that means the test, not the
+   * fixture, decides when the next frame arrives.
+   */
+  function serveOpenAgentTurns() {
+    const encoder = new TextEncoder();
+    const sinks: Array<ReadableStreamDefaultController<Uint8Array>> = [];
+    vi.mocked(globalThis.fetch).mockImplementation((input) => {
+      const url = String(input);
+      if (url.includes("/agent/chat/stream")) {
+        const body = new ReadableStream<Uint8Array>({
+          start(sink) {
+            sinks.push(sink);
+          },
+        });
+        return Promise.resolve(
+          new Response(body, {
+            status: 200,
+            headers: { "Content-Type": "text/event-stream" },
+          }),
+        );
+      }
+      if (url.includes("/cards/search")) {
+        return Promise.resolve(Response.json(cardSearchPage(), { status: 200 }));
+      }
+      return Promise.resolve(Response.json(healthResponse, { status: 200 }));
+    });
+    return {
+      /** How many turns have been started, which is what a test waits on. */
+      get started() {
+        return sinks.length;
+      },
+      async push(index: number, frame: unknown) {
+        await act(async () => {
+          sinks[index].enqueue(
+            encoder.encode(`data: ${JSON.stringify(frame)}\n\n`),
+          );
+          await Promise.resolve();
+        });
+      },
+      async close(index: number) {
+        await act(async () => sinks[index].close());
+      },
+    };
+  }
+
+  /** Two decks in one library, the first active, each holding one card of its own. */
+  function seedTwoDecks(): { first: Deck; second: Deck } {
+    const first = {
+      ...createEmptyDeck(new Date("2026-01-01T00:00:00Z"), "Gruul Stompy"),
+      cards: [deckEntry(gamble)],
+    };
+    const second = {
+      ...createEmptyDeck(new Date("2026-01-02T00:00:00Z"), "Atraxa Counters"),
+      cards: [deckEntry(counterspell)],
+    };
+    window.localStorage.setItem(
+      DECK_LIBRARY_STORAGE_KEY,
+      JSON.stringify({ active_deck_id: first.id, decks: [first, second] }),
+    );
+    return { first, second };
+  }
+
+  function storedDeckNamed(name: string): Deck {
+    const library = JSON.parse(
+      window.localStorage.getItem(DECK_LIBRARY_STORAGE_KEY) ?? "{}",
+    ) as { decks: Deck[] };
+    const found = library.decks.find((deck) => deck.name === name);
+    if (!found) {
+      throw new Error(`no stored deck is called ${name}`);
+    }
+    return found;
+  }
+
+  /** One deck's own log, so the two decks' histories can be told apart. */
+  function storedLogFor(deckId: string): {
+    sessions: Array<{ actor: string; edits: Array<{ reason?: string }> }>;
+  } {
+    const logs = JSON.parse(
+      window.localStorage.getItem(DECK_HISTORY_STORAGE_KEY) ?? "{}",
+    ) as Record<
+      string,
+      { sessions: Array<{ actor: string; edits: Array<{ reason?: string }> }> }
+    >;
+    return logs[deckId] ?? { sessions: [] };
+  }
+
+  /** The swap the agent streams: two copies of a rock in, the deck's one ramp piece out. */
+  function swapFrame(reason: string) {
+    return {
+      type: "deck_edit",
+      edit: {
+        deck_name: "Gruul Stompy",
+        reason,
+        changes: [
+          {
+            scryfall_id: solRing.scryfall_id,
+            name: solRing.name,
+            quantity: 2,
+            previous_quantity: 0,
+            card: solRing,
+          },
+          {
+            scryfall_id: gamble.scryfall_id,
+            name: gamble.name,
+            quantity: 0,
+            previous_quantity: 1,
+          },
+        ],
+      },
+    };
+  }
+
+  it("posts the open deck's revision, so a replayed read has something to be compared against", async () => {
+    seedDeck({ cards: [deckEntry(gamble)] });
+    const requests = serveAgentTurn([doneFrame("Nothing worth changing.")]);
+    render(<App />);
+
+    await ask("What is in here?");
+    await waitFor(() => expect(requests).toHaveLength(1));
+
+    /*
+     * Both halves of the staleness comparison are produced by the browser: the panel stamps
+     * each tool call with the revision of the deck the turn asked about, and the backend
+     * compares a replayed call's stamp against the revision posted *now*. Missing on this
+     * side, every comparison is against nothing — the substitution can never fire, and a
+     * `read_deck` result from before the user moved half the deck comes back to the model as
+     * a current observation. A field empty in every record means nothing produces it, and
+     * `App.tsx` is the only caller that can.
+     */
+    const posted = requests[0].deck as { name: string; updated_at?: string };
+    expect(posted.name).toBe("Gruul Stompy");
+    expect(posted.updated_at).toBe(storedDeck().updated_at);
+    expect(posted.updated_at).toEqual(expect.stringMatching(/^\d{4}-\d\d-\d\dT/));
+  });
+
+  it("edits the deck a background turn asked about, names it, and leaves the open deck alone", async () => {
+    const { first, second } = seedTwoDecks();
+    const turns = serveOpenAgentTurns();
+    render(<App />);
+
+    await ask("Fix my ramp");
+    await waitFor(() => expect(turns.started).toBe(1));
+
+    // The user opens the other deck while the turn is still running.
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("button", { name: /Atraxa Counters/ }));
+    expect(
+      screen.getByRole("heading", { name: "Atraxa Counters" }),
+    ).toBeInTheDocument();
+
+    // The dot is the only thing on screen that says a turn is still going, and it says which
+    // deck: without it a background turn is invisible until the deck changes under the user.
+    const working = screen.getByTitle("The deck agent is working on this deck");
+    expect(
+      screen.getByRole("button", { name: /Gruul Stompy/ }),
+    ).toContainElement(working);
+
+    await turns.push(0, swapFrame("Swapping in two rocks for the weakest ramp."));
+
+    // The edit landed on the deck the turn was asked about, and nowhere else.
+    await waitFor(() =>
+      expect(
+        storedDeckNamed("Gruul Stompy").cards.map((entry) => [
+          entry.card.name,
+          entry.quantity,
+        ]),
+      ).toEqual([["Sol Ring", 2]]),
+    );
+    expect(
+      storedDeckNamed("Atraxa Counters").cards.map((entry) => entry.card.name),
+    ).toEqual(["Counterspell"]);
+    // Nor on the board, which is the open deck's.
+    expect(screen.getByLabelText("1 Counterspell in deck")).toBeInTheDocument();
+    expect(screen.queryByLabelText("2 Sol Ring in deck")).not.toBeInTheDocument();
+
+    // And it says which deck it changed. "2 added, 1 removed" read against the board in front
+    // of the user is a sentence they can only find untrue.
+    expect(
+      screen.getByText(
+        "Gruul Stompy: Edit applied: 2 added, 1 removed, 2 cards now.",
+      ),
+    ).toBeInTheDocument();
+
+    // The log follows the deck too: one agent session on the edited deck and none on the
+    // open one, because a change recorded against a deck it did not happen to is worse than
+    // no record at all.
+    expect(storedLogFor(first.id).sessions).toHaveLength(1);
+    expect(storedLogFor(first.id).sessions[0].actor).toBe("agent");
+    expect(storedLogFor(first.id).sessions[0].edits[0].reason).toBe(
+      "Swapping in two rocks for the weakest ramp.",
+    );
+    expect(storedLogFor(second.id).sessions).toHaveLength(0);
+
+    await turns.push(0, doneFrame("Swapped two rocks in."));
+    await turns.close(0);
+
+    // The turn is over, so the dot goes.
+    await waitFor(() =>
+      expect(
+        screen.queryByTitle("The deck agent is working on this deck"),
+      ).not.toBeInTheDocument(),
+    );
+
+    // Going back to the deck finds the whole turn waiting in its own transcript.
+    await user.click(screen.getByRole("button", { name: /Gruul Stompy/ }));
+    const transcript = screen.getByRole("log", {
+      name: "Deck agent conversation",
+    });
+    expect(within(transcript).getByText("Fix my ramp")).toBeInTheDocument();
+    expect(within(transcript).getByText("Swapped two rocks in.")).toBeInTheDocument();
+    expect(within(transcript).getByText("Applied: +2 / −1")).toBeInTheDocument();
+    expect(screen.getByLabelText("2 Sol Ring in deck")).toBeInTheDocument();
+  });
+
+  it("leaves the open deck's undo where it was when a background deck is edited", async () => {
+    const { first } = seedTwoDecks();
+    const turns = serveOpenAgentTurns();
+    render(<App />);
+    const user = userEvent.setup();
+
+    // The open deck gets an agent edit of its own, finished, so its block holds the Undo.
+    await ask("Fix my ramp");
+    await waitFor(() => expect(turns.started).toBe(1));
+    await turns.push(0, swapFrame("Two rocks for the weakest ramp."));
+    await turns.push(0, doneFrame("Swapped two rocks in."));
+    await turns.close(0);
+    const transcript = screen.getByRole("log", {
+      name: "Deck agent conversation",
+    });
+    expect(
+      within(transcript).getByRole("button", { name: "Undo" }),
+    ).toBeInTheDocument();
+
+    // A turn is then started on the *other* deck and left running.
+    await user.click(screen.getByRole("button", { name: /Atraxa Counters/ }));
+    await ask("And this one?");
+    await waitFor(() => expect(turns.started).toBe(2));
+    await user.click(screen.getByRole("button", { name: /Gruul Stompy/ }));
+
+    await turns.push(1, {
+      type: "deck_edit",
+      edit: {
+        deck_name: "Atraxa Counters",
+        reason: "One more counterspell.",
+        changes: [
+          {
+            scryfall_id: counterspell.scryfall_id,
+            name: counterspell.name,
+            quantity: 2,
+            previous_quantity: 1,
+            // Present because the change adds a copy: the reader refuses one that does not
+            // carry the card, since the deck's validators read fields only the payload has.
+            card: counterspell,
+          },
+        ],
+      },
+    });
+    await waitFor(() =>
+      expect(storedDeckNamed("Atraxa Counters").cards[0].quantity).toBe(2),
+    );
+
+    /*
+     * The open deck's Undo is untouched.
+     *
+     * `undoableEditId` is the open deck's own log cursor, so an edit recorded in another
+     * deck's log cannot move it — which is what makes the affordance decidable per deck at
+     * all. A cursor read from anywhere shared would have been taken by the background edit,
+     * and this button would then promise Sol Ring's reversal and deliver a Counterspell's.
+     */
+    const undo = within(transcript).getByRole("button", { name: "Undo" });
+    expect(undo).toBeInTheDocument();
+    expect(storedLogFor(first.id).sessions).toHaveLength(1);
+
+    await user.click(undo);
+
+    // It reversed this deck's edit and nothing in the other's.
+    expect(screen.queryByLabelText("2 Sol Ring in deck")).not.toBeInTheDocument();
+    expect(screen.getByLabelText("1 Gamble in deck")).toBeInTheDocument();
+    expect(storedDeckNamed("Atraxa Counters").cards[0].quantity).toBe(2);
   });
 
   it("stacks a card with nothing drawn over its printed top, and prices the copies", () => {

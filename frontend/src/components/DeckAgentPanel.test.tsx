@@ -100,6 +100,66 @@ function drivenStream() {
   };
 }
 
+/**
+ * Several turns the test drives at once, one per call to the client, in call order.
+ *
+ * `drivenStream` holds one turn's handlers, which is all a single-deck test needs. A turn
+ * belongs to its deck now, so two decks can be working together, and each turn has to be fed
+ * and settled on its own — including its abort signal, because "the other deck's turn was
+ * *not* cancelled" is only decidable against the signal the panel handed that turn. Nothing
+ * on screen can tell a request that was aborted from one whose frames are simply not being
+ * rendered, which is exactly the mistake this phase is undoing.
+ */
+function drivenStreams() {
+  interface DrivenTurn {
+    handlers: DeckAgentStreamHandlers;
+    signal: AbortSignal;
+    settle: (reply: DeckAgentChatReply) => void;
+  }
+  const turns: DrivenTurn[] = [];
+  const chat = vi.fn().mockImplementation(
+    (
+      _messages: DeckAgentRequestMessage[],
+      _deck: unknown,
+      handlers: DeckAgentStreamHandlers,
+      signal: AbortSignal,
+    ) =>
+      new Promise<DeckAgentChatReply>((resolve) => {
+        turns.push({ handlers, signal, settle: resolve });
+      }),
+  );
+  const turn = (index: number): DrivenTurn => {
+    const held = turns[index];
+    if (!held) {
+      throw new Error(`turn ${index} was never started`);
+    }
+    return held;
+  };
+  return {
+    chat,
+    turns,
+    signal: (index: number) => turn(index).signal,
+    async text(index: number, chunk: string) {
+      await act(async () => turn(index).handlers.onText(chunk));
+    },
+    async tool(index: number, call: DeckAgentToolCall) {
+      await act(async () => turn(index).handlers.onToolCall(call));
+    },
+    async deckEdit(index: number, edit: DeckAgentDeckEdit) {
+      await act(async () => turn(index).handlers.onDeckEdit?.(edit));
+    },
+    async finish(index: number, value: DeckAgentChatReply) {
+      await act(async () => turn(index).settle(value));
+    },
+  };
+}
+
+/** Send a question on the deck currently rendered, and leave the turn open. */
+async function askOpenDeck(question: string) {
+  await userEvent.type(screen.getByLabelText("Message the deck agent"), question);
+  await userEvent.click(screen.getByLabelText("Send message"));
+}
+
 function reply(
   content: string,
   cost: number | null = 0.0012,
@@ -562,27 +622,53 @@ it("shows a tool call while it runs and drops the preamble it interrupted", asyn
   expect(screen.getAllByText("You are light on ramp.")).toHaveLength(1);
 });
 
-it("abandons a half-streamed turn when the deck changes", async () => {
-  const stream = drivenStream();
+it("keeps a half-streamed turn running when the deck changes, and comes back to it further along", async () => {
+  const streams = drivenStreams();
   const { rerender } = render(
-    <DeckAgentPanel deckId="deck-a" client={client(stream.chat)} />,
+    <DeckAgentPanel deckId="deck-a" client={client(streams.chat)} />,
   );
 
-  await userEvent.type(
-    screen.getByLabelText("Message the deck agent"),
-    "Deck A question",
-  );
-  await userEvent.click(screen.getByLabelText("Send message"));
-  await stream.text("Half an answer");
+  await askOpenDeck("Deck A question");
+  await streams.text(0, "Half an answer");
   expect(screen.getByText(/Half an answer/)).toBeInTheDocument();
 
-  rerender(<DeckAgentPanel deckId="deck-b" client={client(stream.chat)} />);
-  // Half an answer about another deck has no business showing here, and it is not
-  // stored either — only a finished turn is.
+  rerender(<DeckAgentPanel deckId="deck-b" client={client(streams.chat)} />);
+
+  /*
+   * Not aborted. This is the ask — "no cancel or similar" — and the signal is the only place
+   * it can be settled: this effect's cleanup used to abort here, and a screen with none of
+   * deck A's frames on it looks exactly the same whether the request died or is simply not
+   * the one being rendered. Asserted before anything else, because everything below is
+   * meaningless if the request is already dead.
+   */
+  expect(streams.signal(0).aborted).toBe(false);
+  // Deck B shows its own empty transcript and its own empty draft. Half an answer about
+  // another deck has no business here, and B has nothing of its own to show yet.
   expect(screen.queryByText(/Half an answer/)).not.toBeInTheDocument();
-  rerender(<DeckAgentPanel deckId="deck-a" client={client(stream.chat)} />);
+  expect(screen.queryByText("Deck A question")).not.toBeInTheDocument();
+  expect(
+    screen.getByText(/Ask about the deck you are building/),
+  ).toBeInTheDocument();
+  expect(screen.getByLabelText("Message the deck agent")).toHaveValue("");
+
+  // The turn writes more while the user is looking at another deck. That is the whole
+  // feature: the frames have somewhere to go even though nothing is rendering them.
+  await streams.text(0, ", and the rest of it");
+
+  rerender(<DeckAgentPanel deckId="deck-a" client={client(streams.chat)} />);
+  // Still streaming, and holding the text it accumulated while away. The second clause is
+  // the one that bites: a panel that kept the request alive and dropped its frames would
+  // come back to "Half an answer" and pass an assertion that only said "not aborted".
+  expect(
+    screen.getByText("Half an answer, and the rest of it"),
+  ).toBeInTheDocument();
   expect(screen.getByText("Deck A question")).toBeInTheDocument();
-  expect(screen.queryByText(/Half an answer/)).not.toBeInTheDocument();
+  expect(screen.getByLabelText("Send message")).toBeDisabled();
+
+  await streams.finish(0, reply("Half an answer, and the rest of it."));
+  expect(
+    screen.getByText("Half an answer, and the rest of it."),
+  ).toBeInTheDocument();
 });
 
 it("leaves an unsent question with the deck it is about", async () => {
@@ -680,40 +766,30 @@ it("reloads the conversation it saved in the browser", async () => {
   expect(screen.getByText("$0.0012")).toBeInTheDocument();
 });
 
-it("abandons a reply when the deck changes rather than answering into it", async () => {
-  let release: (value: DeckAgentChatReply) => void = () => {};
-  const chat = vi.fn().mockImplementation(
-    () =>
-      new Promise<DeckAgentChatReply>((resolve) => {
-        release = resolve;
-      }),
-  );
+it("answers into the deck the question was asked about, not the deck on screen", async () => {
+  const streams = drivenStreams();
   const { rerender } = render(
-    <DeckAgentPanel deckId="deck-a" client={client(chat)} />,
+    <DeckAgentPanel deckId="deck-a" client={client(streams.chat)} />,
   );
 
-  await userEvent.type(
-    screen.getByLabelText("Message the deck agent"),
-    "Deck A question",
-  );
-  await userEvent.click(screen.getByLabelText("Send message"));
+  await askOpenDeck("Deck A question");
   await screen.findByRole("status");
 
-  rerender(<DeckAgentPanel deckId="deck-b" client={client(chat)} />);
-  // The pending state belonged to the deck that was left behind.
+  rerender(<DeckAgentPanel deckId="deck-b" client={client(streams.chat)} />);
+  // The pending state belongs to the deck that is still working, so it is not on screen
+  // here — the turn is, though, which the assertions below are about.
   expect(screen.queryByText("Thinking…")).not.toBeInTheDocument();
-  // Resolved inside `act` so the reply is fully processed before absence is
-  // asserted — an absence checked before the update lands proves nothing.
-  await act(async () => {
-    release(reply("Answer for deck A."));
-  });
+  // Resolved inside `act` so the reply is fully processed before anything is asserted.
+  await streams.finish(0, reply("Answer for deck A."));
+  // Not into deck B. `recordReply` is given the deck the turn captured, so an answer cannot
+  // be filed against whichever deck happens to be on screen when it lands.
   expect(screen.queryByText("Answer for deck A.")).not.toBeInTheDocument();
 
-  // Nor did it arrive in the deck it was asked about: the request was abandoned,
-  // and the question is still there to send again.
-  rerender(<DeckAgentPanel deckId="deck-a" client={client(chat)} />);
+  rerender(<DeckAgentPanel deckId="deck-a" client={client(streams.chat)} />);
+  // And it did arrive, in the conversation that asked for it: the deck switch left the
+  // request alone, so the answer is here rather than lost with an abort.
   expect(screen.getByText("Deck A question")).toBeInTheDocument();
-  expect(screen.queryByText("Answer for deck A.")).not.toBeInTheDocument();
+  expect(screen.getByText("Answer for deck A.")).toBeInTheDocument();
 });
 
 it("opens a tool call onto its arguments and its result, in debug mode", async () => {
@@ -864,45 +940,54 @@ function appliedSwap(editId = "edit-1"): DeckAgentAppliedEdit {
   };
 }
 
-it("drops an edit that arrives after the user has switched decks", async () => {
-  const stream = drivenStream();
+it("names the deck a background turn's edit belongs to, and keeps it off the open deck", async () => {
+  const streams = drivenStreams();
   const onDeckEdit = vi.fn().mockReturnValue(appliedSwap());
   const { rerender } = render(
     <DeckAgentPanel
       deckId="deck-a"
-      client={client(stream.chat)}
+      client={client(streams.chat)}
       onDeckEdit={onDeckEdit}
       onUndoDeckEdit={vi.fn()}
       undoableEditId="edit-1"
     />,
   );
 
-  await userEvent.type(
-    screen.getByLabelText("Message the deck agent"),
-    "Fix my ramp",
-  );
-  await userEvent.click(screen.getByLabelText("Send message"));
+  await askOpenDeck("Fix my ramp");
 
-  // The user moves to another deck while the turn is still open. Switching aborts the
-  // request, and a spec-compliant fetch then errors the body, so in the real client this
-  // frame never arrives — but the panel must not depend on that. What it would cost is an
-  // agent edit applied to the deck the user is now looking at and written into that deck's
-  // history as though they had asked for it.
+  // The user moves to another deck while the turn is still open. The turn goes on, and its
+  // edit still belongs to the deck it was asked about — which is what the guard that used to
+  // stand here dropped. What made that guard right was that a deck switch aborted the
+  // request; what makes it wrong now is that the edit is *named* rather than applied to
+  // whichever deck happens to be open.
   rerender(
     <DeckAgentPanel
       deckId="deck-b"
-      client={client(stream.chat)}
+      client={client(streams.chat)}
       onDeckEdit={onDeckEdit}
       onUndoDeckEdit={vi.fn()}
       undoableEditId="edit-1"
     />,
   );
 
-  await stream.deckEdit(deckEdit());
+  await streams.deckEdit(0, deckEdit());
 
-  expect(onDeckEdit).not.toHaveBeenCalled();
+  expect(onDeckEdit).toHaveBeenCalledTimes(1);
+  expect(onDeckEdit).toHaveBeenCalledWith(deckEdit(), "deck-a");
+  // Nothing about it is on deck B's screen: the block belongs to deck A's live turn.
   expect(screen.queryByText(/^Applied:/)).not.toBeInTheDocument();
   expect(screen.queryByText("Not applied")).not.toBeInTheDocument();
+
+  rerender(
+    <DeckAgentPanel
+      deckId="deck-a"
+      client={client(streams.chat)}
+      onDeckEdit={onDeckEdit}
+      onUndoDeckEdit={vi.fn()}
+      undoableEditId="edit-1"
+    />,
+  );
+  expect(screen.getByText("Applied: +2 / −2")).toBeInTheDocument();
 });
 
 it("hands a streamed deck edit to the deck and says what it applied", async () => {
@@ -929,7 +1014,8 @@ it("hands a streamed deck edit to the deck and says what it applied", async () =
   // The panel does not change the deck itself — it hands the resolved edit outward,
   // exactly as it hands a card name to the inspector.
   expect(onDeckEdit).toHaveBeenCalledTimes(1);
-  expect(onDeckEdit).toHaveBeenCalledWith(deckEdit());
+  // With the deck the turn was asked about, so the receiver never has to guess at it.
+  expect(onDeckEdit).toHaveBeenCalledWith(deckEdit(), "deck-a");
   // And it is on screen the moment the deck has it, in the past tense: the change has
   // already happened, so there is nothing here to confirm.
   expect(screen.getByText("Applied: +2 / −2")).toBeInTheDocument();
@@ -1786,6 +1872,208 @@ it("leaves an answered turn unmarked, so the narrowing is not a reversal", async
   expect(storedChat("deck-a").entries[1].toolCalls[0].result).toBe(
     "35 cards, 8 ramp.",
   );
+});
+
+it("runs two decks' turns at once, each landing in its own transcript and total", async () => {
+  const streams = drivenStreams();
+  const { rerender } = render(
+    <DeckAgentPanel deckId="deck-a" client={client(streams.chat)} debugEnabled />,
+  );
+
+  await askOpenDeck("Ghalta question");
+  rerender(
+    <DeckAgentPanel deckId="deck-b" client={client(streams.chat)} debugEnabled />,
+  );
+  await askOpenDeck("Atraxa question");
+
+  // Two agents building in two different decks, which is the second half of the ask.
+  expect(streams.turns).toHaveLength(2);
+  expect(streams.signal(0).aborted).toBe(false);
+  expect(streams.signal(1).aborted).toBe(false);
+
+  // Fed interleaved, the way two independent responses actually arrive: nothing about the
+  // order two streams advance in is under anyone's control.
+  await streams.tool(0, toolCall("read_deck()"));
+  await streams.text(1, "Atraxa wants ");
+  await streams.tool(1, toolCall("search_cards(proliferate)"));
+  await streams.text(0, "Ghalta wants ramp.");
+  await streams.text(1, "counters.");
+
+  // Deck B is open, so only B's turn is on screen. A's frames went to A.
+  expect(screen.getByText("search_cards(proliferate)")).toBeInTheDocument();
+  expect(screen.getByText("counters.")).toBeInTheDocument();
+  expect(screen.queryByText("read_deck()")).not.toBeInTheDocument();
+  expect(screen.queryByText("Ghalta wants ramp.")).not.toBeInTheDocument();
+
+  await streams.finish(
+    1,
+    reply("Atraxa wants counters.", 0.0034, [toolCall("search_cards(proliferate)")]),
+  );
+  await streams.finish(
+    0,
+    reply("Ghalta wants ramp.", 0.0012, [toolCall("read_deck()")]),
+  );
+
+  // Neither total picks up the other's turn: the spend belongs to the conversation, and two
+  // conversations were paid for separately.
+  expect(screen.getByText("Atraxa question")).toBeInTheDocument();
+  expect(screen.getByText("Atraxa wants counters.")).toBeInTheDocument();
+  expect(screen.queryByText("Ghalta wants ramp.")).not.toBeInTheDocument();
+  expect(screen.getByText("$0.0034")).toBeInTheDocument();
+
+  rerender(
+    <DeckAgentPanel deckId="deck-a" client={client(streams.chat)} debugEnabled />,
+  );
+  expect(screen.getByText("Ghalta question")).toBeInTheDocument();
+  expect(screen.getByText("Ghalta wants ramp.")).toBeInTheDocument();
+  expect(screen.queryByText("Atraxa question")).not.toBeInTheDocument();
+  expect(screen.getByText("$0.0012")).toBeInTheDocument();
+
+  // And in the store, which is what the *next* turn on either deck reads back.
+  expect(
+    storedChat("deck-a").entries.map((entry) => entry.message.content),
+  ).toEqual(["Ghalta question", "Ghalta wants ramp."]);
+  expect(
+    storedChat("deck-b").entries.map((entry) => entry.message.content),
+  ).toEqual(["Atraxa question", "Atraxa wants counters."]);
+});
+
+it("cancels and resets the deck on screen, and no other deck's turn", async () => {
+  const streams = drivenStreams();
+  const { rerender } = render(
+    <DeckAgentPanel deckId="deck-a" client={client(streams.chat)} />,
+  );
+
+  await askOpenDeck("deck a question");
+  await streams.text(0, "Deck A is fine so far");
+
+  rerender(<DeckAgentPanel deckId="deck-b" client={client(streams.chat)} />);
+  await askOpenDeck("deck b question");
+  await streams.tool(1, replayableCall("read_deck()", "call-b", "{}", "40 cards."));
+
+  await pressEscape(screen.getByRole("region", { name: "Deck agent" }));
+
+  // Escape stopped the conversation on screen and committed it, and left the other deck's
+  // turn alone. Escape belongs to what the user is looking at; a key that reached every deck
+  // would make a deck switch a cancel again by another route.
+  expect(streams.signal(1).aborted).toBe(true);
+  expect(streams.signal(0).aborted).toBe(false);
+  expect(storedChat("deck-b").entries[1].interrupted).toBe(true);
+  expect(storedChat("deck-a").entries).toHaveLength(1);
+
+  // **Reset chat** is the other clear-point, and it is scoped the same way: it throws away
+  // one conversation, so it may stop one turn.
+  await userEvent.click(screen.getByRole("button", { name: "Reset chat" }));
+  expect(streams.signal(0).aborted).toBe(false);
+
+  rerender(<DeckAgentPanel deckId="deck-a" client={client(streams.chat)} />);
+  expect(screen.getByText("Deck A is fine so far")).toBeInTheDocument();
+  expect(screen.getByLabelText("Send message")).toBeDisabled();
+  await streams.finish(0, reply("Deck A is fine so far, actually."));
+  expect(
+    screen.getByText("Deck A is fine so far, actually."),
+  ).toBeInTheDocument();
+});
+
+it("aborts every deck's turn when the panel goes away", async () => {
+  const streams = drivenStreams();
+  const { rerender, unmount } = render(
+    <DeckAgentPanel deckId="deck-a" client={client(streams.chat)} />,
+  );
+
+  await askOpenDeck("deck a question");
+  rerender(<DeckAgentPanel deckId="deck-b" client={client(streams.chat)} />);
+  await askOpenDeck("deck b question");
+  expect(streams.signal(0).aborted).toBe(false);
+  expect(streams.signal(1).aborted).toBe(false);
+
+  unmount();
+
+  // Every one of them, including the ones a deck switch deliberately left running. From here
+  // nothing can render a frame or commit what one carried, so a request still open would be
+  // paying a provider to write into nothing.
+  expect(streams.signal(0).aborted).toBe(true);
+  expect(streams.signal(1).aborted).toBe(true);
+});
+
+it("refuses a fourth deck's turn and says why, without swallowing the question", async () => {
+  const streams = drivenStreams();
+  const view = render(
+    <DeckAgentPanel deckId="deck-1" client={client(streams.chat)} />,
+  );
+
+  for (const deckId of ["deck-1", "deck-2", "deck-3"]) {
+    view.rerender(
+      <DeckAgentPanel deckId={deckId} client={client(streams.chat)} />,
+    );
+    await askOpenDeck(`question for ${deckId}`);
+  }
+
+  // Three is allowed. The cap is a boundary, so the third turn is the one an off-by-one
+  // would refuse, and asserting only the fourth would pass a cap of two.
+  expect(streams.turns).toHaveLength(3);
+  expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+
+  view.rerender(<DeckAgentPanel deckId="deck-4" client={client(streams.chat)} />);
+  await askOpenDeck("question for deck-4");
+
+  expect(streams.turns).toHaveLength(3);
+  const refusal = screen.getByRole("alert");
+  // Refused *with the reason*: a limit that says nothing reads as the agent being broken.
+  expect(refusal).toHaveTextContent("already working on 3 decks");
+  expect(refusal).toHaveTextContent(/starving card searches/);
+  // And the question is still in the composer rather than swallowed by the limit, with
+  // nothing appended to the transcript that a turn will never answer.
+  expect(screen.getByLabelText("Message the deck agent")).toHaveValue(
+    "question for deck-4",
+  );
+  expect(storedChat("deck-4")?.entries ?? []).toHaveLength(0);
+
+  // One finishing makes room, and the same click then goes through.
+  await streams.finish(0, reply("Answer for deck 1."));
+  await userEvent.click(screen.getByLabelText("Send message"));
+
+  expect(streams.turns).toHaveLength(4);
+  expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+});
+
+it("reports which decks have the agent working", async () => {
+  const streams = drivenStreams();
+  const onActiveTurnsChange = vi.fn();
+  const { rerender } = render(
+    <DeckAgentPanel
+      deckId="deck-a"
+      client={client(streams.chat)}
+      onActiveTurnsChange={onActiveTurnsChange}
+    />,
+  );
+  const reported = () => onActiveTurnsChange.mock.lastCall?.[0] as string[];
+
+  // Nothing running is reported as nothing, not as silence: a listener that was never told
+  // has no way to clear a dot left over from a previous mount.
+  expect(reported()).toEqual([]);
+
+  await askOpenDeck("deck a question");
+  expect(reported()).toEqual(["deck-a"]);
+
+  rerender(
+    <DeckAgentPanel
+      deckId="deck-b"
+      client={client(streams.chat)}
+      onActiveTurnsChange={onActiveTurnsChange}
+    />,
+  );
+  // A deck switch does not stop the turn, so it does not change the report either.
+  expect(reported()).toEqual(["deck-a"]);
+
+  await askOpenDeck("deck b question");
+  expect(reported()).toEqual(["deck-a", "deck-b"]);
+
+  await streams.finish(0, reply("Answer for deck A."));
+  expect(reported()).toEqual(["deck-b"]);
+
+  await pressEscape(screen.getByRole("region", { name: "Deck agent" }));
+  expect(reported()).toEqual([]);
 });
 
 it("leaves Escape alone when no turn is in flight", async () => {

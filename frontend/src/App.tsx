@@ -77,12 +77,29 @@ function App() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [historyOpen, setHistoryOpen] = useState(false);
   const [exportOpen, setExportOpen] = useState(false);
-  // What the deck agent's tools read. Rebuilt from the deck rather than held
-  // separately, so a card added mid-conversation is visible on the next question.
+  /*
+   * What the deck agent's tools read. Rebuilt from the deck rather than held separately, so a
+   * card added mid-conversation is visible on the next question.
+   *
+   * `updated_at` travels with it because it is the deck's revision, and both halves of the
+   * staleness comparison have to be produced by the browser: the panel stamps it onto each
+   * tool call as the call is made, and this is the value a later turn's replay is compared
+   * against. Omit it and every comparison sees nothing on one side, so the backend's
+   * substitution can never fire and a `read_deck` result from before the user moved half the
+   * deck comes back to the model as a current observation.
+   */
   const deckSnapshot = useMemo(
-    () => toDeckSnapshot(deck.name, deck.cards),
-    [deck.cards, deck.name],
+    () => toDeckSnapshot(deck.name, deck.cards, deck.updated_at),
+    [deck.cards, deck.name, deck.updated_at],
   );
+  /**
+   * Which decks the agent is working on right now, reported by the panel.
+   *
+   * Held here rather than in the panel because the deck list is here: a turn on a deck the
+   * user is not looking at is otherwise invisible, and there is nothing else on screen that
+   * would tell them a second agent is still building.
+   */
+  const [agentTurnDeckIds, setAgentTurnDeckIds] = useState<string[]>([]);
 
   /**
    * Apply an edit the agent made, as the agent, and describe what became of it.
@@ -101,9 +118,14 @@ function App() {
    * the edit. Never from `edit`: the counts in it are the backend's belief about the snapshot
    * this browser posted, and a durable block that repeated them would name cards the deck
    * did not move and count copies it did not add.
+   *
+   * The deck is named rather than assumed, because a turn outlives the user's attention on the
+   * deck it was asked about: `deckId` is the turn's deck, and the edit lands there whether or
+   * not it is the deck on screen. `useDeck` announces such an edit with the deck's name, since
+   * "3 cards added" read against a board it did not happen to is worse than silence.
    */
   const applyAgentEdit = useCallback(
-    (edit: DeckAgentDeckEdit): DeckAgentAppliedEdit | null => {
+    (edit: DeckAgentDeckEdit, deckId: string): DeckAgentAppliedEdit | null => {
       const outcome = applyEdit(
         // Refused whole rather than in part: an edit missing one of its changes is the
         // half-applied edit the design refuses, because history would then record an intent
@@ -115,6 +137,7 @@ function App() {
               "That edit named a card this deck cannot identify, so none of it was applied.",
           },
         "agent",
+        deckId,
       );
       if (!outcome.applied) {
         return refusedDeckEdit(outcome.reason);
@@ -387,6 +410,21 @@ function App() {
                     <strong>{libraryDeck.name}</strong>
                     <small>{cardCount} cards · saved locally</small>
                   </span>
+                  {/*
+                    * The agent is working on this deck, whether or not it is the one open.
+                    * A background turn has no other surface at all: without this the only
+                    * evidence that a second deck is still building is the deck changing
+                    * under the user later. Labelled rather than decorative, because a dot
+                    * that only a sighted user is told about is not a surface either.
+                    */}
+                  {agentTurnDeckIds.includes(libraryDeck.id) ? (
+                    <span
+                      className="deck-link__working"
+                      title="The deck agent is working on this deck"
+                    >
+                      <span className="sr-only">Deck agent working</span>
+                    </span>
+                  ) : null}
                 </button>
               );
             })}
@@ -695,6 +733,7 @@ function App() {
             onUndoDeckEdit={back}
             undoableEditId={lastRecordedEditId}
             readDeckHistory={readDeckHistory}
+            onActiveTurnsChange={setAgentTurnDeckIds}
           />
         </div>
       </main>

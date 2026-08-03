@@ -1,6 +1,6 @@
 import { act, renderHook } from "@testing-library/react";
 import { StrictMode } from "react";
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { CardSearchResult } from "../domain/card";
 import { getCardPrice } from "../domain/card";
@@ -822,6 +822,150 @@ describe("useDeck travel across a reload", () => {
       "user",
       "agent",
     ]);
+  });
+
+  it("edits the deck it is named, leaving the active one and its log alone", () => {
+    const { result } = renderHook(() => useDeck());
+    const background = result.current.deck.id;
+    act(() => result.current.addCard(gamble));
+    act(() => result.current.createDeck());
+    const open = result.current.deck.id;
+    act(() => result.current.addCard(counterspell));
+    expect(open).not.toBe(background);
+
+    const seen: Array<string[]> = [];
+    let outcome: DeckEditOutcome | undefined;
+    act(() => {
+      outcome = result.current.applyEdit(
+        (deck) => {
+          seen.push(deck.cards.map((entry) => entry.card.name));
+          return {
+            changes: [{ card: solRing, quantity: 1 }],
+            reason: "the deck you asked me about needs a rock",
+          };
+        },
+        "agent",
+        background,
+      );
+    });
+
+    // Resolved against the named deck as well as applied to it: a planner handed the active
+    // deck would read a card the target does not hold and refuse, or worse, not refuse.
+    expect(seen).toEqual([["Gamble"]]);
+    expect(outcome?.applied).toBe(true);
+    // The active deck is untouched, and it is still the active one — an edit is not a switch.
+    expect(result.current.deck.id).toBe(open);
+    expect(cardNames(result.current.deck)).toEqual(["Counterspell"]);
+    // The named deck took it, so it is the deck the library now holds changed.
+    expect(
+      result.current.decks.find((deck) => deck.id === background)?.cards.map(
+        (entry) => entry.card.name,
+      ),
+    ).toEqual(["Gamble", "Sol Ring"]);
+    // And the log followed the deck, not the cursor: two entries on the edited deck's log and
+    // one on the open deck's. A change recorded against a deck it did not happen to is worse
+    // than no record, because undo would then replay it there.
+    expect(
+      recordedEdits(storedLog(background)).map((entry) => entry.reason),
+    ).toEqual([undefined, "the deck you asked me about needs a rock"]);
+    expect(recordedEdits(storedLog(open))).toHaveLength(1);
+    // `lastRecordedEditId` is the open deck's cursor, so it cannot have moved: the affordance
+    // to reverse a particular edit is decided per deck.
+    expect(result.current.lastRecordedEditId).toBe(
+      recordedEdits(storedLog(open))[0]?.id,
+    );
+    // The announcement names the deck, because "1 added" read against the board in front of
+    // the user is a sentence they can only find untrue.
+    expect(result.current.announcement).toBe(
+      "Untitled Commander: Edit applied: 1 added, 2 cards now.",
+    );
+    expect(result.current.announcementTone).toBe("status");
+  });
+
+  it("behaves exactly as before when no deck is named", () => {
+    /*
+     * The control for the parameter above.
+     *
+     * Two hooks, the same edit, one addressed by omission and one by the active deck's own
+     * id. Everything observable has to match — the deck, the log, and the announcement, which
+     * is the field that would give it away: naming the deck on the default path would prefix
+     * every toast the application has ever shown.
+     */
+    const byDefault = renderHook(() => useDeck());
+    act(() => byDefault.result.current.addCard(gamble));
+    act(() =>
+      byDefault.result.current.applyEdit(
+        () => ({ changes: [{ card: solRing, quantity: 1 }], reason: "a rock" }),
+        "agent",
+      ),
+    );
+    const defaulted = {
+      cards: cardNames(byDefault.result.current.deck),
+      announcement: byDefault.result.current.announcement,
+      edits: recordedEdits(
+        storedLog(byDefault.result.current.deck.id),
+      ).map((entry) => entry.reason),
+      cursorIsNewest:
+        byDefault.result.current.lastRecordedEditId ===
+        recordedEdits(storedLog(byDefault.result.current.deck.id)).at(-1)?.id,
+    };
+    byDefault.unmount();
+    window.localStorage.clear();
+
+    const byName = renderHook(() => useDeck());
+    act(() => byName.result.current.addCard(gamble));
+    act(() =>
+      byName.result.current.applyEdit(
+        () => ({ changes: [{ card: solRing, quantity: 1 }], reason: "a rock" }),
+        "agent",
+        byName.result.current.deck.id,
+      ),
+    );
+
+    expect(defaulted).toEqual({
+      cards: cardNames(byName.result.current.deck),
+      announcement: byName.result.current.announcement,
+      edits: recordedEdits(storedLog(byName.result.current.deck.id)).map(
+        (entry) => entry.reason,
+      ),
+      cursorIsNewest: true,
+    });
+    // Spelled out as well as compared, so a mutation that broke both arms the same way is
+    // still caught: the default path is the active deck and says nothing about which deck.
+    expect(defaulted.announcement).toBe(
+      "Edit applied: 1 added, 2 cards now.",
+    );
+    expect(defaulted.cards).toEqual(["Gamble", "Sol Ring"]);
+  });
+
+  it("refuses an edit for a deck that is no longer in the library", () => {
+    const { result } = renderHook(() => useDeck());
+    act(() => result.current.addCard(gamble));
+    const before = shapeOf(result.current.deck);
+    const planned = vi.fn();
+
+    let outcome: DeckEditOutcome | undefined;
+    act(() => {
+      outcome = result.current.applyEdit(
+        (deck) => {
+          planned(deck.id);
+          return { changes: [{ card: solRing, quantity: 1 }] };
+        },
+        "agent",
+        "deck-deleted-mid-turn",
+      );
+    });
+
+    // Refused rather than falling back to the active deck. A named edit landing on the wrong
+    // deck is the exact failure the parameter exists to prevent, and a deck deleted while its
+    // turn was still running is how it would happen.
+    expect(outcome).toEqual({
+      applied: false,
+      reason: expect.stringContaining("no longer in the library"),
+    });
+    expect(planned).not.toHaveBeenCalled();
+    expect(shapeOf(result.current.deck)).toBe(before);
+    expect(recordedEdits(storedLog(result.current.deck.id))).toHaveLength(1);
   });
 });
 
