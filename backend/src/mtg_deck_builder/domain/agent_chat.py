@@ -58,17 +58,12 @@ shed at all.
 """
 
 ToolPayloadText = Annotated[str, StringConstraints(max_length=MAX_TOOL_PAYLOAD_CHARS)]
+"""One tool call's arguments or result, going out in a reply or coming back in a replay.
 
-ReplayedResultText = Annotated[
-    str,
-    StringConstraints(min_length=1, max_length=MAX_TOOL_PAYLOAD_CHARS),
-]
-"""One replayed tool result, as the tool produced it.
-
-Neither stripped nor bounded to prose length, because it is not prose: it is the same
-text `ToolPayloadText` let the reply carry, coming back. A five-hundred-card
-`read_deck` listing is three times the prose bound, so sharing that bound would have
-made the largest decks the ones a replay silently fails on.
+Neither stripped nor required to be non-empty, because it is not prose: it is the text
+the tool produced, and a replay has to hand the model back exactly what it read. The
+same type on both directions on purpose — a payload the reply was allowed to carry that
+the request then refuses is a bound the whole turn fails on rather than degrades to.
 """
 
 ToolCallId = Annotated[str, StringConstraints(min_length=1, max_length=200)]
@@ -203,12 +198,14 @@ class DeckAgentMessage(DeckAgentModel):
     # Optional now: an assistant message that only carries tool calls has no prose,
     # which is the provider's own shape for one.
     #
-    # Typed to the wider of the two bounds because one field carries two different
-    # things: prose from a person or the model, and a replayed tool result. Which bound
-    # applies is decided by the role below — a tool result may be as long as the reply
-    # was allowed to carry, and is neither stripped nor reflowed, because the model has
-    # to read back exactly what it read the first time.
-    content: ReplayedResultText | None = None
+    # Typed to `ToolPayloadText` because one field carries two different things: prose
+    # from a person or the model, and a replayed tool result. Which bound applies is
+    # decided by the role below — prose keeps `MAX_MESSAGE_CHARS`, while a tool result
+    # may be as long as the reply was allowed to carry and is neither stripped nor
+    # required to say anything, because the model has to read back exactly what it read
+    # the first time. A `read_deck` listing runs to three times the prose bound, so
+    # sharing that bound would have made the largest decks the ones a replay 422s on.
+    content: ToolPayloadText | None = None
     tool_calls: Annotated[
         list[DeckAgentReplayCall],
         Field(max_length=MAX_REPLAY_CALLS),

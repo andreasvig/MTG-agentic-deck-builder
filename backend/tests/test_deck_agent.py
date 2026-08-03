@@ -1668,6 +1668,12 @@ def test_a_replayed_tool_result_may_be_longer_than_prose_ever_is() -> None:
     # what it read the first time.
     padded = DeckAgentMessage(role="tool", tool_call_id="call-1", content="  Read.\n")
     assert padded.content == "  Read.\n"
+    # And it may be empty. A tool that returned nothing is a fact about the call, and
+    # 422-ing the whole turn over it would fail the chat rather than bound it — prose
+    # keeps the non-blank rule, which is what that rule was for.
+    assert DeckAgentMessage(role="tool", tool_call_id="call-1", content="").content == ""
+    with pytest.raises(ValidationError):
+        DeckAgentMessage(role="assistant", content="")
 
 
 def test_every_replayed_call_must_be_answered_by_id() -> None:
@@ -2203,3 +2209,59 @@ def test_the_streamed_done_event_carries_the_shed_reply() -> None:
         False,
         False,
     ]
+
+
+def test_the_streamed_tool_event_carries_the_call_id() -> None:
+    """An interrupted turn commits from the stream and never sees `done`.
+
+    So the id has to be on the `tool` event as well as on the reply: without it the
+    browser has a call it cannot pair with its result, every interrupted turn degrades
+    to framing-only, and the whole replay ships as its own fallback with a green suite.
+    """
+
+    service = DeckAgentService(
+        model_client=StubStreamingClient(
+            [
+                [_tool_chunk("read_deck", "{}", call_id="call-live")],
+                _text_chunks("You are light on ramp."),
+            ]
+        ),
+        settings=_settings(),
+        toolbox=StubToolbox(),
+    )
+
+    events = _collect(_request("What is missing?"), service)
+
+    tool_event = next(event for event in events if event.type == "tool")
+    assert tool_event.call.id == "call-live"
+    # And the payloads it needs to replay that call, before any `done` arrives.
+    assert tool_event.call.arguments_json == "{}"
+    assert tool_event.call.result == "read_deck said something."
+
+
+def test_the_stream_route_frames_the_call_id_and_its_payloads() -> None:
+    with TestClient(create_app()) as http:
+        http.app.state.deck_agent = DeckAgentService(
+            model_client=StubStreamingClient(
+                [
+                    [_tool_chunk("read_deck", "{}", call_id="call-live")],
+                    _text_chunks("You are light on ramp."),
+                ]
+            ),
+            settings=_settings(),
+            toolbox=StubToolbox(),
+        )
+        with http.stream(
+            "POST",
+            "/api/v1/agent/chat/stream",
+            json={"messages": [{"role": "user", "content": "What is missing?"}]},
+        ) as response:
+            assert response.status_code == 200
+            events = _read_sse(response.iter_lines())
+
+    call = next(event for event in events if event["type"] == "tool")["call"]
+    assert call["id"] == "call-live"
+    assert call["result"] == "read_deck said something."
+    # The same call arrives again in `done`, which is what an answered turn stores.
+    done = events[-1]["reply"]["tool_calls"][0]
+    assert done["id"] == "call-live"
