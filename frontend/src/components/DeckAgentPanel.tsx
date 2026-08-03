@@ -523,9 +523,11 @@ export function DeckAgentPanel({
      * carry the one they actually read — which is exactly the difference the backend is
      * comparing for.
      *
-     * `undefined` until `App.tsx` passes the deck's `updated_at` (Phase 4), and absent is
-     * not "unchanged": the backend reads a missing revision as the browser declining to
-     * say, so nothing is claimed in the meantime.
+     * `App.tsx` passes the deck's `updated_at`, so this is populated for the open deck and
+     * pinned there. It is still optional, because a caller may hand the panel a snapshot
+     * without one — and absent is not "unchanged": the backend reads a missing revision as
+     * the browser declining to say, so a call carrying none claims nothing rather than
+     * claiming to be current.
      */
     const askedRevision = deck?.updated_at;
     // Read now rather than held in state, so the log includes the edit made a moment

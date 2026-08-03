@@ -411,13 +411,16 @@ function App() {
                     <small>{cardCount} cards · saved locally</small>
                   </span>
                   {/*
-                    * The agent is working on this deck, whether or not it is the one open.
-                    * A background turn has no other surface at all: without this the only
-                    * evidence that a second deck is still building is the deck changing
-                    * under the user later. Labelled rather than decorative, because a dot
-                    * that only a sighted user is told about is not a surface either.
+                    * The agent is working on a deck the user is not looking at. The open
+                    * deck already has the panel as its surface; repeating that state here
+                    * adds noise, including to a screen reader. A background turn has no
+                    * other surface at all: without this the only evidence it is still
+                    * building is the deck changing under the user later. Labelled rather
+                    * than decorative, because a dot that only a sighted user is told about
+                    * is not a surface either.
                     */}
-                  {agentTurnDeckIds.includes(libraryDeck.id) ? (
+                  {libraryDeck.id !== deck.id &&
+                  agentTurnDeckIds.includes(libraryDeck.id) ? (
                     <span
                       className="deck-link__working"
                       title="The deck agent is working on this deck"

@@ -1785,6 +1785,12 @@ describe("agent deck edits", () => {
     await ask("Fix my ramp");
     await waitFor(() => expect(turns.started).toBe(1));
 
+    // The open deck already exposes the live turn in its panel. Repeating it in the rail
+    // would make the activity marker noise rather than the background signal it exists for.
+    expect(
+      screen.queryByTitle("The deck agent is working on this deck"),
+    ).not.toBeInTheDocument();
+
     // The user opens the other deck while the turn is still running.
     const user = userEvent.setup();
     await user.click(screen.getByRole("button", { name: /Atraxa Counters/ }));

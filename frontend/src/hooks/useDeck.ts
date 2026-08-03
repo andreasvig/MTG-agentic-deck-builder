@@ -498,7 +498,7 @@ export function useDeck() {
         current,
         deckEditMutation(plan),
         { actor, reason: plan.reason },
-        target.id,
+        target,
       );
       commit(next);
       return outcome;
@@ -890,7 +890,7 @@ function deckReducer(state: DeckState, action: DeckAction): DeckState {
 
   // A user's own change is one mutation with no stated intent, recorded against them. It
   // reaches the same single derivation an agent edit does.
-  return commitMutation(state, action.mutation, { actor: "user" }).state;
+  return commitMutation(state, action.mutation, { actor: "user" }, current).state;
 }
 
 /**
@@ -906,22 +906,26 @@ function deckReducer(state: DeckState, action: DeckAction): DeckState {
  * is the whole reason the outcome is produced here instead of beside the call: a second run
  * over a second deck is exactly how a transcript came to describe an edit that never happened.
  *
- * `targetDeckId` names the deck the mutation is about, defaulting to the active one. The deck
- * it resolves to is the deck the mutation reads, the deck the diff is derived from, the log the
- * entry is appended to and the deck `replaceDeck` puts back — all of them follow the target,
- * because a change recorded against a deck it did not happen to is worse than no record.
+ * `current` is the deck the mutation is about: the deck it reads, the deck the diff is derived
+ * from, the log the entry is appended to, and the deck `replaceDeck` puts back — all of them
+ * follow it, because a change recorded against a deck it did not happen to is worse than no
+ * record at all.
+ *
+ * It is passed as the deck rather than named by id, and that is deliberate. A lookup here would
+ * need an answer for an id that matches nothing, and the only two answers available are both
+ * wrong: falling back to the active deck is exactly the failure `applyEdit`'s guard exists to
+ * prevent — an edit meant for one deck landing silently on another — and throwing would take
+ * the editor down over a deck deleted while its turn was still running. So there is no lookup.
+ * `applyEdit` is the one place an id is resolved, it refuses an id it cannot find, and by the
+ * time this runs the deck is in hand.
  */
 function commitMutation(
   state: DeckState,
   mutation: DeckMutation,
   record: { actor: DeckHistoryActor; reason?: string },
-  targetDeckId?: string,
+  current: Deck,
 ): { state: DeckState; outcome: DeckEditOutcome } {
   const open = activeDeck(state.library);
-  const current =
-    targetDeckId === undefined
-      ? open
-      : (state.library.decks.find((deck) => deck.id === targetDeckId) ?? open);
   /**
    * Name the deck when it is not the one the user is looking at.
    *

@@ -113,6 +113,7 @@ function drivenStreams() {
     handlers: DeckAgentStreamHandlers;
     signal: AbortSignal;
     settle: (reply: DeckAgentChatReply) => void;
+    reject: (reason?: unknown) => void;
   }
   const turns: DrivenTurn[] = [];
   const chat = vi.fn().mockImplementation(
@@ -122,8 +123,8 @@ function drivenStreams() {
       handlers: DeckAgentStreamHandlers,
       signal: AbortSignal,
     ) =>
-      new Promise<DeckAgentChatReply>((resolve) => {
-        turns.push({ handlers, signal, settle: resolve });
+      new Promise<DeckAgentChatReply>((resolve, reject) => {
+        turns.push({ handlers, signal, settle: resolve, reject });
       }),
   );
   const turn = (index: number): DrivenTurn => {
@@ -148,6 +149,9 @@ function drivenStreams() {
     },
     async finish(index: number, value: DeckAgentChatReply) {
       await act(async () => turn(index).settle(value));
+    },
+    async fail(index: number, reason: unknown) {
+      await act(async () => turn(index).reject(reason));
     },
   };
 }
@@ -788,6 +792,33 @@ it("answers into the deck the question was asked about, not the deck on screen",
   // request alone, so the answer is here rather than lost with an abort.
   expect(screen.getByText("Deck A question")).toBeInTheDocument();
   expect(screen.getByText("Answer for deck A.")).toBeInTheDocument();
+});
+
+it("files a background failure against the deck that asked, not the deck on screen", async () => {
+  const streams = drivenStreams();
+  const { rerender } = render(
+    <DeckAgentPanel deckId="deck-a" client={client(streams.chat)} />,
+  );
+
+  await askOpenDeck("Deck A question");
+  rerender(<DeckAgentPanel deckId="deck-b" client={client(streams.chat)} />);
+
+  await streams.fail(
+    0,
+    new ApiError("Deck A's agent is temporarily unavailable.", 503),
+  );
+
+  // Deck B did not ask this question, so the failure has no surface here. Reading the first
+  // error in the map would put A's sentence on whichever deck happened to be open.
+  expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  expect(screen.queryByText("Deck A question")).not.toBeInTheDocument();
+
+  rerender(<DeckAgentPanel deckId="deck-a" client={client(streams.chat)} />);
+  // The error waited with the failed turn instead of being erased by the switch.
+  expect(screen.getByRole("alert")).toHaveTextContent(
+    "Deck A's agent is temporarily unavailable.",
+  );
+  expect(screen.getByText("Deck A question")).toBeInTheDocument();
 });
 
 it("opens a tool call onto its arguments and its result, in debug mode", async () => {
