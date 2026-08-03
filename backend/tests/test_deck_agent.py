@@ -1863,8 +1863,15 @@ def test_the_trim_keeps_moving_back_past_an_interleaved_group() -> None:
     """Two groups whose answers are interleaved, which the contract allows.
 
     An answer only has to come *later* than its call, not immediately after it, so
-    pulling in one group can expose a result belonging to an older one. One hop
-    backwards is not enough; this is why the trim runs to a fixpoint.
+    pulling in one group can expose a result belonging to an older one.
+
+    This fixture does **not** pin the fixpoint, and saying so is the point of this
+    paragraph: its answers arrive in reverse call order, so the hop's `min` over the kept
+    `tool` messages reaches the front in a single step and it passes an implementation
+    that never loops. It was measured doing exactly that. The loop is pinned by
+    `test_the_trim_iterates_when_the_answers_come_in_call_order`, which is the same shape
+    with the answers the other way round — keep both, and do not read this one as
+    covering the other.
     """
 
     client = StubModelClient()
@@ -2320,7 +2327,10 @@ def test_the_chat_route_rejects_an_answer_to_no_call_with_a_422() -> None:
         )
 
     assert response.status_code == 422
-    assert "call-9" in response.text
+    # Read out of the error's own message, not out of `response.text`: pydantic echoes the
+    # rejected input back in the body, so the id appears there whether or not anything
+    # named it. Asserted against the text, this line passed a message reading "MUTATED".
+    assert "call-9" in response.json()["detail"][0]["msg"]
 
 
 def test_the_route_bounds_an_inbound_tool_result_at_the_payload_cap() -> None:
