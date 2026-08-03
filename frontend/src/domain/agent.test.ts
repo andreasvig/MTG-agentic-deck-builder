@@ -502,9 +502,13 @@ describe("posted agent messages", () => {
     const messages = buildAgentMessages([
       interrupted("Read it", [
         { ...storedCall(), id: undefined },
-        // Nor can one whose result is only whitespace: the contract strips it and then
-        // demands a character, so posting it would fail the whole turn.
-        storedCall({ id: "call-b", signature: "read_history()", result: "   " }),
+        // Nor can one whose arguments are only whitespace: they are parsed rather than
+        // read, so a value the provider cannot parse is no better than a missing one.
+        storedCall({
+          id: "call-b",
+          signature: "read_history()",
+          arguments_json: "   ",
+        }),
       ]),
       asked("Carry on."),
     ]);
@@ -518,18 +522,134 @@ describe("posted agent messages", () => {
     ]);
   });
 
-  it("truncates a replayed result to what one message may carry", () => {
+  it("posts a replayed result byte for byte, whitespace and all", () => {
     const messages = buildAgentMessages([
-      interrupted("", [storedCall({ result: "d".repeat(20_000) })]),
+      interrupted("", [
+        storedCall({ result: "\n  Deck listing\n  Sol Ring — {1}\n" }),
+      ]),
       asked("Carry on."),
     ]);
 
-    const replayed = messages[1].content ?? "";
-    // Bounded by the contract rather than by hope: a longer `tool` message is a 422
-    // that fails the turn, and the marker is there so the model is not handed a
-    // truncated deck listing as a complete reading of the deck.
-    expect(replayed).toHaveLength(8_000);
-    expect(replayed.endsWith("… truncated, 12,000 characters more")).toBe(true);
+    // Not stripped and not reflowed: the model has to read back exactly what it read
+    // the first time, and the contract exempts a `tool` message from the prose rules
+    // for that reason. Trimming it here would have quietly rewritten a deck listing.
+    expect(messages[1]).toEqual({
+      role: "tool",
+      tool_call_id: "call-1",
+      content: "\n  Deck listing\n  Sol Ring — {1}\n",
+    });
+  });
+
+  it("lets a replayed result run to the length the reply carried it at", () => {
+    const messages = buildAgentMessages([
+      interrupted("", [
+        storedCall({ result: "d".repeat(20_000) }),
+        storedCall({ id: "call-2", result: "e".repeat(30_000) }),
+      ]),
+      asked("Carry on."),
+    ]);
+
+    // A five-hundred-card `read_deck` listing is three times the prose bound, and the
+    // backend takes all of it: holding a result to the prose bound would have made the
+    // largest decks the ones whose replay silently loses two thirds of the deck.
+    expect(messages[1].content).toHaveLength(20_000);
+    // Past the payload bound it is truncated, with the marker in the backend's own
+    // words, because a result that lies about being complete is read as an observation.
+    const overlong = messages[2].content ?? "";
+    expect(overlong).toHaveLength(24_000);
+    expect(overlong.endsWith("… truncated, 6,000 characters more")).toBe(true);
+    // Prose keeps the prose bound, which is the control that the two did not merge.
+    const wordy = buildAgentMessages([
+      interrupted("f".repeat(9_000), []),
+      asked("Carry on."),
+    ]);
+    expect(wordy[0].content).toHaveLength(8_000);
+  });
+
+  it("pairs a replayed call to its result by id, not by position", () => {
+    // Ids deliberately out of positional order, and one call shed from the middle, so
+    // an implementation that indexed the stored calls would name the wrong ones.
+    const messages = buildAgentMessages([
+      interrupted("", [
+        storedCall({ id: "call-9", signature: "read_deck()", result: "nine" }),
+        storedCall({
+          id: "call-4",
+          signature: "see_cards(Sol Ring)",
+          result: null,
+        }),
+        storedCall({ id: "call-3", signature: "read_history()", result: "three" }),
+        storedCall({ id: "call-7", signature: "search_cards(rocks)", result: "seven" }),
+      ]),
+      asked("Carry on."),
+    ]);
+
+    expect(messages[0].tool_calls?.map((call) => call.id)).toEqual([
+      "call-9",
+      "call-3",
+      "call-7",
+    ]);
+    expect(
+      messages
+        .filter((message) => message.role === "tool")
+        .map((message) => [message.tool_call_id, message.content]),
+    ).toEqual([
+      ["call-9", "nine"],
+      ["call-3", "three"],
+      ["call-7", "seven"],
+    ]);
+  });
+
+  it("sheds the oldest replays to framing before the request runs out of messages", () => {
+    // Twenty cancelled turns of fifty calls each is 1,040 messages, and the request may
+    // carry a thousand. Every one of them is stored, so the budget has to choose.
+    const heavy = Array.from({ length: 20 }, (_, turn) =>
+      interrupted(
+        `Turn ${turn}`,
+        Array.from({ length: 50 }, (_, call) =>
+          storedCall({
+            id: `t${turn}-c${call}`,
+            name: "see_cards",
+            signature: `see_cards(card ${call})`,
+            result: "rules text",
+          }),
+        ),
+      ),
+    );
+
+    const messages = buildAgentMessages([...heavy, asked("Carry on.")]);
+
+    expect(messages.length).toBeLessThanOrEqual(1_000);
+    // Nothing is dropped: every turn still says what it ran, and the newest — the one
+    // the next question follows on from — is the one that keeps its replay.
+    expect(messages.filter((message) => message.role === "tool")).toHaveLength(
+      19 * 50,
+    );
+    expect(messages.at(-2)).toEqual({
+      role: "assistant",
+      content: "Turn 19",
+    });
+    expect(messages[0]).toEqual({
+      role: "assistant",
+      content: `interrupted after ${Array.from(
+        { length: 50 },
+        (_, call) => `see_cards(card ${call})`,
+      ).join(", ")}\n\nTurn 0`,
+    });
+    expect(messages.at(-1)).toEqual({ role: "user", content: "Carry on." });
+  });
+
+  it("leaves out the oldest turns when even the framing will not fit", () => {
+    const many = Array.from({ length: 1_200 }, (_, index) =>
+      asked(`Question ${index}`),
+    );
+
+    const messages = buildAgentMessages(many);
+
+    // A request over the bound is refused whole, so the oldest turns are left out —
+    // which is what the backend's own history window would have done to them anyway.
+    expect(messages).toHaveLength(1_000);
+    expect(messages[0]).toEqual({ role: "user", content: "Question 200" });
+    expect(messages.at(-1)).toEqual({ role: "user", content: "Question 1199" });
   });
 
   it("posts the deck revision a call recorded, and nothing when it recorded none", () => {

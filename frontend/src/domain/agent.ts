@@ -775,24 +775,43 @@ export function formatModelCostUsd(value: number): string {
 }
 
 /**
- * How long one posted message's text may be, matching the backend's `MessageText`.
+ * How much **prose** one posted message may carry: the backend's `MAX_MESSAGE_CHARS`.
  *
  * Its own constant rather than a shared one, for the reason `MAX_POSTED_HISTORY_EDITS`
  * is: this is a *contract* bound, and a request that breaks it is a 422 that fails the
- * whole chat turn rather than costing the one message. A replayed `read_deck` result is
- * kilobytes, so this is the cap that actually bites — the backend lets one payload run
- * to 24,000 characters on the way out and accepts only 8,000 of it back in a `tool`
- * message. Truncated with a visible marker, in the same words the backend truncates
- * with, because a result that lies about being complete is read by the model as an
- * observation.
+ * whole chat turn rather than costing the one message.
+ *
+ * Prose only. A `tool` message is not prose and the backend deliberately exempts it
+ * from this bound — `prose_stays_inside_the_prose_bound` skips `role == "tool"` — so a
+ * replayed result gets `MAX_POSTED_TOOL_PAYLOAD_CHARS` instead. Applying this one to a
+ * result would have made the largest decks the ones a replay quietly truncates.
  */
-const MAX_POSTED_MESSAGE_CHARS = 8_000;
+const MAX_POSTED_PROSE_CHARS = 8_000;
 
-/** What one replayed call's arguments may run to: the backend's `ToolPayloadText`. */
-const MAX_POSTED_REPLAY_ARGUMENT_CHARS = 24_000;
+/**
+ * How much of one call's arguments or result may travel: `MAX_TOOL_PAYLOAD_CHARS`.
+ *
+ * The same bound the backend truncates a payload to on the way out, so a payload that
+ * fitted in the reply fits in the replay. Truncated with a visible marker in the
+ * backend's own words when it does not, because a result that lies about being complete
+ * is read by the model as an observation.
+ */
+const MAX_POSTED_TOOL_PAYLOAD_CHARS = 24_000;
 
 /** How many calls one replayed assistant message may carry: `MAX_REPLAY_CALLS`. */
 const MAX_POSTED_REPLAY_CALLS = 50;
+
+/**
+ * How many messages one request may carry, as the backend's `messages` field bounds it.
+ *
+ * The bound a replay is most likely to hit, and the reason `buildAgentMessages` budgets
+ * by message count as well as by characters. One interrupted turn expands to as many as
+ * fifty-two messages, so a couple of dozen stored interrupted turns would otherwise
+ * exceed this — and exceeding it is not a shorter request, it is a 422 that fails every
+ * turn for that deck until the transcript is cleared. Bounded here so the failure is a
+ * turn replayed as framing instead of a chat that has stopped answering.
+ */
+const MAX_POSTED_MESSAGES = 1_000;
 
 /** As long as a provider call id may be: the backend's `ToolCallId`. */
 const MAX_POSTED_TOOL_CALL_ID_CHARS = 200;
@@ -818,50 +837,106 @@ const MAX_POSTED_DECK_REVISION_CHARS = 100;
  * degrading. What goes back for it is framing naming what ran, built from the same
  * `signature` the user watched appear, which tells the model where it got to without
  * claiming to hand back what it read.
+ *
+ * The same framing is the fallback for a conversation with too many interrupted turns in
+ * it. `MAX_POSTED_MESSAGES` bounds the request, a replay costs up to fifty-two messages
+ * of it, and the budget is spent newest-first: the turn the next question follows on from
+ * keeps its replay, and older interrupted turns fall back to naming what they ran. Once
+ * even that will not fit, the oldest turns are left out of the request entirely, which is
+ * what the backend's own history window would have done to them.
  */
 export function buildAgentMessages(
   entries: DeckAgentTranscriptEntry[],
 ): DeckAgentRequestMessage[] {
-  const messages: DeckAgentRequestMessage[] = [];
-  for (const entry of entries) {
-    // An interrupted user message is not a thing: the flag marks a turn the agent was
-    // in the middle of, so anything else is posted as the message it is.
-    if (entry.interrupted !== true || entry.message.role !== "assistant") {
-      messages.push({ role: entry.message.role, content: entry.message.content });
+  const plans = entries.map(planEntryMessages);
+
+  // The floor: what every kept turn posts with nothing replayed. Reserved before any
+  // replay is granted, because a replay that crowded out the conversation it belongs to
+  // would be answering a question the model can no longer see.
+  let used = plans.reduce((total, plan) => total + plan.framed.length, 0);
+  let oldest = 0;
+  while (used > MAX_POSTED_MESSAGES && oldest < plans.length) {
+    used -= plans[oldest].framed.length;
+    oldest += 1;
+  }
+
+  const replayed = new Set<number>();
+  for (let index = plans.length - 1; index >= oldest; index -= 1) {
+    const extra = plans[index].replayed.length - plans[index].framed.length;
+    // Skipped rather than stopped, so an older turn with two calls can still replay
+    // where a newer one with fifty could not.
+    if (extra <= 0 || used + extra > MAX_POSTED_MESSAGES) {
       continue;
     }
-    const replayed: DeckAgentReplayPair[] = [];
-    const framed: string[] = [];
-    for (const call of entry.toolCalls) {
-      const pair =
-        replayed.length < MAX_POSTED_REPLAY_CALLS ? toReplayPair(call) : null;
-      if (pair) {
-        replayed.push(pair);
-      } else {
-        framed.push(call.signature);
-      }
+    used += extra;
+    replayed.add(index);
+  }
+
+  return plans
+    .slice(oldest)
+    .flatMap((plan, offset) =>
+      replayed.has(oldest + offset) ? plan.replayed : plan.framed,
+    );
+}
+
+/**
+ * What one entry posts, in both of the shapes it may take.
+ *
+ * Built together rather than chosen first, because which one a turn gets depends on how
+ * much room the rest of the conversation leaves — and the two have to agree about what
+ * the turn said whichever wins.
+ */
+interface DeckAgentEntryPlan {
+  /** With no call replayed: the prose, or framing naming every call that ran. */
+  framed: DeckAgentRequestMessage[];
+  /** With the calls handed back: the pairs, then whatever prose is left to say. */
+  replayed: DeckAgentRequestMessage[];
+}
+
+function planEntryMessages(entry: DeckAgentTranscriptEntry): DeckAgentEntryPlan {
+  // An interrupted user message is not a thing: the flag marks a turn the agent was in
+  // the middle of, so anything else is posted as the message it is.
+  if (entry.interrupted !== true || entry.message.role !== "assistant") {
+    const posted: DeckAgentRequestMessage[] = [
+      { role: entry.message.role, content: entry.message.content },
+    ];
+    return { framed: posted, replayed: posted };
+  }
+
+  const pairs: DeckAgentReplayPair[] = [];
+  const shed: string[] = [];
+  for (const call of entry.toolCalls) {
+    const pair = pairs.length < MAX_POSTED_REPLAY_CALLS ? toReplayPair(call) : null;
+    if (pair) {
+      pairs.push(pair);
+    } else {
+      shed.push(call.signature);
     }
-    if (replayed.length > 0) {
-      messages.push({
-        role: "assistant",
-        tool_calls: replayed.map((pair) => pair.call),
-      });
+  }
+
+  const framed = spokenMessages(
+    entry.message.content,
+    entry.toolCalls.map((call) => call.signature),
+  );
+  if (pairs.length === 0) {
+    return { framed, replayed: framed };
+  }
+  return {
+    framed,
+    replayed: [
+      { role: "assistant", tool_calls: pairs.map((pair) => pair.call) },
       // Every call answered, immediately and in the order it was made, so the group is
       // whole wherever the backend's history window happens to cut.
-      for (const pair of replayed) {
-        messages.push({
+      ...pairs.map(
+        (pair): DeckAgentRequestMessage => ({
           role: "tool",
           tool_call_id: pair.call.id,
           content: pair.result,
-        });
-      }
-    }
-    const spoken = interruptedProse(entry.message.content, framed);
-    if (spoken) {
-      messages.push({ role: "assistant", content: spoken });
-    }
-  }
-  return messages;
+        }),
+      ),
+      ...spokenMessages(entry.message.content, shed),
+    ],
+  };
 }
 
 /** One replayed call and the result that answers it, which travel as two messages. */
@@ -873,21 +948,21 @@ interface DeckAgentReplayPair {
 /**
  * What an interrupted turn says for itself: the framing it needs, then what it wrote.
  *
- * Empty when the turn wrote nothing and every call replayed, because there is then
- * nothing left to say — and an assistant message with empty content is a 422 rather
- * than a silence.
+ * Empty — no message at all — when the turn wrote nothing and needs no framing, because
+ * there is then nothing left to say and an assistant message with empty content is a
+ * 422 rather than a silence.
  */
-function interruptedProse(content: string, framed: string[]): string {
+function spokenMessages(
+  content: string,
+  framed: string[],
+): DeckAgentRequestMessage[] {
   const prose = content.trim();
   const framing =
     framed.length > 0 ? `interrupted after ${framed.join(", ")}` : "";
-  if (!framing) {
-    return postedText(prose, MAX_POSTED_MESSAGE_CHARS);
-  }
-  return postedText(
-    prose ? `${framing}\n\n${prose}` : framing,
-    MAX_POSTED_MESSAGE_CHARS,
-  );
+  const spoken = framing && prose ? `${framing}\n\n${prose}` : framing || prose;
+  return spoken
+    ? [{ role: "assistant", content: postedText(spoken, MAX_POSTED_PROSE_CHARS) }]
+    : [];
 }
 
 /**
@@ -895,14 +970,19 @@ function interruptedProse(content: string, framed: string[]): string {
  *
  * Every reason to refuse is a rule the backend would 422 on, and refusing here costs
  * the call its result while the turn still goes: a request rejected whole is the agent
- * simply stopping. The result is checked after trimming because `MessageText` strips
- * whitespace and then demands a character, so a result of spaces is a rejected request
- * rather than an empty answer.
+ * simply stopping.
+ *
+ * The result travels byte for byte — not trimmed, not reflowed, not held to the prose
+ * bound — because the model has to read back exactly what it read the first time, and
+ * the backend's contract exempts a `tool` message from both for that reason. Only a
+ * result that is *absent* is refused. The arguments are a different matter: they are
+ * parsed rather than read, so a value that is only whitespace is no more usable than a
+ * missing one and takes the same path.
  */
 function toReplayPair(call: DeckAgentToolCall): DeckAgentReplayPair | null {
   const id = call.id ?? "";
   const name = call.name.trim();
-  const result = (call.result ?? "").trim();
+  const result = call.result ?? "";
   const argumentsJson = call.arguments_json ?? "";
   if (!id || id.length > MAX_POSTED_TOOL_CALL_ID_CHARS) {
     return null;
@@ -910,9 +990,7 @@ function toReplayPair(call: DeckAgentToolCall): DeckAgentReplayPair | null {
   if (!name || name.length > MAX_POSTED_LABEL_CHARS) {
     return null;
   }
-  // The two payloads a replay is made of. Arguments the provider cannot parse are as
-  // unreplayable as a missing result, so both absences take the same path.
-  if (!result || !argumentsJson) {
+  if (!result || !argumentsJson.trim()) {
     return null;
   }
   const revision = (call.deckRevision ?? "").trim();
@@ -920,17 +998,14 @@ function toReplayPair(call: DeckAgentToolCall): DeckAgentReplayPair | null {
     call: {
       id,
       name,
-      arguments_json: postedText(
-        argumentsJson,
-        MAX_POSTED_REPLAY_ARGUMENT_CHARS,
-      ),
+      arguments_json: postedText(argumentsJson, MAX_POSTED_TOOL_PAYLOAD_CHARS),
       // Dropped rather than truncated when it will not fit: a revision is compared, so
       // half of one is a value that matches nothing while claiming to be a reading.
       ...(revision && revision.length <= MAX_POSTED_DECK_REVISION_CHARS
         ? { deck_revision: revision }
         : {}),
     },
-    result: postedText(result, MAX_POSTED_MESSAGE_CHARS),
+    result: postedText(result, MAX_POSTED_TOOL_PAYLOAD_CHARS),
   };
 }
 
