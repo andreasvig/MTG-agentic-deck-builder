@@ -214,8 +214,16 @@ export function DeckAgentPanel({
   useEffect(() => {
     openDeckId.current = deckId;
     setPending(false);
-    // The abandoned turn goes with it, question and stream alike: a cancel on the deck
-    // the user moved *to* must not commit what the deck they left had read.
+    /*
+     * The abandoned turn goes with it, question and stream alike.
+     *
+     * No state today reaches a cancel holding this: `cancel`'s only caller is guarded by
+     * `pending`, which this block clears in the same breath, and a commit is filed against
+     * the deck the turn was *asked* about rather than the deck on screen — so even a
+     * same-batch race could not land it in the wrong chat. Kept because that guard is the
+     * only thing making it unreachable. A defence worth keeping is worth an accurate
+     * reason: the next reader believes the one that is written down.
+     */
     inFlight.current = null;
     updateLive(() => NO_LIVE_TURN);
     setError(null);
@@ -333,8 +341,13 @@ export function DeckAgentPanel({
   const resetChat = useCallback(() => {
     pendingRequest.current?.abort();
     pendingRequest.current = null;
-    // Along with the turn it belonged to: a chat that has been thrown away must not get
-    // the cancelled turn back a moment later.
+    /*
+     * Along with the question it was answering.
+     *
+     * Unreachable today for the same reason as the clear above, and worth stating exactly:
+     * `cancel` is the only reader, its only caller is guarded by `pending`, and the line
+     * below clears that here too. Kept because the guard is the only thing making it so.
+     */
     inFlight.current = null;
     // The spend belongs to the conversation being reset, not to the session, so
     // dropping the conversation drops its total with it.

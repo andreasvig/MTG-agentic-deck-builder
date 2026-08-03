@@ -81,6 +81,22 @@ function drivenStream() {
     async finish(reply: DeckAgentChatReply) {
       await act(async () => settle?.(reply));
     },
+    /*
+     * The same two events with **no** `act()` around them, leaving the render they
+     * schedule still pending.
+     *
+     * Every other emitter here wraps its event, which is what a test wants almost always
+     * — assert against what is on screen. It is also what hid the one race the cancel path
+     * is built around, and it hid it as a property of this helper rather than of the
+     * renderer: a real stream does not flush React between a chunk and the keystroke that
+     * follows it. Used by the render-lag test below and nowhere else.
+     */
+    unflushedText(chunk: string) {
+      handlers?.onText(chunk);
+    },
+    unflushedTool(call: DeckAgentToolCall) {
+      handlers?.onToolCall(call);
+    },
   };
 }
 
@@ -1673,6 +1689,103 @@ it("stamps every call with the revision of the deck the turn asked about", async
   expect(
     storedChat("deck-a").entries[1].toolCalls.map((call) => call.deckRevision),
   ).toEqual(["2026-08-03T09:00:00.000Z", "2026-08-03T09:00:00.000Z"]);
+});
+
+it("keeps the call that arrived in the same breath as the cancel", async () => {
+  const stream = drivenStream();
+  const { panel } = await askAndWait(stream, "what should i cut");
+
+  /*
+   * No `act()` around the event, and that is the whole test.
+   *
+   * A cancel races the stream by definition: the user presses Escape *because* something
+   * just appeared, so the last event before a cancel is the one most likely to be caught
+   * mid-render. React has not committed the update the line below schedules by the time the
+   * keydown on the next line runs, so a canceller reading the rendered state reads the turn
+   * as it was one event ago — and what it drops is the paid `search_web` result this whole
+   * feature exists to hand back. The panel reads a ref instead, written by the same
+   * `updateLive` that writes the state, so there is no "one event ago" to read.
+   *
+   * Every other test here goes through `stream.tool`, which wraps its event in `act` and
+   * therefore flushes before the key is pressed. That is a property of the helper, not of
+   * the renderer, and it is what let this gap sit unpinned through a whole phase.
+   */
+  stream.unflushedTool(
+    replayableCall(
+      "search_web(budget edh ramp)",
+      "call-1",
+      '{"query":"budget edh ramp"}',
+      "Two primers agree on Fellwar Stone.",
+    ),
+  );
+  fireEvent.keyDown(panel, { key: "Escape" });
+  await act(async () => {});
+
+  const stored = storedChat("deck-a");
+  expect(
+    stored.entries.map((held) => [held.message.role, held.interrupted]),
+  ).toEqual([
+    ["user", undefined],
+    ["assistant", true],
+  ]);
+  expect(
+    stored.entries[1].toolCalls.map((call) => [call.signature, call.result]),
+  ).toEqual([
+    ["search_web(budget edh ramp)", "Two primers agree on Fellwar Stone."],
+  ]);
+  // The other half of the same loss, and the one the user would notice: a turn read as
+  // having done nothing hands its question back, so the next send pays for the lookup again.
+  expect(screen.getByLabelText("Message the deck agent")).toHaveValue("");
+  expect(screen.getByText("what should i cut")).toBeInTheDocument();
+});
+
+it("leaves an answered turn unmarked, so the narrowing is not a reversal", async () => {
+  const chat = vi
+    .fn()
+    .mockResolvedValueOnce(
+      reply("You are light on ramp.", 0.0009, [
+        replayableCall("read_deck()", "call-1", "{}", "35 cards, 8 ramp."),
+      ]),
+    )
+    .mockResolvedValueOnce(reply("Cut a five-drop.", 0.0007));
+  render(<DeckAgentPanel deckId="deck-a" client={client(chat)} debugEnabled />);
+  const composer = screen.getByLabelText("Message the deck agent");
+
+  await userEvent.type(composer, "what am i missing");
+  await userEvent.click(screen.getByLabelText("Send message"));
+  await screen.findByText("You are light on ramp.");
+
+  /*
+   * The negative half of "an interrupted turn commits from the stream, an answered one from
+   * `done`". Only the positive half was pinned, and a mutant marking every reply
+   * `interrupted` passed the whole suite — which would make the narrowing a reversal in
+   * silence: every answered turn would replay calls whose results its own prose already
+   * accounts for, and the user would pay twice for every reading for the rest of the
+   * conversation.
+   */
+  expect(screen.queryByText(/^Interrupted —/)).not.toBeInTheDocument();
+  expect(
+    storedChat("deck-a").entries.map((entry) => entry.interrupted),
+  ).toEqual([undefined, undefined]);
+  // Priced, too. A cancelled turn is counted as unpriced because its figure never arrives;
+  // an answered one has its figure, so a `+` here would be the badge claiming otherwise.
+  expect(screen.getByText("$0.0009")).toBeInTheDocument();
+
+  await userEvent.type(composer, "and now?");
+  await userEvent.click(screen.getByLabelText("Send message"));
+  await screen.findByText("Cut a five-drop.");
+
+  // And it posts its prose alone. The payloads are in the store — the turn carried them, as
+  // every turn now does — and they stay there, because the answer written from them is what
+  // goes back instead.
+  expect(chat.mock.calls[1][0]).toEqual([
+    { role: "user", content: "what am i missing" },
+    { role: "assistant", content: "You are light on ramp." },
+    { role: "user", content: "and now?" },
+  ]);
+  expect(storedChat("deck-a").entries[1].toolCalls[0].result).toBe(
+    "35 cards, 8 ramp.",
+  );
 });
 
 it("leaves Escape alone when no turn is in flight", async () => {
