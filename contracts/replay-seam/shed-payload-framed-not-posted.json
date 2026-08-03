@@ -1,0 +1,36 @@
+{
+  "case": "shed-payload-framed-not-posted",
+  "fingerprints": "A call whose payload the storage budget shed. It has no result, so it must be framed in prose rather than posted as a call: an unanswered tool_calls entry is a 422 that fails the whole turn instead of degrading it. Its sibling, which kept its result, still replays.",
+  "message_count": 5,
+  "request": {
+    "messages": [
+      {
+        "role": "user",
+        "content": "What am I missing?"
+      },
+      {
+        "role": "assistant",
+        "tool_calls": [
+          {
+            "id": "t1c0:call-a",
+            "name": "read_deck",
+            "arguments_json": "{}"
+          }
+        ]
+      },
+      {
+        "role": "tool",
+        "tool_call_id": "t1c0:call-a",
+        "content": "Deck listing"
+      },
+      {
+        "role": "assistant",
+        "content": "interrupted after search_web(budget edh ramp)\n\nHalfway through"
+      },
+      {
+        "role": "user",
+        "content": "Carry on."
+      }
+    ]
+  }
+}

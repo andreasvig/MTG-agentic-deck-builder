@@ -1,0 +1,59 @@
+{
+  "case": "reused-call-id-across-two-interrupted-turns",
+  "fingerprints": "Defect 2. A provider numbering its call ids per completion hands every interrupted turn the same 'call-1', and the backend matches ids across the whole request — so posting the stored id would have made the second cancel in a conversation 422 every later turn in that deck. The posted ids must differ.",
+  "message_count": 9,
+  "request": {
+    "messages": [
+      {
+        "role": "user",
+        "content": "What am I missing?"
+      },
+      {
+        "role": "assistant",
+        "tool_calls": [
+          {
+            "id": "t1c0:call-1",
+            "name": "read_deck",
+            "arguments_json": "{}"
+          }
+        ]
+      },
+      {
+        "role": "tool",
+        "tool_call_id": "t1c0:call-1",
+        "content": "Deck listing"
+      },
+      {
+        "role": "assistant",
+        "content": "Reading the deck first"
+      },
+      {
+        "role": "user",
+        "content": "Carry on."
+      },
+      {
+        "role": "assistant",
+        "tool_calls": [
+          {
+            "id": "t3c0:call-1",
+            "name": "search_web",
+            "arguments_json": "{\"query\":\"budget edh ramp\"}"
+          }
+        ]
+      },
+      {
+        "role": "tool",
+        "tool_call_id": "t3c0:call-1",
+        "content": "Three articles on budget ramp."
+      },
+      {
+        "role": "assistant",
+        "content": "Looking that up"
+      },
+      {
+        "role": "user",
+        "content": "And now?"
+      }
+    ]
+  }
+}

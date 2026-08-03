@@ -1,0 +1,44 @@
+{
+  "case": "result-keeps-its-whitespace",
+  "fingerprints": "A result with leading and trailing whitespace, which must travel byte for byte: the model has to read back exactly what it read the first time, so a tool message is exempt from the stripping and the non-blank rule prose keeps. Carries the deck snapshot and the call's deck_revision too, because that comparison is the other half of this seam and its UUID field is the other half of this shape.",
+  "message_count": 4,
+  "request": {
+    "messages": [
+      {
+        "role": "user",
+        "content": "List the deck."
+      },
+      {
+        "role": "assistant",
+        "tool_calls": [
+          {
+            "id": "t1c0:call-1",
+            "name": "read_deck",
+            "arguments_json": "{}",
+            "deck_revision": "2026-08-03T09:00:00.000Z"
+          }
+        ]
+      },
+      {
+        "role": "tool",
+        "tool_call_id": "t1c0:call-1",
+        "content": "\n  Deck listing\n"
+      },
+      {
+        "role": "user",
+        "content": "Carry on."
+      }
+    ],
+    "deck": {
+      "name": "Gruul Stompy",
+      "cards": [
+        {
+          "scryfall_id": "b6ff7a89-c1f1-4a53-a8c1-7e3d3a0f2f11",
+          "quantity": 1,
+          "section": "command_zone"
+        }
+      ],
+      "updated_at": "2026-08-03T09:00:00.000Z"
+    }
+  }
+}

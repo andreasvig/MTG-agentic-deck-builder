@@ -1,0 +1,46 @@
+{
+  "case": "long-stored-call-id",
+  "fingerprints": "A 250-char stored id, held twice in one turn. The posted form must keep the prefix that carries the uniqueness and truncate the tail: dropping the prefix instead posts both calls under one id, and truncating nothing posts 255 characters into a 200-char ToolCallId.",
+  "message_count": 6,
+  "request": {
+    "messages": [
+      {
+        "role": "user",
+        "content": "What am I missing?"
+      },
+      {
+        "role": "assistant",
+        "tool_calls": [
+          {
+            "id": "t1c0:call-9999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999",
+            "name": "read_deck",
+            "arguments_json": "{}"
+          },
+          {
+            "id": "t1c1:call-9999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999",
+            "name": "see_cards",
+            "arguments_json": "{\"cards\":[\"Sol Ring\"]}"
+          }
+        ]
+      },
+      {
+        "role": "tool",
+        "tool_call_id": "t1c0:call-9999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999",
+        "content": "Deck listing"
+      },
+      {
+        "role": "tool",
+        "tool_call_id": "t1c1:call-9999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999",
+        "content": "Sol Ring — {1}, Artifact"
+      },
+      {
+        "role": "assistant",
+        "content": "Two lookups in"
+      },
+      {
+        "role": "user",
+        "content": "Carry on."
+      }
+    ]
+  }
+}

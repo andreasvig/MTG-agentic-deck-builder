@@ -1,0 +1,46 @@
+{
+  "case": "reused-call-id-within-one-turn",
+  "fingerprints": "The second collision axis: one interrupted turn whose store holds the same id twice. A turn-level namespace alone would post both calls under one id, which is the same 422 as defect 2 from inside a single turn.",
+  "message_count": 6,
+  "request": {
+    "messages": [
+      {
+        "role": "user",
+        "content": "What am I missing?"
+      },
+      {
+        "role": "assistant",
+        "tool_calls": [
+          {
+            "id": "t1c0:call-1",
+            "name": "read_deck",
+            "arguments_json": "{}"
+          },
+          {
+            "id": "t1c1:call-1",
+            "name": "see_cards",
+            "arguments_json": "{\"cards\":[\"Sol Ring\"]}"
+          }
+        ]
+      },
+      {
+        "role": "tool",
+        "tool_call_id": "t1c0:call-1",
+        "content": "Deck listing"
+      },
+      {
+        "role": "tool",
+        "tool_call_id": "t1c1:call-1",
+        "content": "Sol Ring — {1}, Artifact"
+      },
+      {
+        "role": "assistant",
+        "content": "Two lookups in"
+      },
+      {
+        "role": "user",
+        "content": "Carry on."
+      }
+    ]
+  }
+}

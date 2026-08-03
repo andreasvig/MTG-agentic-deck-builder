@@ -1,0 +1,21 @@
+{
+  "case": "answered-conversation",
+  "fingerprints": "The negative control. Every turn here was answered, so its prose already says what its tools found and nothing is replayed: the request must be plain {role, content} throughout, with no tool_calls and no tool_call_id anywhere — even though the answered turn stored a call id and a result.",
+  "message_count": 3,
+  "request": {
+    "messages": [
+      {
+        "role": "user",
+        "content": "What am I missing?"
+      },
+      {
+        "role": "assistant",
+        "content": "You are light on ramp."
+      },
+      {
+        "role": "user",
+        "content": "And the curve?"
+      }
+    ]
+  }
+}

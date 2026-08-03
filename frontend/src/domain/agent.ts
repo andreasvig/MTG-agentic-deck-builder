@@ -1043,10 +1043,21 @@ function toReplayPair(
  * record of what actually happened. It is truncated rather than refused when the pair
  * will not fit in `ToolCallId`, because uniqueness lives entirely in the prefix and the
  * tail is only there to be recognised.
+ *
+ * The bound is asserted rather than computed, and that is the one thing here worth a
+ * line of its own. `MAX_POSTED_TOOL_CALL_ID_CHARS - prefix.length` is negative for a
+ * prefix past the bound, and a negative second argument makes `slice` trim from the
+ * **tail** instead of capping — so the arithmetic that exists to keep the id inside
+ * `ToolCallId` would be the thing that pushed it out, as a 422 rather than as a
+ * truncation. It takes a turn or call index of some 195 decimal digits to get there, so
+ * it cannot happen; it is handled anyway because this is the only place the bound is
+ * arithmetic rather than stated, and an invariant a reader has to do subtraction to
+ * confirm is one a later edit can quietly break.
  */
 function replayCallId(turn: number, position: number, id: string): string {
   const prefix = `t${turn}c${position}:`;
-  return prefix + id.slice(0, MAX_POSTED_TOOL_CALL_ID_CHARS - prefix.length);
+  const room = Math.max(0, MAX_POSTED_TOOL_CALL_ID_CHARS - prefix.length);
+  return (prefix + id.slice(0, room)).slice(0, MAX_POSTED_TOOL_CALL_ID_CHARS);
 }
 
 /**
