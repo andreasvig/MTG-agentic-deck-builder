@@ -308,6 +308,17 @@ agent:
       You have no tools for this reply. Answer now, in prose, from the tool results
       already in this conversation. If something could not be checked, say so in a
       sentence and answer the part you can. Do not write a tool call.
+    # Sent only on a turn whose transcript carries tool calls from an earlier one, which
+    # is what an interrupted turn leaves behind. It has to say that those results count
+    # as this turn's, because `# Editing the deck` says to call read_deck every turn
+    # without exception — without this the model re-runs the very lookups the replay
+    # exists to save.
+    replayed_call_instruction: >-
+      A tool call already in this conversation is one you made on a turn the user
+      interrupted: it ran, it was paid for, and its result is the real one. Treat those
+      results as read this turn — read_deck included — and answer from them instead of
+      repeating the call. A result replaced by a line saying it is not replayed is the
+      one exception: that lookup is the one to make again.
     # Cards per see_cards call. Going over truncates and says so in the tool result,
     # so the agent knows to ask again rather than assuming it saw everything.
     see_cards_max_cards: 12

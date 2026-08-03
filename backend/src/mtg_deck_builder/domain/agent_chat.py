@@ -8,15 +8,25 @@ from pydantic import BaseModel, ConfigDict, Field, StringConstraints, model_vali
 
 from mtg_deck_builder.domain.cards import CardSearchResult
 
-DeckAgentRole = Literal["user", "assistant"]
+DeckAgentRole = Literal["user", "assistant", "tool"]
+"""Who said one transcript message.
+
+`tool` is the provider's own role for a tool result, and it is here because an
+interrupted turn is replayed: the calls it made and the results it read are handed
+back on the next turn as `assistant.tool_calls` plus one `tool` message each, which
+is the only shape the provider accepts them in.
+"""
 
 DeckAgentActor = Literal["user", "agent"]
 """Who made one edit. The history is only worth an actor if both appear in it."""
 
-MessageText = Annotated[
-    str,
-    StringConstraints(strip_whitespace=True, min_length=1, max_length=8_000),
-]
+MAX_MESSAGE_CHARS = 8_000
+"""How much prose one transcript message may carry.
+
+Bounds what a person types and what the model writes back, stripped and non-blank, as
+`DeckAgentMessage.prose_stays_inside_the_prose_bound` applies it. A `tool` message is
+not prose and is bounded by `MAX_TOOL_PAYLOAD_CHARS` instead.
+"""
 
 ShortLabel = Annotated[
     str,
@@ -24,15 +34,67 @@ ShortLabel = Annotated[
 ]
 
 MAX_TOOL_PAYLOAD_CHARS = 24_000
-"""How much of one tool call's arguments or result a debug turn may carry back.
+"""How much of one tool call's arguments or result may travel, per payload.
 
 Generous enough for a five-hundred-card `read_deck` listing, bounded so a reply
 cannot grow without limit. Longer text is truncated with a visible marker rather
-than silently cut, because a diagnostic that lies about being complete is worse
-than no diagnostic.
+than silently cut, because a payload that lies about being complete is worse than
+no payload — and this one is read back by the model on the next turn, not only by a
+person.
+"""
+
+MAX_REPLAY_CHARS = 60_000
+"""How much payload text one reply may carry across every tool call in the turn.
+
+`MAX_TOOL_PAYLOAD_CHARS` bounds one payload and this bounds their sum, because a
+fifteen-round turn otherwise multiplies that cap by thirty. The turn sheds oldest
+call first and drops a `result` before its `arguments_json`: the newest lookup is the
+one a replay is most likely to continue from, and a call that keeps its arguments and
+loses its result is still replayable as framing — "interrupted after `read_deck()`" —
+where a call dropped entirely is not.
+
+Deliberately larger than two per-payload caps, so an ordinary two-tool turn is never
+shed at all.
 """
 
 ToolPayloadText = Annotated[str, StringConstraints(max_length=MAX_TOOL_PAYLOAD_CHARS)]
+
+ReplayedResultText = Annotated[
+    str,
+    StringConstraints(min_length=1, max_length=MAX_TOOL_PAYLOAD_CHARS),
+]
+"""One replayed tool result, as the tool produced it.
+
+Neither stripped nor bounded to prose length, because it is not prose: it is the same
+text `ToolPayloadText` let the reply carry, coming back. A five-hundred-card
+`read_deck` listing is three times the prose bound, so sharing that bound would have
+made the largest decks the ones a replay silently fails on.
+"""
+
+ToolCallId = Annotated[str, StringConstraints(min_length=1, max_length=200)]
+"""The provider's own identifier for one tool call.
+
+Deliberately not `ShortLabel`: an id is matched, not read, so it must travel byte for
+byte and must not be stripped of whitespace on the way through.
+"""
+
+DeckRevision = Annotated[
+    str,
+    StringConstraints(strip_whitespace=True, min_length=1, max_length=100),
+]
+"""When the deck a call read last changed, as the browser records it.
+
+Compared, never parsed: the only question asked of it is whether it equals the
+`updated_at` of the deck posted with this turn.
+"""
+
+MAX_REPLAY_CALLS = 50
+"""How many tool calls one replayed assistant message may carry.
+
+An interrupted turn's whole run of calls arrives as one message, and
+`agent.tools.max_iterations` bounds that run at fifteen rounds, so this is generous
+for the shape it has to hold and still bounds the message.
+"""
 
 DeckSection = Literal["command_zone", "mainboard"]
 
@@ -116,11 +178,90 @@ class DeckAgentModel(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
+class DeckAgentReplayCall(DeckAgentModel):
+    """One tool call being handed back to the model, exactly as it was made.
+
+    The turn that made it was interrupted, so no answer was ever written from it. What
+    the model gets back is the call and its result rather than a summary of either,
+    because `search_web` and `read_page` are paid and non-deterministic and re-running
+    one is not the same as replaying it.
+    """
+
+    id: ToolCallId
+    name: ShortLabel
+    arguments_json: ToolPayloadText
+    # The deck's `updated_at` when this call ran, for the deck-dependent tools only.
+    # Absent means the browser could not say, which is not the same as unchanged — see
+    # `_DECK_DEPENDENT_TOOLS` in `deck_agent_tools.py`.
+    deck_revision: DeckRevision | None = None
+
+
 class DeckAgentMessage(DeckAgentModel):
     """One turn of the conversation, in the order it was said."""
 
     role: DeckAgentRole
-    content: MessageText
+    # Optional now: an assistant message that only carries tool calls has no prose,
+    # which is the provider's own shape for one.
+    #
+    # Typed to the wider of the two bounds because one field carries two different
+    # things: prose from a person or the model, and a replayed tool result. Which bound
+    # applies is decided by the role below — a tool result may be as long as the reply
+    # was allowed to carry, and is neither stripped nor reflowed, because the model has
+    # to read back exactly what it read the first time.
+    content: ReplayedResultText | None = None
+    tool_calls: Annotated[
+        list[DeckAgentReplayCall],
+        Field(max_length=MAX_REPLAY_CALLS),
+    ] = Field(default_factory=list)
+    # Which call this message answers. Only a `tool` message has one, and it must.
+    tool_call_id: ToolCallId | None = None
+
+    @model_validator(mode="after")
+    def a_message_must_say_something(self) -> "DeckAgentMessage":
+        if self.content is None and not self.tool_calls:
+            raise ValueError(
+                "a chat message must carry content, tool calls, or both"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def prose_stays_inside_the_prose_bound(self) -> "DeckAgentMessage":
+        """Hold everything that is not a tool result to `MessageText`'s own rules.
+
+        The field is typed to the payload bound so a replayed result fits, which would
+        otherwise let a user message carry three times the prose it used to. So the
+        prose bound is applied here instead, per role: stripped, non-blank, and 8,000
+        characters at the most, exactly as before.
+        """
+
+        if self.role == "tool" or self.content is None:
+            return self
+        text = self.content.strip()
+        if not text:
+            raise ValueError("a message must carry more than whitespace")
+        if len(text) > MAX_MESSAGE_CHARS:
+            raise ValueError(
+                f"a message must be at most {MAX_MESSAGE_CHARS} characters"
+            )
+        self.content = text
+        return self
+
+    @model_validator(mode="after")
+    def each_field_belongs_to_one_role(self) -> "DeckAgentMessage":
+        """Keep the two new fields on the roles the provider allows them on.
+
+        A `tool_calls` list on a user message and a `tool_call_id` on an assistant one
+        are both rejected by the provider rather than ignored, so they are rejected
+        here, where the client is told which field it put where.
+        """
+
+        if self.tool_calls and self.role != "assistant":
+            raise ValueError("only an assistant message may carry tool calls")
+        if self.role == "tool" and self.tool_call_id is None:
+            raise ValueError("a tool message must name the call it answers")
+        if self.role != "tool" and self.tool_call_id is not None:
+            raise ValueError("only a tool message may name a call it answers")
+        return self
 
 
 class DeckAgentDeckCard(DeckAgentModel):
@@ -148,6 +289,11 @@ class DeckAgentDeckSnapshot(DeckAgentModel):
     cards: Annotated[list[DeckAgentDeckCard], Field(max_length=500)] = Field(
         default_factory=list
     )
+    # When this deck last changed, so a replayed call's `deck_revision` can be compared
+    # against it. Optional because an older client posts no revision at all, and a deck
+    # whose revision is unknown is one whose replayed reads cannot be trusted — which
+    # the comparison already says, since absent differs from anything.
+    updated_at: DeckRevision | None = None
 
 
 class DeckEditChange(DeckAgentModel):
@@ -299,15 +445,57 @@ class DeckAgentChatRequest(DeckAgentModel):
     # since "no history was posted" and "this deck has never been edited" send the
     # agent somewhere different.
     history: DeckAgentDeckHistory | None = None
-    # Ask for each tool call's arguments and result alongside the answer, for the
-    # expandable view in the chat. Off by default: a `read_deck` result is kilobytes
-    # of text nobody is looking at unless debug mode is on.
+    # Whether the user has debug mode on, which the browser uses to decide how much of
+    # a turn it shows. It no longer decides what the reply carries: every turn returns
+    # each call's arguments and result, because any turn may be the one the user
+    # interrupts and the next turn replays. Read by nothing on this side.
     debug: bool = False
 
     @model_validator(mode="after")
     def transcript_must_end_with_the_user(self) -> "DeckAgentChatRequest":
         if self.messages[-1].role != "user":
             raise ValueError("the last chat message must be the user's")
+        return self
+
+    @model_validator(mode="after")
+    def every_tool_call_is_paired_with_its_answer(self) -> "DeckAgentChatRequest":
+        """Reject a transcript the provider would reject, naming the call that broke it.
+
+        This mirrors the provider's own rule: an `assistant.tool_calls` entry with no
+        answering `tool` message, or a `tool` message answering nothing, fails the whole
+        completion. An unanswered call is exactly what an interrupted turn produces, so
+        this is where a client's mistake will land — and a 422 naming the id is a far
+        better answer than a 502 from the model host.
+
+        Ids are matched, not counted. A transcript with one call and one answer that do
+        not refer to each other is the same error as a missing answer.
+        """
+
+        calls: dict[str, int] = {}
+        answered: set[str] = set()
+        for index, message in enumerate(self.messages):
+            if message.role == "tool":
+                # `tool_call_id` is required on a tool message by the message's own
+                # validator, so absent cannot reach here.
+                identifier = message.tool_call_id or ""
+                if identifier not in calls:
+                    raise ValueError(
+                        f"the tool message at position {index} answers call "
+                        f"{identifier!r}, which no earlier message asked for"
+                    )
+                answered.add(identifier)
+            for call in message.tool_calls:
+                if call.id in calls:
+                    raise ValueError(
+                        f"tool call {call.id!r} is asked for twice, so its answer "
+                        "cannot be matched to either"
+                    )
+                calls[call.id] = index
+        unanswered = [identifier for identifier in calls if identifier not in answered]
+        if unanswered:
+            raise ValueError(
+                f"tool call {unanswered[0]!r} has no answering tool message"
+            )
         return self
 
 
@@ -323,9 +511,18 @@ class DeckAgentToolCall(DeckAgentModel):
     ok: bool = True
     # Why the call failed, short enough to sit on one line in the transcript.
     detail: ShortLabel | None = None
-    # What the model asked for, as JSON text, and the exact result it read back.
-    # Both are present only for a turn that asked for `debug`, so absent means "not
-    # requested" rather than "the call had no arguments" or "it returned nothing".
+    # The provider's own id for this call, so a later turn can hand the pair back as
+    # `assistant.tool_calls` plus a `tool` message. `None` only for a call the provider
+    # gave no id.
+    id: ToolCallId | None = None
+    # What the model asked for, as JSON text, and the exact result it read back. On
+    # every turn, not only one that asked for `debug`: whichever turn the user
+    # interrupts is replayed on the next one, and which turn that will be is not
+    # knowable in advance.
+    #
+    # Absent means the payload was shed to fit `MAX_REPLAY_CHARS`, not that the call had
+    # no arguments or returned nothing. A call that lost its result is still replayable
+    # as framing.
     arguments_json: ToolPayloadText | None = None
     result: ToolPayloadText | None = None
 

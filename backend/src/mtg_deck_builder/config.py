@@ -369,6 +369,19 @@ class DeckAgentToolSettings(BaseModel):
         "results already in this conversation. If something could not be checked, "
         "say so in a sentence and answer the part you can. Do not write a tool call."
     )
+    # What the model is told when the transcript carries tool calls from an earlier
+    # turn. Sent only on a turn that actually has some, because a rule about a
+    # situation that is not happening is a paragraph the model has to work out is
+    # irrelevant. Without it a replayed result reads as somebody else's evidence, and
+    # the system prompt's own "call read_deck in the same turn before you edit" says
+    # in as many words that it does not count.
+    replayed_call_instruction: str = (
+        "A tool call already in this conversation is one you made on a turn the user "
+        "interrupted: it ran, it was paid for, and its result is the real one. Treat "
+        "those results as read this turn — read_deck included — and answer from them "
+        "instead of repeating the call. A result replaced by a line saying it is not "
+        "replayed is the one exception: that lookup is the one to make again."
+    )
     # A cap on cards per `see_cards` call. Exceeding it truncates and says so in the
     # tool result, rather than quietly returning less than was asked for.
     see_cards_max_cards: Annotated[int, Field(ge=1, le=50)] = 12

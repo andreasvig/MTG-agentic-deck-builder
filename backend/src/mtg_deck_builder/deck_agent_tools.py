@@ -95,6 +95,30 @@ READ_HISTORY = "read_history"
 SEARCH_WEB = "search_web"
 READ_PAGE = "read_page"
 
+DECK_DEPENDENT_TOOLS = frozenset({READ_DECK, EDIT_DECK, READ_HISTORY})
+"""Which tools' results describe the deck rather than the world.
+
+It lives here, beside the tools, because the backend is the authority on what a tool's
+output depends on: the client reports facts — which call ran, against which revision of
+the deck — and has no business deciding which of them survive a deck change.
+
+Everything absent from this set is about a card or about the web. {Sol Ring}'s Oracle
+text does not change because a card was cut, so `see_cards`, `search_cards`,
+`search_web` and `read_page` replay unconditionally.
+"""
+
+STALE_REPLAY_RESULT = (
+    "This result is not replayed: the deck changed after it was read. "
+    f"Call {READ_DECK} again if you need the current deck."
+)
+"""What a deck-dependent result becomes when the deck has moved on since it ran.
+
+The pairing survives — the model still sees a call and an answer, which is what the
+provider requires — and no stale claim is presented to it as its own observation. A
+replayed result the model treats as current is worse than no result, because it has no
+way to tell that the deck it is describing is not the deck it has.
+"""
+
 # The type that names each card's section of the deck list. Order is precedence, not
 # display: a card is filed under the first type its type line mentions, so an
 # artifact land is a Land. This mirrors `primaryCardType` in

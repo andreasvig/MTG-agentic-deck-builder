@@ -14,15 +14,19 @@ from mtg_deck_builder.deck_agent import (
     DeckAgentService,
     DeckAgentUnavailable,
 )
-from mtg_deck_builder.deck_agent_tools import ToolOutcome
+from mtg_deck_builder.deck_agent_tools import DECK_DEPENDENT_TOOLS, STALE_REPLAY_RESULT, ToolOutcome
 from mtg_deck_builder.domain import (
     DeckAgentChatRequest,
     DeckAgentDeckSnapshot,
     DeckAgentMessage,
+    DeckAgentReplayCall,
+    DeckAgentToolCall,
 )
 from mtg_deck_builder.domain.agent_chat import (
     MAX_HISTORY_EDITS,
     MAX_HISTORY_SESSIONS,
+    MAX_MESSAGE_CHARS,
+    MAX_REPLAY_CHARS,
     MAX_TOOL_PAYLOAD_CHARS,
     DeckAgentDeckEdit,
     DeckAgentDeckEditChange,
@@ -235,7 +239,15 @@ def test_chat_route_returns_the_agent_reply() -> None:
 
     assert response.status_code == 200
     assert response.json() == {
-        "message": {"role": "assistant", "content": "Sol Ring, every time."},
+        # The two replay fields are serialized on every message rather than only on one
+        # that uses them, for the same reason `card_links` always appears: a client must
+        # not have to tell absent from empty.
+        "message": {
+            "role": "assistant",
+            "content": "Sol Ring, every time.",
+            "tool_calls": [],
+            "tool_call_id": None,
+        },
         "model": "openai/gpt-5.6-luna",
         "replayed_message_count": 1,
         "cost_usd": 0.000222,
@@ -1002,7 +1014,7 @@ def test_the_stream_route_frames_a_deck_edit_as_its_own_event() -> None:
     assert edit["changes"][0]["card"] is None
 
 
-def test_a_debug_turn_carries_each_tool_call_arguments_and_result() -> None:
+def test_a_tool_calls_payloads_are_taken_from_the_call_that_ran() -> None:
     client = StubModelClient(
         [
             _tool_call_response("see_cards", '{"cards": ["Sol Ring"]}'),
@@ -1025,13 +1037,23 @@ def test_a_debug_turn_carries_each_tool_call_arguments_and_result() -> None:
     )
 
     call = reply.tool_calls[0]
-    # Taken from the call that ran, so the chat cannot display arguments the model
-    # never sent, or a result it never read.
+    # Taken from the call that ran, so neither the chat nor the next turn's replay can
+    # show arguments the model never sent, or a result it never read. `debug` is still
+    # accepted and no longer decides whether they travel — the control for that is
+    # `test_a_turn_that_asked_for_no_debug_carries_its_payloads_anyway`.
     assert json.loads(call.arguments_json or "") == {"cards": ["Sol Ring"]}
     assert call.result == "see_cards said something."
 
 
-def test_a_normal_turn_carries_no_tool_payloads() -> None:
+def test_a_turn_that_asked_for_no_debug_carries_its_payloads_anyway() -> None:
+    """The behaviour this replaces: payloads used to travel only for a debug turn.
+
+    They travel on every turn now, because which turn the user interrupts is not
+    knowable in advance and the next turn replays that one's calls rather than paying
+    for the same lookups again. `debug` still rides along — the browser uses it to
+    decide what it shows — and no longer decides what comes back.
+    """
+
     client = StubModelClient(
         [
             _tool_call_response("read_deck"),
@@ -1046,14 +1068,16 @@ def test_a_normal_turn_carries_no_tool_payloads() -> None:
 
     reply = asyncio.run(service.chat(_request("What is missing?")))
 
-    # The control for the test above: without `debug`, kilobytes of tool output are
-    # not posted back to a client that has nowhere to show them. Absent, not empty.
-    assert reply.tool_calls[0].signature == "read_deck()"
-    assert reply.tool_calls[0].arguments_json is None
-    assert reply.tool_calls[0].result is None
+    call = reply.tool_calls[0]
+    assert call.signature == "read_deck()"
+    assert call.arguments_json == "{}"
+    assert call.result == "read_deck said something."
+    # Without the provider's own id the pair cannot be handed back at all: an
+    # `assistant.tool_calls` entry and its `tool` message are matched by it.
+    assert call.id == "call-1"
 
 
-def test_malformed_arguments_are_shown_as_they_arrived_on_a_debug_turn() -> None:
+def test_malformed_arguments_are_shown_as_they_arrived() -> None:
     client = StubModelClient(
         [
             _tool_call_response("see_cards", "{not json"),
@@ -1549,3 +1573,633 @@ def test_a_name_broken_across_two_lines_is_not_one_card() -> None:
     # A brace stops at the end of its line, matching the parser the browser runs, so
     # the two sides cannot disagree about where one card name ends.
     assert toolbox.resolved_names == [["Sol Ring"]]
+
+
+# --- Replaying an interrupted turn -------------------------------------------------
+#
+# A cancelled turn keeps the calls it made, and the next turn hands them back to the
+# model rather than paying for the same lookups twice. That makes the transcript a
+# carrier of tool calls and their results, which is what everything below is about.
+
+
+def _call(
+    identifier: str,
+    name: str = "read_deck",
+    *,
+    arguments: str = "{}",
+    revision: str | None = None,
+) -> DeckAgentReplayCall:
+    return DeckAgentReplayCall(
+        id=identifier,
+        name=name,
+        arguments_json=arguments,
+        deck_revision=revision,
+    )
+
+
+def _interrupted_transcript(
+    *calls: DeckAgentReplayCall,
+    results: list[str] | None = None,
+    prose: str | None = None,
+) -> list[DeckAgentMessage]:
+    """The shape the browser posts for one interrupted turn, plus the next question."""
+
+    answers = results or [f"{call.name} said something." for call in calls]
+    messages = [
+        DeckAgentMessage(role="user", content="What is missing?"),
+        DeckAgentMessage(role="assistant", content=prose, tool_calls=list(calls)),
+        *(
+            DeckAgentMessage(role="tool", tool_call_id=call.id, content=answer)
+            for call, answer in zip(calls, answers, strict=True)
+        ),
+        DeckAgentMessage(role="user", content="Carry on."),
+    ]
+    return messages
+
+
+def test_a_message_must_carry_content_or_tool_calls() -> None:
+    # An assistant message with neither says nothing at all.
+    with pytest.raises(ValidationError):
+        DeckAgentMessage(role="assistant")
+    # Rule 1 is what rejects a tool message with an id and no result: the pair would
+    # reach the provider as a call answered by nothing.
+    with pytest.raises(ValidationError):
+        DeckAgentMessage(role="tool", tool_call_id="call-1")
+    # Tool calls alone are a whole message, because that is the provider's own shape
+    # for an assistant turn that only called tools.
+    assert DeckAgentMessage(role="assistant", tool_calls=[_call("call-1")]).content is None
+
+
+def test_the_two_replay_fields_belong_to_one_role_each() -> None:
+    with pytest.raises(ValidationError):
+        DeckAgentMessage(role="user", content="Hi", tool_calls=[_call("call-1")])
+    with pytest.raises(ValidationError):
+        DeckAgentMessage(role="tool", content="Read.", tool_calls=[_call("call-1")])
+    with pytest.raises(ValidationError):
+        DeckAgentMessage(role="assistant", content="Hi", tool_call_id="call-1")
+    with pytest.raises(ValidationError):
+        DeckAgentMessage(role="user", content="Hi", tool_call_id="call-1")
+    # A tool message that names no call cannot be paired with one.
+    with pytest.raises(ValidationError):
+        DeckAgentMessage(role="tool", content="read_deck said something.")
+
+
+def test_a_replayed_tool_result_may_be_longer_than_prose_ever_is() -> None:
+    """The two bounds are different because the two contents are different things.
+
+    A five-hundred-card `read_deck` listing is three times the prose bound, and it is
+    the reply's own `ToolPayloadText` coming back, so sharing the prose bound would make
+    the largest decks the ones a replay silently 422s on.
+    """
+
+    listing = "x" * (MAX_MESSAGE_CHARS + 1_000)
+    assert (
+        len(
+            DeckAgentMessage(role="tool", tool_call_id="call-1", content=listing).content
+            or ""
+        )
+        == MAX_MESSAGE_CHARS + 1_000
+    )
+    # Prose keeps the bound it always had, and keeps being stripped.
+    with pytest.raises(ValidationError):
+        DeckAgentMessage(role="user", content=listing)
+    assert DeckAgentMessage(role="user", content="  Hi  ").content == "Hi"
+    # A tool result is handed back byte for byte instead: the model has to read exactly
+    # what it read the first time.
+    padded = DeckAgentMessage(role="tool", tool_call_id="call-1", content="  Read.\n")
+    assert padded.content == "  Read.\n"
+
+
+def test_every_replayed_call_must_be_answered_by_id() -> None:
+    # An unanswered call is exactly what an interrupted turn produces, so the message
+    # names the id rather than only the count.
+    with pytest.raises(ValidationError) as unanswered:
+        DeckAgentChatRequest(
+            messages=[
+                DeckAgentMessage(role="user", content="What is missing?"),
+                DeckAgentMessage(role="assistant", tool_calls=[_call("call-7")]),
+                DeckAgentMessage(role="user", content="Carry on."),
+            ]
+        )
+    assert "'call-7'" in str(unanswered.value)
+
+    # And a result answering nothing is the same fault from the other side.
+    with pytest.raises(ValidationError) as orphaned:
+        DeckAgentChatRequest(
+            messages=[
+                DeckAgentMessage(
+                    role="tool", tool_call_id="call-9", content="read_deck said so."
+                ),
+                DeckAgentMessage(role="user", content="Carry on."),
+            ]
+        )
+    assert "'call-9'" in str(orphaned.value)
+
+    # A whole pair is accepted.
+    assert (
+        len(DeckAgentChatRequest(messages=_interrupted_transcript(_call("call-1"))).messages)
+        == 4
+    )
+
+
+def test_a_call_and_an_answer_that_do_not_refer_to_each_other_are_rejected() -> None:
+    """The corpus that tells an id check apart from a count.
+
+    One call and one answer, so any implementation counting them agrees. They name
+    different ids, so the provider would reject the completion — which is the whole
+    reason this validator exists.
+    """
+
+    with pytest.raises(ValidationError) as mismatched:
+        DeckAgentChatRequest(
+            messages=[
+                DeckAgentMessage(role="user", content="What is missing?"),
+                DeckAgentMessage(role="assistant", tool_calls=[_call("call-a")]),
+                DeckAgentMessage(
+                    role="tool", tool_call_id="call-b", content="read_deck said so."
+                ),
+                DeckAgentMessage(role="user", content="Carry on."),
+            ]
+        )
+    assert "'call-b'" in str(mismatched.value)
+
+    # An answer before its own call is out of order rather than merely unmatched: a
+    # count is blind to that too.
+    with pytest.raises(ValidationError):
+        DeckAgentChatRequest(
+            messages=[
+                DeckAgentMessage(
+                    role="tool", tool_call_id="call-a", content="read_deck said so."
+                ),
+                DeckAgentMessage(role="assistant", tool_calls=[_call("call-a")]),
+                DeckAgentMessage(role="user", content="Carry on."),
+            ]
+        )
+
+    # Two calls sharing an id cannot be paired with one answer each.
+    with pytest.raises(ValidationError):
+        DeckAgentChatRequest(
+            messages=_interrupted_transcript(_call("call-a"), _call("call-a"))
+        )
+
+
+def test_the_chat_route_rejects_an_unpaired_call_with_a_422() -> None:
+    with TestClient(create_app()) as client:
+        client.app.state.deck_agent = DeckAgentService(
+            model_client=StubModelClient(),
+            settings=_settings(),
+        )
+        response = client.post(
+            "/api/v1/agent/chat",
+            json={
+                "messages": [
+                    {"role": "user", "content": "What is missing?"},
+                    {
+                        "role": "assistant",
+                        "tool_calls": [
+                            {
+                                "id": "call-7",
+                                "name": "read_deck",
+                                "arguments_json": "{}",
+                            }
+                        ],
+                    },
+                    {"role": "user", "content": "Carry on."},
+                ]
+            },
+        )
+
+    # Rejected here, naming the call, rather than 502'd by the provider later.
+    assert response.status_code == 422
+    assert "call-7" in response.text
+
+
+def test_the_memory_window_never_cuts_a_replayed_group_in_half() -> None:
+    client = StubModelClient()
+    service = DeckAgentService(
+        model_client=client,
+        settings=_settings(max_history_messages=3),
+        toolbox=StubToolbox(),
+    )
+
+    reply = asyncio.run(
+        service.chat(
+            DeckAgentChatRequest(
+                messages=_interrupted_transcript(_call("call-1"), _call("call-2"))
+            )
+        )
+    )
+
+    # Three would have cut between the two results. The cut moves backwards to the
+    # assistant that asked for them, so the group arrives whole and one message over
+    # the window rather than as an orphaned result the provider refuses outright.
+    assert reply.replayed_message_count == 4
+    roles = [message["role"] for message in client.payloads[0]["messages"]]
+    assert roles == ["system", "assistant", "tool", "tool", "user"]
+
+
+def test_the_window_only_reaches_back_when_a_kept_result_needs_it() -> None:
+    """The control for the trim: an ordinary window is not widened.
+
+    Without this, "the slice does not begin with a tool message" would be satisfied by
+    an implementation that simply never trims.
+    """
+
+    client = StubModelClient()
+    service = DeckAgentService(
+        model_client=client, settings=_settings(max_history_messages=2)
+    )
+
+    reply = asyncio.run(service.chat(_request("first", "second", "third", "fourth")))
+
+    assert reply.replayed_message_count == 2
+    assert [message["content"] for message in client.payloads[0]["messages"][1:]] == [
+        "third",
+        "fourth",
+    ]
+
+
+def test_a_group_that_ends_before_the_window_is_left_behind_whole() -> None:
+    client = StubModelClient()
+    service = DeckAgentService(
+        model_client=client,
+        settings=_settings(max_history_messages=3),
+        toolbox=StubToolbox(),
+    )
+
+    reply = asyncio.run(
+        service.chat(
+            DeckAgentChatRequest(
+                messages=[
+                    *_interrupted_transcript(_call("call-1"))[:3],
+                    DeckAgentMessage(role="assistant", content="You want ramp."),
+                    DeckAgentMessage(role="user", content="And what else?"),
+                    DeckAgentMessage(role="assistant", content="More lands."),
+                    DeckAgentMessage(role="user", content="And now?"),
+                ]
+            )
+        )
+    )
+
+    # Nothing kept answers a call, so nothing is pulled back in: the trim widens the
+    # window only for a group it would otherwise have split, and an interrupted turn
+    # old enough to fall out of memory falls out of it whole.
+    assert reply.replayed_message_count == 3
+    assert [message["role"] for message in client.payloads[0]["messages"]] == [
+        "system",
+        "user",
+        "assistant",
+        "user",
+    ]
+
+
+def test_the_trim_keeps_moving_back_past_an_interleaved_group() -> None:
+    """Two groups whose answers are interleaved, which the contract allows.
+
+    An answer only has to come *later* than its call, not immediately after it, so
+    pulling in one group can expose a result belonging to an older one. One hop
+    backwards is not enough; this is why the trim runs to a fixpoint.
+    """
+
+    client = StubModelClient()
+    service = DeckAgentService(
+        model_client=client,
+        settings=_settings(max_history_messages=3),
+        toolbox=StubToolbox(),
+    )
+
+    reply = asyncio.run(
+        service.chat(
+            DeckAgentChatRequest(
+                messages=[
+                    DeckAgentMessage(role="assistant", tool_calls=[_call("call-a")]),
+                    DeckAgentMessage(role="assistant", tool_calls=[_call("call-b")]),
+                    DeckAgentMessage(
+                        role="tool", tool_call_id="call-b", content="second."
+                    ),
+                    DeckAgentMessage(
+                        role="tool", tool_call_id="call-a", content="first."
+                    ),
+                    DeckAgentMessage(role="user", content="Carry on."),
+                ]
+            )
+        )
+    )
+
+    assert reply.replayed_message_count == 5
+    assert client.payloads[0]["messages"][1]["tool_calls"][0]["id"] == "call-a"
+
+
+def test_a_replayed_group_reaches_the_provider_in_its_own_shape() -> None:
+    client = StubModelClient()
+    service = DeckAgentService(
+        model_client=client, settings=_settings(), toolbox=StubToolbox()
+    )
+
+    asyncio.run(
+        service.chat(
+            DeckAgentChatRequest(
+                messages=_interrupted_transcript(
+                    _call("call-1", arguments='{"extra_info": []}'),
+                    _call("call-2", "see_cards", arguments='{"cards": ["Sol Ring"]}'),
+                    results=["The deck holds 99.", "Sol Ring costs one."],
+                    prose="Reading the deck now.",
+                )
+            )
+        )
+    )
+
+    # Exactly the shape the completions API accepts a tool result back in, and exactly
+    # the shape this loop echoes its own calls back in. The system message is asserted
+    # by the replay-note test; everything after it is the transcript.
+    assert client.payloads[0]["messages"][1:] == [
+        {"role": "user", "content": "What is missing?"},
+        {
+            "role": "assistant",
+            "content": "Reading the deck now.",
+            "tool_calls": [
+                {
+                    "id": "call-1",
+                    "type": "function",
+                    "function": {"name": "read_deck", "arguments": '{"extra_info": []}'},
+                },
+                {
+                    "id": "call-2",
+                    "type": "function",
+                    "function": {
+                        "name": "see_cards",
+                        "arguments": '{"cards": ["Sol Ring"]}',
+                    },
+                },
+            ],
+        },
+        {"role": "tool", "tool_call_id": "call-1", "content": "The deck holds 99."},
+        {"role": "tool", "tool_call_id": "call-2", "content": "Sol Ring costs one."},
+        {"role": "user", "content": "Carry on."},
+    ]
+
+
+def test_an_assistant_message_with_no_prose_replays_as_an_empty_string() -> None:
+    client = StubModelClient()
+    service = DeckAgentService(
+        model_client=client, settings=_settings(), toolbox=StubToolbox()
+    )
+
+    asyncio.run(
+        service.chat(
+            DeckAgentChatRequest(messages=_interrupted_transcript(_call("call-1")))
+        )
+    )
+
+    # A cancelled turn that wrote nothing before it was stopped still has to carry its
+    # calls, and the provider wants `content` present.
+    assistant = client.payloads[0]["messages"][2]
+    assert assistant["tool_calls"][0]["id"] == "call-1"
+    assert assistant["content"] == ""
+
+
+def _replay_payload(
+    *calls: DeckAgentReplayCall,
+    updated_at: str | None,
+    results: list[str] | None = None,
+) -> list[dict[str, Any]]:
+    """Run one turn over a replayed group and return what reached the provider."""
+
+    client = StubModelClient()
+    service = DeckAgentService(
+        model_client=client, settings=_settings(), toolbox=StubToolbox()
+    )
+    asyncio.run(
+        service.chat(
+            DeckAgentChatRequest(
+                messages=_interrupted_transcript(*calls, results=results),
+                deck=DeckAgentDeckSnapshot(
+                    name="Gruul Stompy", cards=[], updated_at=updated_at
+                ),
+            )
+        )
+    )
+    return client.payloads[0]["messages"]
+
+
+def test_a_replayed_deck_read_survives_only_while_the_deck_has_not_moved() -> None:
+    unchanged = _replay_payload(
+        _call("call-1", "read_deck", revision="2026-08-03T10:00:00.000Z"),
+        results=["Deck \"Gruul Stompy\" — 99 cards, 99 distinct."],
+        updated_at="2026-08-03T10:00:00.000Z",
+    )
+    moved = _replay_payload(
+        _call("call-1", "read_deck", revision="2026-08-03T10:00:00.000Z"),
+        results=["Deck \"Gruul Stompy\" — 99 cards, 99 distinct."],
+        updated_at="2026-08-03T11:30:00.000Z",
+    )
+
+    # Byte for byte, both ways.
+    assert unchanged[3]["content"] == 'Deck "Gruul Stompy" — 99 cards, 99 distinct.'
+    assert moved[3]["content"] == (
+        "This result is not replayed: the deck changed after it was read. "
+        "Call read_deck again if you need the current deck."
+    )
+    assert moved[3]["content"] == STALE_REPLAY_RESULT
+    # The pairing survives the substitution: the model still sees an answer to its own
+    # call, which is what the provider requires and what tells it the call was made.
+    assert moved[3]["tool_call_id"] == "call-1"
+    assert moved[2]["tool_calls"][0]["id"] == "call-1"
+
+
+def test_every_deck_dependent_tool_is_substituted_and_nothing_else_is() -> None:
+    def replayed(name: str) -> str:
+        messages = _replay_payload(
+            _call("call-1", name, revision="2026-08-03T10:00:00.000Z"),
+            results=[f"{name} said something."],
+            updated_at="2026-08-03T11:30:00.000Z",
+        )
+        return messages[3]["content"]
+
+    # The three whose output describes the deck.
+    assert sorted(DECK_DEPENDENT_TOOLS) == ["edit_deck", "read_deck", "read_history"]
+    for name in sorted(DECK_DEPENDENT_TOOLS):
+        assert replayed(name) == STALE_REPLAY_RESULT
+
+    # The control that proves the substitution is scoped: a web answer, a card's Oracle
+    # text and a catalog search do not change because a card was cut, so a changed deck
+    # costs them nothing.
+    for name in ("search_web", "read_page", "see_cards", "search_cards"):
+        assert replayed(name) == f"{name} said something."
+
+
+def test_a_revision_nobody_can_vouch_for_counts_as_changed() -> None:
+    """Absent is not unchanged.
+
+    A deck-dependent call with no recorded revision, or a deck posted without one, is a
+    read this turn cannot verify — and an unverifiable read of the deck is exactly the
+    one worth refusing.
+    """
+
+    unreported = _replay_payload(
+        _call("call-1", "read_deck"),
+        updated_at="2026-08-03T10:00:00.000Z",
+    )
+    no_deck_revision = _replay_payload(
+        _call("call-1", "read_deck", revision="2026-08-03T10:00:00.000Z"),
+        updated_at=None,
+    )
+    neither = _replay_payload(_call("call-1", "read_deck"), updated_at=None)
+
+    assert unreported[3]["content"] == STALE_REPLAY_RESULT
+    assert no_deck_revision[3]["content"] == STALE_REPLAY_RESULT
+    # Both absent is the one honest match: a client that tracks no revision at all is
+    # not a client whose deck has changed.
+    assert neither[3]["content"] == "read_deck said something."
+
+
+def test_the_replay_note_reaches_the_model_only_when_something_is_replayed() -> None:
+    replaying = StubModelClient()
+    ordinary = StubModelClient()
+    settings = _settings()
+    asyncio.run(
+        DeckAgentService(
+            model_client=replaying, settings=settings, toolbox=StubToolbox()
+        ).chat(DeckAgentChatRequest(messages=_interrupted_transcript(_call("call-1"))))
+    )
+    asyncio.run(
+        DeckAgentService(model_client=ordinary, settings=settings).chat(
+            _request("What is missing?")
+        )
+    )
+
+    note = settings.tools.replayed_call_instruction
+    assert replaying.payloads[0]["messages"][0]["content"].endswith(note)
+    # A rule about interrupted turns on a turn that has none is a paragraph the model
+    # has to work out is irrelevant.
+    assert ordinary.payloads[0]["messages"][0]["content"] == settings.system_prompt
+
+
+def test_the_replay_note_is_configuration_and_says_the_result_may_be_used() -> None:
+    instruction = Settings().agent.tools.replayed_call_instruction.casefold()
+
+    # It has to name the interruption, or a replayed call reads as somebody else's
+    # evidence; and it has to say the result may be used, or the prompt's own "call
+    # read_deck every turn without exception" wins and the replay saves nothing.
+    assert "interrupted" in instruction
+    assert "read_deck" in instruction
+    assert "not replayed" in instruction
+
+
+def _sheddable_turn(rounds: int, *, chars: int) -> list[DeckAgentToolCall]:
+    """Run a turn of `rounds` tool calls whose results are `chars` long each."""
+
+    client = StubModelClient(
+        [
+            *(
+                _tool_call_response("read_deck", call_id=f"call-{index + 1}")
+                for index in range(rounds)
+            ),
+            _answer_response("That is a big deck."),
+        ]
+    )
+    service = DeckAgentService(
+        model_client=client,
+        settings=_settings(tools={"max_iterations": rounds + 1}),
+        toolbox=StubToolbox(content="x" * chars),
+    )
+    reply = asyncio.run(service.chat(_request("Read my deck.")))
+    return reply.tool_calls
+
+
+def test_a_turn_sheds_its_oldest_results_to_fit_the_replay_budget() -> None:
+    calls = _sheddable_turn(3, chars=MAX_TOOL_PAYLOAD_CHARS)
+
+    # Three full payloads are 72,000 characters, so one has to go. The oldest goes
+    # first, and it loses its result rather than the arguments that still let it replay
+    # as framing.
+    assert [call.result is None for call in calls] == [True, False, False]
+    assert [call.arguments_json for call in calls] == ["{}", "{}", "{}"]
+    assert (
+        sum(len(call.arguments_json or "") + len(call.result or "") for call in calls)
+        <= MAX_REPLAY_CHARS
+    )
+    # The newest lookup is the one a replay is most likely to continue from.
+    assert len(calls[-1].result or "") == MAX_TOOL_PAYLOAD_CHARS
+
+
+def test_the_per_payload_cap_keeps_a_pair_of_results_inside_the_budget() -> None:
+    """Where the two caps meet, which is not where it looks.
+
+    A 70,000-character pair of results never reaches the whole-turn budget: each one is
+    truncated to `MAX_TOOL_PAYLOAD_CHARS` first, so the pair carries 48,000 and nothing
+    is shed. It takes three calls, or a pair with arguments as large as its results, to
+    reach 60,000 at all.
+    """
+
+    calls = _sheddable_turn(2, chars=35_000)
+
+    assert [len(call.result or "") for call in calls] == [MAX_TOOL_PAYLOAD_CHARS] * 2
+    assert all(call.result is not None for call in calls)
+    assert all("characters more" in (call.result or "") for call in calls)
+
+
+def test_arguments_are_shed_only_after_every_result_has_gone() -> None:
+    client = StubModelClient(
+        [
+            *(
+                _tool_call_response(
+                    "see_cards",
+                    '{"cards": ["' + "x" * (MAX_TOOL_PAYLOAD_CHARS - 20) + '"]}',
+                    call_id=f"call-{index + 1}",
+                )
+                for index in range(3)
+            ),
+            _answer_response("Answered."),
+        ]
+    )
+    service = DeckAgentService(
+        model_client=client,
+        settings=_settings(tools={"max_iterations": 4}),
+        toolbox=StubToolbox(content="x" * MAX_TOOL_PAYLOAD_CHARS),
+    )
+
+    calls = asyncio.run(service.chat(_request("Read everything."))).tool_calls
+
+    # Six payloads of nearly 24,000 is nearly 144,000 against a budget of 60,000, so
+    # every result goes; that is still over, so arguments start going too, oldest first,
+    # and it stops the moment it fits rather than emptying the turn.
+    assert [call.result is None for call in calls] == [True, True, True]
+    assert [call.arguments_json is None for call in calls] == [True, False, False]
+    assert (
+        sum(len(call.arguments_json or "") + len(call.result or "") for call in calls)
+        <= MAX_REPLAY_CHARS
+    )
+
+
+def test_the_streamed_done_event_carries_the_shed_reply() -> None:
+    client = StubStreamingClient(
+        [
+            [_tool_chunk("read_deck", "{}", call_id="call-1")],
+            [_tool_chunk("read_deck", "{}", call_id="call-2")],
+            [_tool_chunk("read_deck", "{}", call_id="call-3")],
+            _text_chunks("That is a big deck."),
+        ]
+    )
+    service = DeckAgentService(
+        model_client=client,
+        settings=_settings(tools={"max_iterations": 4}),
+        toolbox=StubToolbox(content="x" * MAX_TOOL_PAYLOAD_CHARS),
+    )
+
+    events = _collect(_request("Read my deck."), service)
+
+    tool_events = [event for event in events if event.type == "tool"]
+    done = events[-1]
+    assert done.type == "done"
+    # The events carry every payload as it happens, because a turn cancelled after the
+    # second one has to keep what it saw. The budget is applied to the finished reply,
+    # which is what an answered turn stores.
+    assert [len(event.call.result or "") for event in tool_events] == [
+        MAX_TOOL_PAYLOAD_CHARS
+    ] * 3
+    assert [call.result is None for call in done.reply.tool_calls] == [
+        True,
+        False,
+        False,
+    ]

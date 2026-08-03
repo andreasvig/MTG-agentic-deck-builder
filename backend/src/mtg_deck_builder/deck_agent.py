@@ -22,18 +22,25 @@ from collections.abc import AsyncIterator, Awaitable, Callable
 from typing import Any
 
 from mtg_deck_builder.config import DeckAgentSettings
-from mtg_deck_builder.deck_agent_tools import DeckAgentToolbox
+from mtg_deck_builder.deck_agent_tools import (
+    DECK_DEPENDENT_TOOLS,
+    STALE_REPLAY_RESULT,
+    DeckAgentToolbox,
+)
 from mtg_deck_builder.domain import (
     DeckAgentCardLink,
     DeckAgentChatReply,
     DeckAgentChatRequest,
     DeckAgentMessage,
+    DeckAgentReplayCall,
     DeckAgentToolCall,
 )
 from mtg_deck_builder.domain.agent_chat import (
+    MAX_REPLAY_CHARS,
     MAX_TOOL_PAYLOAD_CHARS,
     DeckAgentDeckEdit,
     DeckAgentDeckEditEvent,
+    DeckAgentDeckSnapshot,
     DeckAgentDoneEvent,
     DeckAgentStreamEvent,
     DeckAgentTextEvent,
@@ -163,11 +170,8 @@ class DeckAgentService:
 
         replayed = self._replayed_messages(request)
         conversation: list[dict[str, Any]] = [
-            {"role": "system", "content": self._settings.system_prompt},
-            *(
-                {"role": message.role, "content": message.content}
-                for message in replayed
-            ),
+            {"role": "system", "content": self._system_prompt(replayed)},
+            *_provider_messages(replayed, deck=request.deck),
         ]
         toolbox = self._toolbox if self._toolbox and self._toolbox.enabled else None
         tools = toolbox.definitions() if toolbox else None
@@ -203,15 +207,16 @@ class DeckAgentService:
                         signature=outcome.signature,
                         ok=outcome.ok,
                         detail=outcome.detail,
-                        # Only for a debug turn, and taken from what actually ran
-                        # rather than re-rendered, so the panel cannot show a call
-                        # that differs from the one the model made.
-                        arguments_json=(
-                            _payload(_arguments_json(arguments))
-                            if request.debug
-                            else None
-                        ),
-                        result=_payload(outcome.content) if request.debug else None,
+                        # The provider's own id, so the next turn can hand this call
+                        # and its result back as a pair the provider accepts.
+                        id=call_id,
+                        # On every turn, not only a debug one: any turn may be the one
+                        # the user interrupts, and the next turn replays it rather than
+                        # paying for the same lookups again. Taken from what actually
+                        # ran rather than re-rendered, so neither the panel nor the
+                        # replay can show a call that differs from the one made.
+                        arguments_json=_payload(_arguments_json(arguments)),
+                        result=_payload(outcome.content),
                     )
                 )
                 if emit_tool is not None:
@@ -371,9 +376,25 @@ class DeckAgentService:
             # up silently low.
             cost_usd=round(sum(priced), 8) if priced else None,
             unpriced_call_count=len(costs) - len(priced),
-            tool_calls=performed,
+            tool_calls=_within_replay_budget(performed),
             card_links=await self._card_links(text),
         )
+
+    def _system_prompt(self, replayed: list[DeckAgentMessage]) -> str:
+        """The system prompt, plus the replay note when there is a replay to note.
+
+        Appended only when the window actually carries a `tool` message. A rule about
+        interrupted turns on a turn that has none is a paragraph the model has to work
+        out is irrelevant — the same reason the undone-edit marker is only explained
+        when something is marked.
+        """
+
+        instruction = self._settings.tools.replayed_call_instruction.strip()
+        if not instruction or not any(
+            message.role == "tool" for message in replayed
+        ):
+            return self._settings.system_prompt
+        return f"{self._settings.system_prompt}\n\n{instruction}"
 
     async def _card_links(self, text: str) -> list[DeckAgentCardLink]:
         """Resolve the card names the answer braced, in the order it named them.
@@ -401,10 +422,25 @@ class DeckAgentService:
         Trimming from the front rather than the back is what makes the window a
         memory limit instead of an amnesia bug: the current question always
         survives, and only the oldest context falls away.
+
+        The cut then moves *backwards* to a group boundary, so it never lands inside a
+        replayed tool group. A slice beginning with a `tool` message is the one thing
+        the provider rejects outright, and losing the assistant message that asked for
+        a result while keeping the result is worse than sending one message too many.
+        Backwards rather than forwards on purpose: forwards would drop a whole
+        interrupted turn's work, which is exactly what a replay exists to keep.
+
+        A group can therefore push the slice past the window, by at most the group's
+        own length. Nothing bounds a group but `MAX_REPLAY_CALLS`, and
+        `agent.tools.max_iterations` bounds what a real turn can produce far below
+        that, so the window is a floor on context rather than a ceiling.
         """
 
+        messages = list(request.messages)
         window = self._settings.max_history_messages
-        return list(request.messages[-window:])
+        if len(messages) <= window:
+            return messages
+        return messages[_group_start(messages, len(messages) - window) :]
 
     def _temperature_payload(self) -> dict[str, float]:
         """Send `temperature` only when configured, since not every model accepts it.
@@ -417,6 +453,143 @@ class DeckAgentService:
         if self._settings.temperature is None:
             return {}
         return {"temperature": self._settings.temperature}
+
+
+def _group_start(messages: list[DeckAgentMessage], start: int) -> int:
+    """Move a cut backwards until no kept `tool` message has lost its call.
+
+    Run to a fixpoint rather than hopped once: the contract only requires an answer to
+    come *later* than its call, not immediately after it, so pulling one group in can
+    expose a `tool` message belonging to an older one. Answers can never be cut by this
+    — the kept slice always runs to the end of the transcript, and an answer is always
+    later than the call it answers — so only the opening edge is ever in question.
+    """
+
+    owners = {
+        call.id: index
+        for index, message in enumerate(messages)
+        for call in message.tool_calls
+    }
+    kept = start
+    while True:
+        earliest = min(
+            (
+                owners[message.tool_call_id]
+                for message in messages[kept:]
+                if message.role == "tool" and message.tool_call_id in owners
+            ),
+            default=kept,
+        )
+        if earliest >= kept:
+            return kept
+        kept = earliest
+
+
+def _provider_messages(
+    messages: list[DeckAgentMessage],
+    *,
+    deck: DeckAgentDeckSnapshot | None,
+) -> list[dict[str, Any]]:
+    """Shape the transcript the way the completions API reads it.
+
+    A replayed tool group has to arrive in the provider's own shape — an assistant
+    message carrying `tool_calls`, then one `tool` message per call — because that is
+    the only shape a tool result can be handed back in. It is built here rather than in
+    the browser for the same reason `card_links` are resolved here: the wire format
+    belongs to whichever side talks to the provider.
+    """
+
+    calls = {call.id: call for message in messages for call in message.tool_calls}
+    shaped: list[dict[str, Any]] = []
+    for message in messages:
+        if message.role == "tool":
+            shaped.append(
+                {
+                    "role": "tool",
+                    "tool_call_id": message.tool_call_id,
+                    "content": _replayed_result(message, calls, deck=deck),
+                }
+            )
+            continue
+        if message.tool_calls:
+            shaped.append(
+                {
+                    "role": "assistant",
+                    # Empty rather than absent, exactly as an assistant tool-call turn
+                    # made in this process is echoed back.
+                    "content": message.content or "",
+                    "tool_calls": [
+                        {
+                            "id": call.id,
+                            "type": "function",
+                            "function": {
+                                "name": call.name,
+                                "arguments": call.arguments_json,
+                            },
+                        }
+                        for call in message.tool_calls
+                    ],
+                }
+            )
+            continue
+        shaped.append({"role": message.role, "content": message.content})
+    return shaped
+
+
+def _replayed_result(
+    message: DeckAgentMessage,
+    calls: dict[str, DeckAgentReplayCall],
+    *,
+    deck: DeckAgentDeckSnapshot | None,
+) -> str:
+    """Replay one tool result, or say why it is not being replayed.
+
+    Only a deck-dependent result can go stale, and it is stale whenever the revision it
+    was read against is not the revision posted now. A missing revision on either side
+    counts as different, because "the browser could not say" is not "unchanged" — and
+    an unverifiable read of the deck is exactly the one worth refusing.
+    """
+
+    call = calls.get(message.tool_call_id or "")
+    if call is None or call.name not in DECK_DEPENDENT_TOOLS:
+        return message.content or ""
+    posted = deck.updated_at if deck is not None else None
+    if call.deck_revision == posted:
+        return message.content or ""
+    return STALE_REPLAY_RESULT
+
+
+def _within_replay_budget(calls: list[DeckAgentToolCall]) -> list[DeckAgentToolCall]:
+    """Fit one turn's whole payload text inside `MAX_REPLAY_CHARS`.
+
+    Oldest call first, and a `result` before its own `arguments_json`: the newest lookup
+    is the one a replay is most likely to continue from, and a call that kept only its
+    arguments still replays as framing — "interrupted after `read_deck()`" — where a
+    call dropped whole leaves the model unable to tell it ever ran.
+
+    Shedding rather than refusing, because which turn gets interrupted is not knowable
+    in advance: a bounded replay of the newest calls beats an unbounded reply nothing
+    can store.
+    """
+
+    shed = list(calls)
+    # Results oldest-first, then arguments oldest-first. Taking a call's arguments while
+    # a later call still has its result would trade the cheaper loss for the dearer one.
+    for field in ("result", "arguments_json"):
+        for index, call in enumerate(shed):
+            if _payload_chars(shed) <= MAX_REPLAY_CHARS:
+                return shed
+            if getattr(call, field) is not None:
+                shed[index] = call.model_copy(update={field: None})
+    return shed
+
+
+def _payload_chars(calls: list[DeckAgentToolCall]) -> int:
+    """Count the payload text one reply is carrying."""
+
+    return sum(
+        len(call.arguments_json or "") + len(call.result or "") for call in calls
+    )
 
 
 def _response_message(response: dict[str, Any]) -> dict[str, Any]:
@@ -590,10 +763,11 @@ def _merge_tool_call_fragments(
 
 
 def _arguments_json(arguments: object) -> str:
-    """Render whatever the model sent as JSON text for the debug view.
+    """Render whatever the model sent as JSON text, for the panel and for the replay.
 
     Arguments that were not valid JSON are shown as they arrived rather than
-    discarded — a malformed call is exactly the one worth being able to read.
+    discarded — a malformed call is exactly the one worth being able to read, and it is
+    also the one the model may want handed back so it can see what it got wrong.
     """
 
     if isinstance(arguments, str):
@@ -605,7 +779,11 @@ def _arguments_json(arguments: object) -> str:
 
 
 def _payload(text: str) -> str:
-    """Fit one debug payload inside the contract, saying so when it did not fit."""
+    """Fit one payload inside the per-payload cap, saying so when it did not fit.
+
+    `MAX_REPLAY_CHARS` then bounds their sum over the whole turn, so a payload that
+    fits here can still be shed later; see `_within_replay_budget`.
+    """
 
     if len(text) <= MAX_TOOL_PAYLOAD_CHARS:
         return text

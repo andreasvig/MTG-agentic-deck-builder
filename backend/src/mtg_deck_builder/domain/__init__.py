@@ -8,6 +8,7 @@ from mtg_deck_builder.domain.agent_chat import (
     DeckAgentDeckCard,
     DeckAgentDeckSnapshot,
     DeckAgentMessage,
+    DeckAgentReplayCall,
     DeckAgentRole,
     DeckAgentToolCall,
 )
@@ -99,6 +100,7 @@ __all__ = [
     "DeckAgentDeckCard",
     "DeckAgentDeckSnapshot",
     "DeckAgentMessage",
+    "DeckAgentReplayCall",
     "DeckAgentRole",
     "DeckAgentToolCall",
     "DeckCardEntry",
