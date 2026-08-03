@@ -82,18 +82,16 @@ function drivenStream() {
       await act(async () => settle?.(reply));
     },
     /*
-     * The same two events with **no** `act()` around them, leaving the render they
-     * schedule still pending.
+     * One tool call with **no** `act()` around it, leaving the render it schedules pending.
      *
-     * Every other emitter here wraps its event, which is what a test wants almost always
-     * — assert against what is on screen. It is also what hid the one race the cancel path
-     * is built around, and it hid it as a property of this helper rather than of the
-     * renderer: a real stream does not flush React between a chunk and the keystroke that
-     * follows it. Used by the render-lag test below and nowhere else.
+     * Every other emitter here wraps its event, which is what a test wants almost always —
+     * assert against what is on screen. It is also what hid the one race the cancel path is
+     * built around, and it hid it as a property of this helper rather than of the renderer:
+     * a real stream does not flush React between an event and the keystroke that follows
+     * it. Used by the render-lag test below and nowhere else, which is why there is no
+     * unflushed `text` beside it — the two events take the same path into `updateLive`, and
+     * a second emitter nothing calls is a claim about coverage that no test is making.
      */
-    unflushedText(chunk: string) {
-      handlers?.onText(chunk);
-    },
     unflushedTool(call: DeckAgentToolCall) {
       handlers?.onToolCall(call);
     },
