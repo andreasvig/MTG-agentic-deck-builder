@@ -10,12 +10,69 @@ import {
 
 export type DeckAgentRole = "user" | "assistant";
 
+/**
+ * Who said one message in a posted request, which is one role more than a
+ * transcript has.
+ *
+ * `tool` lives only on the wire. A replayed result is not a message the panel ever
+ * draws — the chat shows the call as a tool line and the answer as prose — so
+ * `DeckAgentRole` keeps its two values and no stored transcript can grow a role the
+ * panel has no way to render.
+ */
+export type DeckAgentRequestRole = DeckAgentRole | "tool";
+
 /** Who made one edit. The same two values the recorded history tags a session with. */
 export type DeckAgentActor = "user" | "agent";
 
 export interface DeckAgentMessage {
   role: DeckAgentRole;
   content: string;
+}
+
+/**
+ * One tool call handed back to the model, exactly as it was made.
+ *
+ * The turn that made it was interrupted, so no answer was ever written from it. What
+ * goes back is the call and its result rather than a summary of either: `search_web`
+ * and `read_page` results are paid for and non-deterministic, so re-running one is not
+ * the same as replaying it.
+ */
+export interface DeckAgentReplayCall {
+  /**
+   * The provider's own id for this call.
+   *
+   * Matched rather than read, so it travels byte for byte: it is the only thing that
+   * ties this call to the `tool` message answering it, and an unanswered call is a 422.
+   */
+  id: string;
+  name: string;
+  arguments_json: string;
+  /**
+   * The deck's `updated_at` when this call ran, for the deck-dependent tools.
+   *
+   * Absent means the browser could not say, which the backend does not read as
+   * "unchanged": which tool's result depends on the deck is the backend's own
+   * knowledge, and the browser only reports the fact.
+   */
+  deck_revision?: string;
+}
+
+/**
+ * One message as a request carries it, which is more than a transcript stores.
+ *
+ * An assistant message may carry tool calls and no prose — the provider's own shape
+ * for a turn that only called tools — and a `tool` message carries one call's result
+ * and names the call by id. Every field is optional here and constrained by role on
+ * the backend, so `buildAgentMessages` is the one place that decides which
+ * combinations are produced.
+ */
+export interface DeckAgentRequestMessage {
+  role: DeckAgentRequestRole;
+  content?: string;
+  /** Assistant only, and never empty: an empty list says nothing and costs bytes. */
+  tool_calls?: DeckAgentReplayCall[];
+  /** Tool only, and required there: which call this message answers. */
+  tool_call_id?: string;
 }
 
 /** One tool the agent ran, as the chat shows it above the answer. */
@@ -26,13 +83,32 @@ export interface DeckAgentToolCall {
   ok: boolean;
   detail: string | null;
   /**
+   * The provider's own id for this call, when the backend that ran it reported one.
+   *
+   * Absent on a turn an older build answered, and that absence is why the fallback
+   * exists: without an id a call cannot be paired with its result, so the turn
+   * replays as framing rather than as a malformed pair.
+   */
+  id?: string;
+  /**
    * The arguments the model sent, as JSON text, and the exact result it read back.
    *
-   * Both are null unless the turn was sent with debug on, so null means "not
-   * asked for" — never "the call had no arguments" or "it returned nothing".
+   * Both travel on every turn, because which turn gets cancelled is not knowable in
+   * advance and an interrupted turn is replayed from exactly these two fields. Null
+   * means the payload is gone — shed by the storage budget, or never sent by an older
+   * build — never "the call had no arguments" or "it returned nothing".
    */
   arguments_json: string | null;
   result: string | null;
+  /**
+   * The deck's `updated_at` when this call ran, as the browser saw it.
+   *
+   * Recorded by the panel rather than read from the reply: the backend holds no deck,
+   * so it cannot know when the one it was posted last changed. Carried so a replay can
+   * report the fact and let the backend decide whether the result is still an
+   * observation. Absent on a turn stored before this field existed.
+   */
+  deckRevision?: string;
 }
 
 /** One entry of the open deck, as posted with a chat turn. */
@@ -45,6 +121,15 @@ export interface DeckAgentDeckCard {
 export interface DeckAgentDeckSnapshot {
   name: string;
   cards: DeckAgentDeckCard[];
+  /**
+   * When this deck last changed, so a replayed result can be told from a stale one.
+   *
+   * The only use of it is comparison: the backend checks a replayed call's
+   * `deck_revision` against this and substitutes the result of a deck-dependent tool
+   * when the two differ. Absent means the caller could not say, which is not the same
+   * as "unchanged" — see `buildAgentMessages`.
+   */
+  updated_at?: string;
 }
 
 /**
@@ -356,6 +441,19 @@ export interface DeckAgentTranscriptEntry {
    * An empty array would claim the turn edited the deck and then name nothing.
    */
   appliedEdits?: DeckAgentAppliedEdit[];
+  /**
+   * Present only when true: the turn was cancelled, so it committed from the stream.
+   *
+   * Two things read it. `serializeAgentChats` treats this turn's tool payloads as
+   * load-bearing rather than as diagnostics, because they are what the next turn
+   * continues from; and `buildAgentMessages` replays them, as `assistant.tool_calls`
+   * plus one `tool` message each, instead of posting the prose alone.
+   *
+   * Absent is the ordinary turn, committed from `done`, whose prose already says
+   * everything its tools found — so replaying its calls would only pay twice for the
+   * same reading. Omitted rather than `false` so an answered turn costs no bytes.
+   */
+  interrupted?: true;
 }
 
 /** One deck's conversation: what was said, and what it cost to say it. */
@@ -428,9 +526,18 @@ export function parseStoredAgentChats(raw: string | null): DeckAgentChatsByDeck 
 /**
  * Render the chats for storage, inside the byte budget.
  *
- * The budget is spent newest-chat-first and newest-turn-first: a turn is written
- * whole while there is room, then without its tool payloads, and once there is no
- * room at all the remaining older turns are left out.
+ * The budget is spent newest-chat-first, and inside one chat in two passes. First
+ * what was said, newest-turn-first and payload-free, because the conversation on
+ * screen is the last thing that should go. Then the tool payloads, onto the turns
+ * that need them most: an **interrupted** turn's payloads are what its replay is made
+ * of, so they are claimed before any answered turn's, and only then does the ordinary
+ * newest-first order apply. Once even a bare turn will not fit, the older turns are
+ * left out entirely.
+ *
+ * The inversion is the whole point of the second pass. An answered turn's payloads are
+ * diagnostics — its prose already says what its tools found — and losing them costs a
+ * debug view. An interrupted turn's payloads are the turn: lose them and the next turn
+ * replays as framing and the model pays again for every lookup.
  */
 export function serializeAgentChats(chats: DeckAgentChatsByDeck): string {
   const stored: DeckAgentChatsByDeck = {};
@@ -440,23 +547,35 @@ export function serializeAgentChats(chats: DeckAgentChatsByDeck): string {
     .slice(0, MAX_STORED_CHATS);
 
   for (const [deckId, chat] of recent) {
-    const entries: DeckAgentTranscriptEntry[] = [];
+    // Held by position rather than appended, so the second pass can upgrade one turn
+    // in place without the two passes needing to agree about ordering.
+    const kept: (DeckAgentTranscriptEntry | null)[] = chat.entries.map(() => null);
     for (let index = chat.entries.length - 1; index >= 0; index -= 1) {
-      const entry = chat.entries[index];
-      const whole = JSON.stringify(entry).length;
-      if (used + whole <= MAX_STORED_CHARS) {
-        entries.unshift(entry);
-        used += whole;
-        continue;
-      }
-      const lean = withoutToolPayloads(entry);
-      const leanSize = JSON.stringify(lean).length;
-      if (used + leanSize > MAX_STORED_CHARS) {
+      const lean = withoutToolPayloads(chat.entries[index]);
+      const size = JSON.stringify(lean).length;
+      if (used + size > MAX_STORED_CHARS) {
+        // Nothing older will fit either, and stopping here is what makes the loss
+        // oldest-first rather than a hole in the middle of the conversation.
         break;
       }
-      entries.unshift(lean);
-      used += leanSize;
+      kept[index] = lean;
+      used += size;
     }
+    for (const index of payloadPriority(chat.entries, kept)) {
+      const whole = chat.entries[index];
+      const lean = kept[index];
+      const extra = JSON.stringify(whole).length - JSON.stringify(lean).length;
+      // Skipped rather than stopped: a later turn in this order may be small enough to
+      // fit where this one was not, and every one of them already has its text stored.
+      if (extra <= 0 || used + extra > MAX_STORED_CHARS) {
+        continue;
+      }
+      kept[index] = whole;
+      used += extra;
+    }
+    const entries = kept.filter(
+      (entry): entry is DeckAgentTranscriptEntry => entry !== null,
+    );
     // A draft alone is worth keeping: it is the question the user was in the
     // middle of asking about this deck.
     if (entries.length > 0 || chat.draft) {
@@ -467,10 +586,34 @@ export function serializeAgentChats(chats: DeckAgentChatsByDeck): string {
 }
 
 /**
- * Keep the turn, drop its diagnostics.
+ * Which stored turns may buy their payloads back, most deserving first.
  *
- * The payloads are nulled rather than deleted so a restored turn reads as one
- * whose payloads were never asked for, which is what it now is.
+ * Interrupted turns before answered ones, and newest before oldest inside each group.
+ * Only turns the first pass kept are listed: a turn that did not fit at all cannot
+ * have its payloads restored.
+ */
+function payloadPriority(
+  entries: DeckAgentTranscriptEntry[],
+  kept: (DeckAgentTranscriptEntry | null)[],
+): number[] {
+  return entries
+    .flatMap((_, index) => (kept[index] ? [index] : []))
+    .sort((left, right) => {
+      const byNeed =
+        Number(entries[right].interrupted === true) -
+        Number(entries[left].interrupted === true);
+      return byNeed !== 0 ? byNeed : right - left;
+    });
+}
+
+/**
+ * Keep the turn, drop the payloads.
+ *
+ * Nulled rather than deleted so a restored turn reads as one whose payloads are gone,
+ * which is what it now is — and `buildAgentMessages` reads that same absence as its
+ * signal to replay the turn as framing rather than as an unanswered call. The id and
+ * the deck revision stay: they are tens of characters, and neither is what makes a
+ * pair replayable.
  */
 function withoutToolPayloads(
   entry: DeckAgentTranscriptEntry,
@@ -537,6 +680,10 @@ function readStoredEntry(value: unknown): DeckAgentTranscriptEntry | null {
     // Restored as absent rather than as an empty list, because a turn stored before
     // the agent could edit anything did not edit anything.
     ...(appliedEdits.length > 0 ? { appliedEdits } : {}),
+    // Read only from the stored `true`. A turn written before cancelling kept anything
+    // was a turn that finished, and reading a missing flag as anything else would hand
+    // the model a replay of calls whose results the prose already accounts for.
+    ...(value.interrupted === true ? { interrupted: true as const } : {}),
   };
 }
 
@@ -581,6 +728,15 @@ function readStoredToolCall(value: unknown): DeckAgentToolCall | null {
     arguments_json:
       typeof value.arguments_json === "string" ? value.arguments_json : null,
     result: typeof value.result === "string" ? value.result : null,
+    // Both stay absent rather than becoming null when they were never stored, so a
+    // call an older build wrote reads as a call with no id — which is exactly what it
+    // is, and what sends it down the framing path instead of into a pair.
+    ...(typeof value.id === "string" && value.id.length > 0
+      ? { id: value.id }
+      : {}),
+    ...(typeof value.deckRevision === "string" && value.deckRevision.length > 0
+      ? { deckRevision: value.deckRevision }
+      : {}),
   };
 }
 
@@ -619,17 +775,201 @@ export function formatModelCostUsd(value: number): string {
 }
 
 /**
+ * How long one posted message's text may be, matching the backend's `MessageText`.
+ *
+ * Its own constant rather than a shared one, for the reason `MAX_POSTED_HISTORY_EDITS`
+ * is: this is a *contract* bound, and a request that breaks it is a 422 that fails the
+ * whole chat turn rather than costing the one message. A replayed `read_deck` result is
+ * kilobytes, so this is the cap that actually bites — the backend lets one payload run
+ * to 24,000 characters on the way out and accepts only 8,000 of it back in a `tool`
+ * message. Truncated with a visible marker, in the same words the backend truncates
+ * with, because a result that lies about being complete is read by the model as an
+ * observation.
+ */
+const MAX_POSTED_MESSAGE_CHARS = 8_000;
+
+/** What one replayed call's arguments may run to: the backend's `ToolPayloadText`. */
+const MAX_POSTED_REPLAY_ARGUMENT_CHARS = 24_000;
+
+/** How many calls one replayed assistant message may carry: `MAX_REPLAY_CALLS`. */
+const MAX_POSTED_REPLAY_CALLS = 50;
+
+/** As long as a provider call id may be: the backend's `ToolCallId`. */
+const MAX_POSTED_TOOL_CALL_ID_CHARS = 200;
+
+/** As long as a posted deck revision may be: the backend's `DeckRevision`. */
+const MAX_POSTED_DECK_REVISION_CHARS = 100;
+
+/**
+ * Build one request's messages from the conversation the browser holds.
+ *
+ * An answered turn posts what it always did: one message, its prose, in its own role.
+ * Its tools are not replayed, because its prose is the answer written from them, and
+ * handing them back would pay a second time for a reading that has already been used.
+ *
+ * An **interrupted** turn is different: no answer was ever written from its calls, so
+ * the calls themselves go back, in the only shape the provider accepts them in — one
+ * `assistant` message carrying every call, then one `tool` message per call naming it
+ * by id, then the partial prose as its own `assistant` message when the turn wrote any.
+ *
+ * A call whose result is gone — shed by the storage budget, or never stored by an older
+ * build — is **not** posted as a call. An unanswered `tool_calls` entry is rejected by
+ * the backend and by the provider, so replaying one would fail the whole turn instead of
+ * degrading. What goes back for it is framing naming what ran, built from the same
+ * `signature` the user watched appear, which tells the model where it got to without
+ * claiming to hand back what it read.
+ */
+export function buildAgentMessages(
+  entries: DeckAgentTranscriptEntry[],
+): DeckAgentRequestMessage[] {
+  const messages: DeckAgentRequestMessage[] = [];
+  for (const entry of entries) {
+    // An interrupted user message is not a thing: the flag marks a turn the agent was
+    // in the middle of, so anything else is posted as the message it is.
+    if (entry.interrupted !== true || entry.message.role !== "assistant") {
+      messages.push({ role: entry.message.role, content: entry.message.content });
+      continue;
+    }
+    const replayed: DeckAgentReplayPair[] = [];
+    const framed: string[] = [];
+    for (const call of entry.toolCalls) {
+      const pair =
+        replayed.length < MAX_POSTED_REPLAY_CALLS ? toReplayPair(call) : null;
+      if (pair) {
+        replayed.push(pair);
+      } else {
+        framed.push(call.signature);
+      }
+    }
+    if (replayed.length > 0) {
+      messages.push({
+        role: "assistant",
+        tool_calls: replayed.map((pair) => pair.call),
+      });
+      // Every call answered, immediately and in the order it was made, so the group is
+      // whole wherever the backend's history window happens to cut.
+      for (const pair of replayed) {
+        messages.push({
+          role: "tool",
+          tool_call_id: pair.call.id,
+          content: pair.result,
+        });
+      }
+    }
+    const spoken = interruptedProse(entry.message.content, framed);
+    if (spoken) {
+      messages.push({ role: "assistant", content: spoken });
+    }
+  }
+  return messages;
+}
+
+/** One replayed call and the result that answers it, which travel as two messages. */
+interface DeckAgentReplayPair {
+  call: DeckAgentReplayCall;
+  result: string;
+}
+
+/**
+ * What an interrupted turn says for itself: the framing it needs, then what it wrote.
+ *
+ * Empty when the turn wrote nothing and every call replayed, because there is then
+ * nothing left to say — and an assistant message with empty content is a 422 rather
+ * than a silence.
+ */
+function interruptedProse(content: string, framed: string[]): string {
+  const prose = content.trim();
+  const framing =
+    framed.length > 0 ? `interrupted after ${framed.join(", ")}` : "";
+  if (!framing) {
+    return postedText(prose, MAX_POSTED_MESSAGE_CHARS);
+  }
+  return postedText(
+    prose ? `${framing}\n\n${prose}` : framing,
+    MAX_POSTED_MESSAGE_CHARS,
+  );
+}
+
+/**
+ * One stored call as a replayable pair, or nothing when it cannot be one.
+ *
+ * Every reason to refuse is a rule the backend would 422 on, and refusing here costs
+ * the call its result while the turn still goes: a request rejected whole is the agent
+ * simply stopping. The result is checked after trimming because `MessageText` strips
+ * whitespace and then demands a character, so a result of spaces is a rejected request
+ * rather than an empty answer.
+ */
+function toReplayPair(call: DeckAgentToolCall): DeckAgentReplayPair | null {
+  const id = call.id ?? "";
+  const name = call.name.trim();
+  const result = (call.result ?? "").trim();
+  const argumentsJson = call.arguments_json ?? "";
+  if (!id || id.length > MAX_POSTED_TOOL_CALL_ID_CHARS) {
+    return null;
+  }
+  if (!name || name.length > MAX_POSTED_LABEL_CHARS) {
+    return null;
+  }
+  // The two payloads a replay is made of. Arguments the provider cannot parse are as
+  // unreplayable as a missing result, so both absences take the same path.
+  if (!result || !argumentsJson) {
+    return null;
+  }
+  const revision = (call.deckRevision ?? "").trim();
+  return {
+    call: {
+      id,
+      name,
+      arguments_json: postedText(
+        argumentsJson,
+        MAX_POSTED_REPLAY_ARGUMENT_CHARS,
+      ),
+      // Dropped rather than truncated when it will not fit: a revision is compared, so
+      // half of one is a value that matches nothing while claiming to be a reading.
+      ...(revision && revision.length <= MAX_POSTED_DECK_REVISION_CHARS
+        ? { deck_revision: revision }
+        : {}),
+    },
+    result: postedText(result, MAX_POSTED_MESSAGE_CHARS),
+  };
+}
+
+/**
+ * Fit one posted string inside its contract bound, saying so when it did not fit.
+ *
+ * Worded to match the backend's own `_payload` marker, so a payload truncated on the
+ * way out and one truncated on the way back read the same to the model.
+ */
+function postedText(value: string, limit: number): string {
+  if (value.length <= limit) {
+    return value;
+  }
+  const marker = `\n… truncated, ${(value.length - limit).toLocaleString(
+    "en-US",
+  )} characters more`;
+  return value.slice(0, limit - marker.length) + marker;
+}
+
+/**
  * Reduce the open deck to what the agent's tools need.
  *
  * Only identity and placement travel. The name, type line, rules and price are
  * resolved from the catalog on the backend, so the agent cannot be told the deck
  * holds a card the catalog disagrees about — and a hundred-card deck stays a small
  * request.
+ *
+ * `updatedAt` is the deck's own revision, and it is what makes a replayed
+ * deck-dependent result checkable: the backend compares it against the revision each
+ * replayed call recorded and substitutes the ones the deck has moved past. Optional
+ * because a caller with no revision to report must say nothing rather than claim the
+ * deck is unchanged.
  */
 export function toDeckSnapshot(
   name: string,
   entries: DeckCardEntry[],
+  updatedAt?: string | null,
 ): DeckAgentDeckSnapshot {
+  const revision = (updatedAt ?? "").trim();
   return {
     name,
     cards: entries.map((entry) => ({
@@ -637,6 +977,9 @@ export function toDeckSnapshot(
       quantity: entry.quantity,
       section: entry.section,
     })),
+    ...(revision && revision.length <= MAX_POSTED_DECK_REVISION_CHARS
+      ? { updated_at: revision }
+      : {}),
   };
 }
 

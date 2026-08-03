@@ -2,8 +2,13 @@ import { describe, expect, it } from "vitest";
 
 import { solRing } from "../test/fixtures";
 import type { DeckSection } from "./deck";
-import type { DeckAgentChat, DeckAgentTranscriptEntry } from "./agent";
+import type {
+  DeckAgentChat,
+  DeckAgentToolCall,
+  DeckAgentTranscriptEntry,
+} from "./agent";
 import {
+  buildAgentMessages,
   isRefusedDeckEdit,
   parseStoredAgentChats,
   readDeckAgentDeckEdit,
@@ -11,6 +16,7 @@ import {
   serializeAgentChats,
   summarizeDeckEditRecord,
   toDeckAgentHistory,
+  toDeckSnapshot,
 } from "./agent";
 import type {
   DeckCardChange,
@@ -42,6 +48,40 @@ function entry(
         ]
       : [],
   };
+}
+
+/** One tool line as a finished turn stores it: replayable, with its id and payloads. */
+function storedCall(
+  overrides: Partial<DeckAgentToolCall> = {},
+): DeckAgentToolCall {
+  return {
+    name: "read_deck",
+    signature: "read_deck()",
+    ok: true,
+    detail: null,
+    id: "call-1",
+    arguments_json: "{}",
+    result: "Deck listing",
+    ...overrides,
+  };
+}
+
+/** One cancelled turn as the panel commits it: the calls that ran, and any prose. */
+function interrupted(
+  content: string,
+  calls: DeckAgentToolCall[],
+): DeckAgentTranscriptEntry {
+  return {
+    message: { role: "assistant", content },
+    cardLinks: [],
+    toolCalls: calls,
+    interrupted: true,
+  };
+}
+
+/** One question, as the panel appends it before sending. */
+function asked(content: string): DeckAgentTranscriptEntry {
+  return { message: { role: "user", content }, toolCalls: [], cardLinks: [] };
 }
 
 function chat(
@@ -147,7 +187,9 @@ describe("agent chat storage", () => {
   });
 
   it("drops tool payloads before it drops what was said", () => {
-    // Four turns whose results alone are ~400KB — twice the whole budget.
+    // Four turns whose results alone are ~400KB — twice the whole budget. Every one of
+    // them was answered, which is what makes newest-first the order: an answered turn's
+    // payloads are diagnostics, so the one being looked at is the one worth keeping.
     const heavy = Array.from({ length: 4 }, (_, index) =>
       entry(`Answer ${index}.`, { result: "x".repeat(100_000) }),
     );
@@ -171,6 +213,82 @@ describe("agent chat storage", () => {
       // The line the user reads is never what gets dropped.
       expect(held.toolCalls[0].signature).toBe("read_deck()");
     }
+  });
+
+  it("keeps an interrupted turn's payloads and sheds every answered turn's", () => {
+    // The same four 100KB turns, except the newest was cancelled. Its payloads are what
+    // its replay is made of, so they are the ones the budget buys.
+    const heavy = [
+      entry("Answer 0.", { result: "x".repeat(100_000) }),
+      entry("Answer 1.", { result: "x".repeat(100_000) }),
+      entry("Answer 2.", { result: "x".repeat(100_000) }),
+      interrupted("Reading the deck", [
+        storedCall({ result: "x".repeat(100_000) }),
+      ]),
+    ];
+
+    const kept = roundTrip({ "deck-a": chat(heavy) })["deck-a"].entries;
+
+    expect(kept).toHaveLength(4);
+    expect(kept.at(-1)?.interrupted).toBe(true);
+    expect(kept.at(-1)?.toolCalls[0].result).toHaveLength(100_000);
+    for (const held of kept.slice(0, -1)) {
+      expect(held.toolCalls[0].result).toBeNull();
+      expect(held.toolCalls[0].arguments_json).toBeNull();
+    }
+  });
+
+  it("buys the interrupted turn's payloads back before a newer answered turn's", () => {
+    // The inversion, where newest-first and interrupted-first disagree: the cancelled
+    // turn is the *oldest*, and three answered turns after it want the same budget.
+    // Only one 100KB payload fits, and it belongs to the turn that cannot be replayed
+    // without it.
+    const heavy = [
+      interrupted("Reading the deck", [
+        storedCall({ result: "x".repeat(100_000) }),
+      ]),
+      entry("Answer 1.", { result: "x".repeat(100_000) }),
+      entry("Answer 2.", { result: "x".repeat(100_000) }),
+      entry("Answer 3.", { result: "x".repeat(100_000) }),
+    ];
+
+    const kept = roundTrip({ "deck-a": chat(heavy) })["deck-a"].entries;
+
+    expect(kept).toHaveLength(4);
+    expect(kept[0].toolCalls[0].result).toHaveLength(100_000);
+    expect(kept[0].toolCalls[0].arguments_json).toBe("{}");
+    for (const held of kept.slice(1)) {
+      expect(held.toolCalls[0].result).toBeNull();
+    }
+  });
+
+  it("round-trips an interrupted turn, including a call whose result is gone", () => {
+    const cancelled = interrupted("Checking the curve", [
+      storedCall({ id: "call-a", deckRevision: "2026-08-03T09:00:00.000Z" }),
+      storedCall({
+        id: "call-b",
+        name: "see_cards",
+        signature: "see_cards(Sol Ring · rules)",
+        // Already shed once, so what comes back has to still be a readable turn.
+        arguments_json: null,
+        result: null,
+      }),
+    ]);
+
+    const stored = roundTrip({ "deck-a": chat([cancelled]) })["deck-a"].entries;
+
+    expect(stored[0]).toEqual(cancelled);
+    expect(stored[0].interrupted).toBe(true);
+    expect(stored[0].toolCalls[0].id).toBe("call-a");
+    expect(stored[0].toolCalls[0].deckRevision).toBe("2026-08-03T09:00:00.000Z");
+    expect(stored[0].toolCalls[1].result).toBeNull();
+    // A turn an older build stored has neither field, and reads back with neither
+    // rather than with a null claiming the backend reported one.
+    const older = roundTrip({ "deck-a": chat([entry("Answered.")]) })["deck-a"]
+      .entries[0];
+    expect(older.interrupted).toBeUndefined();
+    expect(older.toolCalls[0].id).toBeUndefined();
+    expect(older.toolCalls[0].deckRevision).toBeUndefined();
   });
 
   it("drops the oldest turns once even the bare transcript will not fit", () => {
@@ -231,6 +349,250 @@ describe("agent chat storage", () => {
 
     expect(stored["deck-active"].entries).toHaveLength(1);
     expect(stored["deck-old"].entries.length).toBeLessThan(30);
+  });
+});
+
+describe("posted agent messages", () => {
+  it("posts an answered conversation as the prose it always did", () => {
+    const messages = buildAgentMessages([
+      asked("What am I missing?"),
+      { ...entry("You are light on ramp."), toolCalls: [storedCall()] },
+      asked("And the curve?"),
+    ]);
+
+    // An answered turn's tools are not replayed: its prose is the answer written from
+    // them, so handing them back would pay twice for a reading already used.
+    expect(messages).toEqual([
+      { role: "user", content: "What am I missing?" },
+      { role: "assistant", content: "You are light on ramp." },
+      { role: "user", content: "And the curve?" },
+    ]);
+  });
+
+  it("replays an interrupted turn as its calls, their results, and its prose", () => {
+    const messages = buildAgentMessages([
+      asked("What am I missing?"),
+      interrupted("Sol Ring is the first thing", [
+        storedCall({ id: "call-a", result: "Deck listing" }),
+        storedCall({
+          id: "call-b",
+          name: "see_cards",
+          signature: "see_cards(Sol Ring · rules)",
+          arguments_json: '{"cards":["Sol Ring"]}',
+          result: "Sol Ring — {1}, Artifact",
+        }),
+      ]),
+      asked("Carry on."),
+    ]);
+
+    expect(messages).toEqual([
+      { role: "user", content: "What am I missing?" },
+      {
+        role: "assistant",
+        tool_calls: [
+          { id: "call-a", name: "read_deck", arguments_json: "{}" },
+          {
+            id: "call-b",
+            name: "see_cards",
+            arguments_json: '{"cards":["Sol Ring"]}',
+          },
+        ],
+      },
+      { role: "tool", tool_call_id: "call-a", content: "Deck listing" },
+      { role: "tool", tool_call_id: "call-b", content: "Sol Ring — {1}, Artifact" },
+      { role: "assistant", content: "Sol Ring is the first thing" },
+      { role: "user", content: "Carry on." },
+    ]);
+    // The ids are the pairing, not the order: every call is answered by the `tool`
+    // message that names it, and nothing answers a call that was not made.
+    const called = messages[1].tool_calls?.map((call) => call.id) ?? [];
+    const answered = messages
+      .filter((message) => message.role === "tool")
+      .map((message) => message.tool_call_id);
+    expect(called).toEqual(["call-a", "call-b"]);
+    expect(answered).toEqual(called);
+  });
+
+  it("frames a call whose result is gone instead of posting an unanswered one", () => {
+    const messages = buildAgentMessages([
+      interrupted("Halfway through", [
+        storedCall({ id: "call-a", result: "Deck listing" }),
+        storedCall({
+          id: "call-b",
+          name: "see_cards",
+          signature: "see_cards(Sol Ring · rules)",
+          // Shed by the storage budget, so there is no result to hand back.
+          arguments_json: null,
+          result: null,
+        }),
+        storedCall({
+          id: "call-c",
+          name: "search_cards",
+          signature: "search_cards(mana rocks)",
+          arguments_json: '{"query":"mana rocks"}',
+          result: "12 cards",
+        }),
+        // Arguments kept and the result dropped, which is the order the backend sheds
+        // in: the call is known and its answer is not, and only the answer decides.
+        storedCall({
+          id: "call-d",
+          name: "search_web",
+          signature: "search_web(budget ramp)",
+          arguments_json: '{"query":"budget ramp"}',
+          result: null,
+        }),
+      ]),
+      asked("Carry on."),
+    ]);
+
+    // The resultless call appears in neither list — an unanswered `tool_calls` entry is
+    // a 422, and a `tool` message with nothing in it is another — and the turn instead
+    // says what ran, in the words the user watched appear.
+    expect(messages[0].tool_calls?.map((call) => call.id)).toEqual([
+      "call-a",
+      "call-c",
+    ]);
+    expect(
+      messages.filter((message) => message.role === "tool").map((m) => m.tool_call_id),
+    ).toEqual(["call-a", "call-c"]);
+    expect(messages[3]).toEqual({
+      role: "assistant",
+      content:
+        "interrupted after see_cards(Sol Ring · rules), search_web(budget ramp)\n\nHalfway through",
+    });
+    expect(JSON.stringify(messages)).not.toContain("call-b");
+    expect(JSON.stringify(messages)).not.toContain("call-d");
+  });
+
+  it("replays a turn whose payloads are all gone as framing alone", () => {
+    // What a turn stored by the build before this one looks like: no id, no payloads.
+    const older = interrupted("", [
+      {
+        name: "read_deck",
+        signature: "read_deck()",
+        ok: true,
+        detail: null,
+        arguments_json: null,
+        result: null,
+      },
+      {
+        name: "see_cards",
+        signature: "see_cards(Sol Ring · rules)",
+        ok: true,
+        detail: null,
+        arguments_json: null,
+        result: null,
+      },
+    ]);
+
+    const messages = buildAgentMessages([older, asked("Carry on.")]);
+
+    expect(messages).toEqual([
+      {
+        role: "assistant",
+        content: "interrupted after read_deck(), see_cards(Sol Ring · rules)",
+      },
+      { role: "user", content: "Carry on." },
+    ]);
+  });
+
+  it("frames a call the backend answered but never identified", () => {
+    // A result with no id cannot be paired with anything, so it is framing too: a
+    // `tool` message has to name the call it answers.
+    const messages = buildAgentMessages([
+      interrupted("Read it", [
+        { ...storedCall(), id: undefined },
+        // Nor can one whose result is only whitespace: the contract strips it and then
+        // demands a character, so posting it would fail the whole turn.
+        storedCall({ id: "call-b", signature: "read_history()", result: "   " }),
+      ]),
+      asked("Carry on."),
+    ]);
+
+    expect(messages).toEqual([
+      {
+        role: "assistant",
+        content: "interrupted after read_deck(), read_history()\n\nRead it",
+      },
+      { role: "user", content: "Carry on." },
+    ]);
+  });
+
+  it("truncates a replayed result to what one message may carry", () => {
+    const messages = buildAgentMessages([
+      interrupted("", [storedCall({ result: "d".repeat(20_000) })]),
+      asked("Carry on."),
+    ]);
+
+    const replayed = messages[1].content ?? "";
+    // Bounded by the contract rather than by hope: a longer `tool` message is a 422
+    // that fails the turn, and the marker is there so the model is not handed a
+    // truncated deck listing as a complete reading of the deck.
+    expect(replayed).toHaveLength(8_000);
+    expect(replayed.endsWith("… truncated, 12,000 characters more")).toBe(true);
+  });
+
+  it("posts the deck revision a call recorded, and nothing when it recorded none", () => {
+    const withRevision = buildAgentMessages([
+      interrupted("", [storedCall({ deckRevision: "2026-08-03T09:00:00.000Z" })]),
+      asked("Carry on."),
+    ]);
+    const without = buildAgentMessages([
+      interrupted("", [storedCall()]),
+      asked("Carry on."),
+    ]);
+
+    expect(withRevision[0].tool_calls?.[0]).toEqual({
+      id: "call-1",
+      name: "read_deck",
+      arguments_json: "{}",
+      deck_revision: "2026-08-03T09:00:00.000Z",
+    });
+    // Absent rather than empty: "the browser could not say" is not "the deck has not
+    // changed", and only the backend knows which tools the difference matters for.
+    expect(without[0].tool_calls?.[0].deck_revision).toBeUndefined();
+  });
+
+  it("frames the calls past the number one message may carry", () => {
+    const many = Array.from({ length: 52 }, (_, index) =>
+      storedCall({
+        id: `call-${index}`,
+        signature: `see_cards(card ${index})`,
+        name: "see_cards",
+      }),
+    );
+
+    const messages = buildAgentMessages([interrupted("", many), asked("Go on.")]);
+
+    expect(messages[0].tool_calls).toHaveLength(50);
+    expect(messages.at(-2)).toEqual({
+      role: "assistant",
+      content: "interrupted after see_cards(card 50), see_cards(card 51)",
+    });
+  });
+
+  it("says nothing for an interrupted turn that read nothing and wrote nothing", () => {
+    // Nothing happened, so there is nothing to hand back — and an assistant message
+    // with empty content is a rejected request rather than a silence.
+    expect(buildAgentMessages([interrupted("", []), asked("Go on.")])).toEqual([
+      { role: "user", content: "Go on." },
+    ]);
+  });
+});
+
+describe("posted deck snapshot", () => {
+  it("carries the deck's revision when it is given one, and omits it otherwise", () => {
+    expect(toDeckSnapshot("Gruul Stompy", [], "2026-08-03T09:00:00.000Z")).toEqual({
+      name: "Gruul Stompy",
+      cards: [],
+      updated_at: "2026-08-03T09:00:00.000Z",
+    });
+    // The control that the default did not shift: a caller with no revision posts a
+    // snapshot with no revision, which the backend reads as "could not say".
+    expect(toDeckSnapshot("Gruul Stompy", [])).toEqual({
+      name: "Gruul Stompy",
+      cards: [],
+    });
   });
 });
 

@@ -6,6 +6,7 @@ import {
   searchDebugSummary,
   solRing,
 } from "../test/fixtures";
+import type { DeckAgentToolCall } from "../domain/agent";
 import { ApiError, createApiClient } from "./api";
 
 /** A server-sent-event response body, delivered in the chunks given. */
@@ -514,6 +515,131 @@ describe("API client", () => {
         }),
       }),
     );
+  });
+
+  it("posts a replayed turn whole, and reads back the ids that pair it", async () => {
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValue(
+      sseResponse([
+        // The stream's own tool event carries the id too, because an interrupted turn
+        // is committed from the stream and never sees a `done`.
+        'data: {"type": "tool", "call": {"name": "read_deck", "signature": "read_deck()", "ok": true, "detail": null, "id": "call-live", "arguments_json": "{}", "result": "Deck listing"}}\n\n',
+        `data: ${JSON.stringify({
+          type: "done",
+          reply: {
+            message: { role: "assistant", content: "Still light on ramp." },
+            model: "openai/gpt-5.6-luna",
+            replayed_message_count: 5,
+            cost_usd: 0.0009,
+            unpriced_call_count: 0,
+            tool_calls: [
+              {
+                name: "read_deck",
+                signature: "read_deck()",
+                ok: true,
+                detail: null,
+                id: "call-done",
+                // No longer debug-only: every turn carries them, because which turn
+                // gets cancelled is not knowable in advance.
+                arguments_json: "{}",
+                result: "Deck listing",
+              },
+            ],
+          },
+        })}\n\n`,
+      ]),
+    );
+    const streamed: DeckAgentToolCall[] = [];
+
+    const reply = await createApiClient(
+      "http://localhost/api/v1",
+      fetcher,
+    ).streamDeckAgentChat?.(
+      [
+        { role: "user", content: "What am I missing?" },
+        {
+          role: "assistant",
+          tool_calls: [
+            {
+              id: "call-a",
+              name: "read_deck",
+              arguments_json: "{}",
+              deck_revision: "2026-08-03T09:00:00.000Z",
+            },
+          ],
+        },
+        { role: "tool", tool_call_id: "call-a", content: "Deck listing" },
+        { role: "assistant", content: "Sol Ring is the first thing" },
+        { role: "user", content: "Carry on." },
+      ],
+      null,
+      { onText: () => {}, onToolCall: (call) => streamed.push(call) },
+    );
+
+    // The whole point: the request used to be flattened to `{role, content}`, which
+    // would have dropped every replayed call and posted a tool message saying nothing.
+    expect(fetcher).toHaveBeenCalledWith(
+      "http://localhost/api/v1/agent/chat/stream",
+      expect.objectContaining({
+        body: JSON.stringify({
+          messages: [
+            { role: "user", content: "What am I missing?" },
+            {
+              role: "assistant",
+              tool_calls: [
+                {
+                  id: "call-a",
+                  name: "read_deck",
+                  arguments_json: "{}",
+                  deck_revision: "2026-08-03T09:00:00.000Z",
+                },
+              ],
+            },
+            { role: "tool", content: "Deck listing", tool_call_id: "call-a" },
+            { role: "assistant", content: "Sol Ring is the first thing" },
+            { role: "user", content: "Carry on." },
+          ],
+          debug: false,
+        }),
+      }),
+    );
+    expect(streamed[0].id).toBe("call-live");
+    expect(streamed[0].result).toBe("Deck listing");
+    expect(reply?.tool_calls[0].id).toBe("call-done");
+    expect(reply?.tool_calls[0].result).toBe("Deck listing");
+  });
+
+  it("reads a tool call an older backend sent without an id", async () => {
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValue(
+      sseResponse([
+        `data: ${JSON.stringify({
+          type: "done",
+          reply: {
+            message: { role: "assistant", content: "Light on ramp." },
+            model: "openai/gpt-5.6-luna",
+            replayed_message_count: 1,
+            cost_usd: null,
+            unpriced_call_count: 0,
+            tool_calls: [
+              { name: "read_deck", signature: "read_deck()", ok: true, detail: null },
+            ],
+          },
+        })}\n\n`,
+      ]),
+    );
+
+    const reply = await createApiClient(
+      "http://localhost/api/v1",
+      fetcher,
+    ).streamDeckAgentChat?.([{ role: "user", content: "Best ramp?" }], null, {
+      onText: () => {},
+      onToolCall: () => {},
+    });
+
+    // Absent rather than null, so the call reads as one that cannot be paired — which
+    // is what sends an interrupted turn down the framing path instead of into a
+    // request the backend refuses whole.
+    expect(reply?.tool_calls[0].id).toBeUndefined();
+    expect("id" in (reply?.tool_calls[0] ?? {})).toBe(false);
   });
 
   it("rejects a finished turn that is not usable", async () => {

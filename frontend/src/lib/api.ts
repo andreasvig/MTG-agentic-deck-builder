@@ -4,7 +4,7 @@ import type {
   DeckAgentDeckEdit,
   DeckAgentDeckHistory,
   DeckAgentDeckSnapshot,
-  DeckAgentMessage,
+  DeckAgentRequestMessage,
   DeckAgentToolCall,
 } from "../domain/agent";
 import { readDeckAgentDeckEdit } from "../domain/agent";
@@ -90,7 +90,7 @@ export interface ApiClient {
     enhancements?: CardSearchEnhancements,
   ): Promise<CardSearchPage>;
   streamDeckAgentChat?(
-    messages: DeckAgentMessage[],
+    messages: DeckAgentRequestMessage[],
     deck: DeckAgentDeckSnapshot | null | undefined,
     handlers: DeckAgentStreamHandlers,
     signal?: AbortSignal,
@@ -353,9 +353,21 @@ export function createApiClient(
           "Content-Type": "application/json",
         },
         body: JSON.stringify({
+          // Projected field by field rather than sent as given, so nothing the panel
+          // happens to hold on a message reaches a contract that forbids extra keys —
+          // and each field is omitted rather than sent empty, because the backend reads
+          // an absent `content` as "this message is its tool calls" and an absent
+          // `tool_calls` as "this one is prose". An empty list of either says something
+          // different from saying nothing.
           messages: messages.map((message) => ({
             role: message.role,
-            content: message.content,
+            ...(message.content === undefined || message.content === null
+              ? {}
+              : { content: message.content }),
+            ...(message.tool_calls && message.tool_calls.length > 0
+              ? { tool_calls: message.tool_calls }
+              : {}),
+            ...(message.tool_call_id ? { tool_call_id: message.tool_call_id } : {}),
           })),
           ...(deck ? { deck } : {}),
           // Omitted rather than sent empty when there is none, because "no history was
@@ -531,6 +543,7 @@ function isDeckAgentToolCallList(value: unknown): boolean {
         isRecord(entry) &&
         typeof entry.name === "string" &&
         typeof entry.signature === "string" &&
+        isOptionalString(entry.id) &&
         (entry.ok === undefined || typeof entry.ok === "boolean") &&
         (entry.detail === null ||
           entry.detail === undefined ||
@@ -555,11 +568,19 @@ function readDeckAgentToolCalls(value: unknown): DeckAgentToolCall[] {
     signature: String(entry.signature),
     ok: entry.ok !== false,
     detail: typeof entry.detail === "string" ? entry.detail : null,
-    // Only a debug turn carries these, so anything else is an absence rather
-    // than an empty call or an empty result.
+    // Every turn carries these now, because an interrupted turn is replayed from them
+    // and which turn gets cancelled is not knowable in advance. Anything that is not
+    // text is an absence — a backend too old to send them — rather than an empty call
+    // or an empty result.
     arguments_json:
       typeof entry.arguments_json === "string" ? entry.arguments_json : null,
     result: typeof entry.result === "string" ? entry.result : null,
+    // The provider's id, kept absent rather than nulled when it was not reported: it is
+    // what pairs a replayed call with its result, and a call with no id replays as
+    // framing instead of as a pair the backend would refuse.
+    ...(typeof entry.id === "string" && entry.id.length > 0
+      ? { id: entry.id }
+      : {}),
   }));
 }
 
