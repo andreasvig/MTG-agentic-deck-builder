@@ -2265,3 +2265,155 @@ def test_the_stream_route_frames_the_call_id_and_its_payloads() -> None:
     # The same call arrives again in `done`, which is what an answered turn stores.
     done = events[-1]["reply"]["tool_calls"][0]
     assert done["id"] == "call-live"
+
+
+def test_an_answer_may_not_be_given_twice() -> None:
+    """One answer per call, which is a third shape the provider refuses.
+
+    Neither of the other two checks sees it: the call is answered, and every answer
+    answers a call. Counting sees it least of all — two answers to one call and two
+    answers to two calls come to the same number.
+    """
+
+    with pytest.raises(ValidationError) as twice:
+        DeckAgentChatRequest(
+            messages=[
+                DeckAgentMessage(role="user", content="What is missing?"),
+                DeckAgentMessage(role="assistant", tool_calls=[_call("call-a")]),
+                DeckAgentMessage(
+                    role="tool", tool_call_id="call-a", content="read_deck said so."
+                ),
+                DeckAgentMessage(
+                    role="tool", tool_call_id="call-a", content="read_deck said so again."
+                ),
+                DeckAgentMessage(role="user", content="Carry on."),
+            ]
+        )
+    assert "'call-a'" in str(twice.value)
+    assert "twice" in str(twice.value)
+
+
+def test_the_chat_route_rejects_an_answer_to_no_call_with_a_422() -> None:
+    """The route, not only the model: a 422 is the promise this contract makes.
+
+    Rejecting here is the whole point — the alternative is the model host refusing the
+    completion and the user reading it as the agent being down.
+    """
+
+    with TestClient(create_app()) as client:
+        client.app.state.deck_agent = DeckAgentService(
+            model_client=StubModelClient(),
+            settings=_settings(),
+        )
+        response = client.post(
+            "/api/v1/agent/chat",
+            json={
+                "messages": [
+                    {
+                        "role": "tool",
+                        "tool_call_id": "call-9",
+                        "content": "read_deck said so.",
+                    },
+                    {"role": "user", "content": "Carry on."},
+                ]
+            },
+        )
+
+    assert response.status_code == 422
+    assert "call-9" in response.text
+
+
+def test_the_route_bounds_an_inbound_tool_result_at_the_payload_cap() -> None:
+    """The upper bound, exercised from the side that can violate it.
+
+    `ToolPayloadText` is the only thing stopping a browser from posting a megabyte of
+    replayed results, and nothing else in this suite drives a request past it — so
+    retyping the field to a bare `str` would leave every other test green.
+    """
+
+    def post(chars: int) -> int:
+        with TestClient(create_app()) as client:
+            client.app.state.deck_agent = DeckAgentService(
+                model_client=StubModelClient(),
+                settings=_settings(),
+            )
+            return client.post(
+                "/api/v1/agent/chat",
+                json={
+                    "messages": [
+                        {"role": "user", "content": "What is missing?"},
+                        {
+                            "role": "assistant",
+                            "tool_calls": [
+                                {
+                                    "id": "call-1",
+                                    "name": "read_deck",
+                                    "arguments_json": "{}",
+                                }
+                            ],
+                        },
+                        {
+                            "role": "tool",
+                            "tool_call_id": "call-1",
+                            "content": "x" * chars,
+                        },
+                        {"role": "user", "content": "Carry on."},
+                    ]
+                },
+            ).status_code
+
+    # Exactly the cap is the largest result the reply was ever allowed to emit, so it
+    # has to come back; one character more is a client that did not truncate.
+    assert post(MAX_TOOL_PAYLOAD_CHARS) == 200
+    assert post(MAX_TOOL_PAYLOAD_CHARS + 1) == 422
+
+
+def test_the_trim_iterates_when_the_answers_come_in_call_order() -> None:
+    """Two groups answered oldest-answer-first, which one hop backwards cannot fix.
+
+    The hop target is the *earliest* call any kept result belongs to, so the sibling
+    fixture — answers in reverse — reaches the front in a single step and would pass an
+    implementation that never loops. Here the newest kept result belongs to the *newer*
+    group, so one hop lands between the two calls and leaves the older answer orphaned:
+    the provider gets `tool_calls` naming only `call-b`, and a `tool` message answering
+    `call-a`, which is exactly what validator 3 exists to prevent and what the trim is
+    for. Only iterating to a fixpoint reaches the front.
+    """
+
+    client = StubModelClient()
+    service = DeckAgentService(
+        model_client=client,
+        settings=_settings(max_history_messages=2),
+        toolbox=StubToolbox(),
+    )
+
+    reply = asyncio.run(
+        service.chat(
+            DeckAgentChatRequest(
+                messages=[
+                    DeckAgentMessage(role="assistant", tool_calls=[_call("call-a")]),
+                    DeckAgentMessage(role="assistant", tool_calls=[_call("call-b")]),
+                    DeckAgentMessage(
+                        role="tool", tool_call_id="call-a", content="first."
+                    ),
+                    DeckAgentMessage(
+                        role="tool", tool_call_id="call-b", content="second."
+                    ),
+                    DeckAgentMessage(role="user", content="Carry on."),
+                ]
+            )
+        )
+    )
+
+    assert reply.replayed_message_count == 5
+    shaped = client.payloads[0]["messages"][1:]
+    asked = [
+        call["id"] for message in shaped for call in message.get("tool_calls", [])
+    ]
+    answered = [
+        message["tool_call_id"] for message in shaped if message["role"] == "tool"
+    ]
+    # The invariant itself rather than a message count: whatever the window did, every
+    # result the provider is handed has the call it answers in front of it.
+    assert asked == ["call-a", "call-b"]
+    assert answered == ["call-a", "call-b"]

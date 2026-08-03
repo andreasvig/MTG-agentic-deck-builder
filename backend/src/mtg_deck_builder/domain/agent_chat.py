@@ -464,8 +464,10 @@ class DeckAgentChatRequest(DeckAgentModel):
         this is where a client's mistake will land — and a 422 naming the id is a far
         better answer than a 502 from the model host.
 
-        Ids are matched, not counted. A transcript with one call and one answer that do
-        not refer to each other is the same error as a missing answer.
+        Ids are matched, not counted, and the match is one to one. A transcript with one
+        call and one answer that do not refer to each other is the same error as a
+        missing answer, and two answers to one call is the same error again — the
+        provider refuses all three, and counting would notice none of them.
         """
 
         calls: dict[str, int] = {}
@@ -479,6 +481,11 @@ class DeckAgentChatRequest(DeckAgentModel):
                     raise ValueError(
                         f"the tool message at position {index} answers call "
                         f"{identifier!r}, which no earlier message asked for"
+                    )
+                if identifier in answered:
+                    raise ValueError(
+                        f"tool call {identifier!r} is answered twice, and the provider "
+                        "accepts one answer per call"
                     )
                 answered.add(identifier)
             for call in message.tool_calls:
