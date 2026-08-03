@@ -24,6 +24,16 @@ export interface DeckAgentChats {
   chat: DeckAgentChat;
   appendEntry: (deckId: string, entry: DeckAgentTranscriptEntry) => void;
   recordReply: (deckId: string, reply: RecordedReply) => void;
+  /**
+   * Commit a turn that was cancelled, from what streamed rather than from a reply.
+   *
+   * The one committer that does not answer to `done`, because for a cancelled turn no
+   * `done` will ever arrive. See the implementation for what that costs.
+   */
+  recordInterruptedTurn: (
+    deckId: string,
+    entry: DeckAgentTranscriptEntry,
+  ) => void;
   setDraft: (deckId: string, draft: string) => void;
   /** Take an unanswered question back out, by content. See the implementation. */
   withdrawQuestion: (deckId: string, content: string) => void;
@@ -83,6 +93,34 @@ export function useDeckAgentChats(deckId: string): DeckAgentChats {
     [],
   );
 
+  /**
+   * File a cancelled turn as what it is: work that happened and was never answered.
+   *
+   * Appended exactly as an answered turn is, and then one thing more — the turn is
+   * counted as an unpriced model call. It really did spend money: every tool round is a
+   * completion, and the figure for them arrives on `done`, which a cancelled turn never
+   * sees. So the total says it is incomplete rather than reading as though the turn were
+   * free, the same discipline `recordReply` applies to a reply the provider did not price.
+   *
+   * It takes a whole entry rather than the pieces because what a cancel commits is the
+   * panel's business: only the panel watched the stream, and only it knows which of what
+   * it watched is worth keeping. The one thing asserted here is that this is not a
+   * reply — no cost, and `interrupted` already on the entry the caller built.
+   */
+  const recordInterruptedTurn = useCallback(
+    (id: string, entry: DeckAgentTranscriptEntry) => {
+      setChats((current) => {
+        const appended = withEntry(current, id, entry);
+        const chat = appended[id];
+        return {
+          ...appended,
+          [id]: { ...chat, unpricedCalls: chat.unpricedCalls + 1 },
+        };
+      });
+    },
+    [],
+  );
+
   const setDraft = useCallback((id: string, draft: string) => {
     setChats((current) => {
       const chat = current[id] ?? EMPTY_DECK_AGENT_CHAT;
@@ -108,6 +146,11 @@ export function useDeckAgentChats(deckId: string): DeckAgentChats {
    * is a contract rather than a race: today the panel clears what a cancel acts on
    * before any reply is written, so nothing reaches this holding the wrong question.
    * Named rather than positional so that stays true of the next caller.
+   *
+   * It does not collide with `recordInterruptedTurn`, and cannot: a cancel either has
+   * something streamed to keep or it does not, so exactly one of the two runs. When the
+   * other one runs, the last entry is the assistant turn it just appended and this would
+   * decline on its own — the exclusivity is belt as well as braces.
    */
   const withdrawQuestion = useCallback((id: string, content: string) => {
     setChats((current) => {
@@ -142,6 +185,7 @@ export function useDeckAgentChats(deckId: string): DeckAgentChats {
     chat: chats[deckId] ?? EMPTY_DECK_AGENT_CHAT,
     appendEntry,
     recordReply,
+    recordInterruptedTurn,
     setDraft,
     withdrawQuestion,
     clearChat,

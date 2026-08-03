@@ -15,8 +15,14 @@ import type {
   DeckAgentChatReply,
   DeckAgentDeckEdit,
   DeckAgentDeckHistory,
+  DeckAgentDeckSnapshot,
   DeckAgentMessage,
+  DeckAgentRequestMessage,
   DeckAgentToolCall,
+} from "../domain/agent";
+import {
+  DECK_AGENT_CHAT_STORAGE_KEY,
+  parseStoredAgentChats,
 } from "../domain/agent";
 import {
   ApiError,
@@ -1290,23 +1296,53 @@ it("leaves a drop that is not a card to the browser", () => {
 
 /** Send a question and leave the turn hanging, so a test can interrupt it. */
 async function askAndWait(stream: ReturnType<typeof drivenStream>, question: string) {
-  render(<DeckAgentPanel deckId="deck-a" client={client(stream.chat)} />);
+  const view = render(
+    <DeckAgentPanel deckId="deck-a" client={client(stream.chat)} />,
+  );
   await userEvent.type(screen.getByLabelText("Message the deck agent"), question);
   await userEvent.click(screen.getByLabelText("Send message"));
   await screen.findByRole("status");
-  return screen.getByRole("region", { name: "Deck agent" });
+  return { ...view, panel: screen.getByRole("region", { name: "Deck agent" }) };
+}
+
+/** Press Escape on the panel, which is what cancels the turn in flight. */
+async function pressEscape(panel: HTMLElement) {
+  await act(async () => {
+    fireEvent.keyDown(panel, { key: "Escape" });
+  });
+}
+
+/**
+ * The conversation as the browser saved it — what a reload would come back to.
+ *
+ * Read through the parser rather than out of the raw JSON, because the assertion is about
+ * what survives the round trip: a cancelled turn's payloads are what the next turn's
+ * replay is made of, and a field the reader drops is a field the feature does not have.
+ */
+function storedChat(deckId: string) {
+  return parseStoredAgentChats(
+    window.localStorage.getItem(DECK_AGENT_CHAT_STORAGE_KEY),
+  )[deckId];
+}
+
+/** A call complete enough to be replayed: an id, its arguments, and its result. */
+function replayableCall(
+  signature: string,
+  id: string,
+  argumentsJson: string,
+  result: string,
+): DeckAgentToolCall {
+  return toolCall(signature, { id, arguments_json: argumentsJson, result });
 }
 
 it("cancels a turn on Escape and hands the question back to be edited", async () => {
   const stream = drivenStream();
-  const panel = await askAndWait(stream, "waht ramp shoud i add");
+  const { panel } = await askAndWait(stream, "waht ramp shoud i add");
   expect(screen.getByText("esc to cancel")).toBeInTheDocument();
 
   // From a card the agent named rather than from the composer: the key belongs to the
   // conversation, and the user may well have clicked away while waiting.
-  await act(async () => {
-    fireEvent.keyDown(panel, { key: "Escape" });
-  });
+  await pressEscape(panel);
 
   expect(screen.queryByText("Thinking…")).not.toBeInTheDocument();
   // Back in the composer and *out* of the transcript. Both halves matter: a question
@@ -1325,13 +1361,15 @@ it("cancels a turn on Escape and hands the question back to be edited", async ()
   expect(screen.queryByText("Add {Fellwar Stone}.")).not.toBeInTheDocument();
 });
 
-it("keeps the question in the transcript when the cancelled turn had already edited the deck", async () => {
+it("keeps a cancelled turn's applied edit, and the question that asked for it", async () => {
   const stream = drivenStream();
-  render(
+  const { unmount } = render(
     <DeckAgentPanel
       deckId="deck-a"
       client={client(stream.chat)}
       onDeckEdit={() => appliedSwap()}
+      onUndoDeckEdit={vi.fn()}
+      undoableEditId="edit-1"
     />,
   );
   await userEvent.type(
@@ -1342,44 +1380,299 @@ it("keeps the question in the transcript when the cancelled turn had already edi
   await screen.findByRole("status");
 
   await stream.deckEdit(deckEdit());
-  await act(async () => {
-    fireEvent.keyDown(
-      screen.getByRole("region", { name: "Deck agent" }),
-      { key: "Escape" },
-    );
-  });
+  await pressEscape(screen.getByRole("region", { name: "Deck agent" }));
 
   // The deck changed, so the question stays: it is the only thing on screen saying
   // why. Withdrawing it would leave a changed deck nothing accounts for — and the
-  // speed of the cancel cannot make that untrue, which is why the window is not the
-  // only condition.
+  // speed of the cancel cannot make that untrue, which is why an edit needs no
+  // condition of its own. An edit is something that streamed.
   expect(screen.getByText("add a sol ring")).toBeInTheDocument();
   expect(screen.getByLabelText("Message the deck agent")).toHaveValue("");
   expect(screen.queryByText("Thinking…")).not.toBeInTheDocument();
+
+  // And the block survives the cancel rather than vanishing with the live view: the deck
+  // really is different, and this is the transcript's account of why — Undo included,
+  // because the entry it names is still the deck's newest recorded change.
+  expect(screen.getByText("Applied: +2 / −2")).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Undo" })).toBeInTheDocument();
+  expect(screen.getByText(/^Interrupted —/)).toBeInTheDocument();
+  expect(storedChat("deck-a").entries[1].appliedEdits).toEqual([appliedSwap()]);
+
+  // It is durable, not just on screen.
+  unmount();
+  render(
+    <DeckAgentPanel
+      deckId="deck-a"
+      client={client(stream.chat)}
+      onDeckEdit={() => appliedSwap()}
+      onUndoDeckEdit={vi.fn()}
+      undoableEditId="edit-1"
+    />,
+  );
+  expect(screen.getByText("Applied: +2 / −2")).toBeInTheDocument();
+  expect(screen.getByText(/^Interrupted —/)).toBeInTheDocument();
 });
 
-it("cancels without handing back a question the user asked a while ago", async () => {
+it("hands back a question no turn ever acted on, however long ago it was asked", async () => {
   vi.useFakeTimers({ shouldAdvanceTime: true });
   try {
     const stream = drivenStream();
-    const panel = await askAndWait(stream, "what is my curve like");
+    const { panel } = await askAndWait(stream, "waht is my curve like");
 
-    // Long enough that this was a real question, abandoned — not a typo caught in the
-    // first breath. The transcript is where an asked question belongs, and sending
-    // again from there retries it.
+    /*
+     * Half a minute of a model thinking and never running anything.
+     *
+     * There is no window any more: what decides is whether the turn produced anything,
+     * not how fast the user was. At `xhigh` effort a first tool call can take ten seconds
+     * on its own, so the old timer expired while the turn was still silent — and a
+     * silent turn has nothing worth keeping and a question worth handing back. This
+     * asserted the opposite until 2026-08-03; it is the proof the timer is gone rather
+     * than merely long.
+     */
     await act(async () => {
       vi.advanceTimersByTime(30_000);
     });
-    await act(async () => {
-      fireEvent.keyDown(panel, { key: "Escape" });
-    });
+    await pressEscape(panel);
 
     expect(screen.queryByText("Thinking…")).not.toBeInTheDocument();
-    expect(screen.getByText("what is my curve like")).toBeInTheDocument();
-    expect(screen.getByLabelText("Message the deck agent")).toHaveValue("");
+    const composer = screen.getByLabelText("Message the deck agent");
+    expect(composer).toHaveValue("waht is my curve like");
+    expect(screen.queryByText("waht is my curve like")).toBe(composer);
+    expect(composer).toHaveFocus();
+    expect((composer as HTMLTextAreaElement).selectionStart).toBe(
+      "waht is my curve like".length,
+    );
+    // Nothing was committed either: a turn that did nothing leaves no entry behind.
+    expect(storedChat("deck-a")?.entries ?? []).toHaveLength(0);
   } finally {
     vi.useRealTimers();
   }
+});
+
+it("commits a cancelled turn: the calls that ran and the prose so far", async () => {
+  const stream = drivenStream();
+  const { panel } = await askAndWait(stream, "what should i cut");
+
+  await stream.tool(
+    replayableCall("read_deck()", "call-1", "{}", "35 cards, 8 ramp."),
+  );
+  await stream.tool(
+    replayableCall(
+      "search_web(budget edh ramp)",
+      "call-2",
+      '{"query":"budget edh ramp"}',
+      "Two primers agree on Fellwar Stone.",
+    ),
+  );
+  await stream.text("You are light on ramp, ");
+  await stream.text("so I would cut a five-drop.");
+
+  await pressEscape(panel);
+
+  // Asserted against the store rather than only the DOM: what makes this feature worth
+  // anything is that the *next turn* can read it, and the next turn reads the store.
+  const stored = storedChat("deck-a");
+  expect(
+    stored.entries.map((held) => [held.message.role, held.message.content]),
+  ).toEqual([
+    ["user", "what should i cut"],
+    ["assistant", "You are light on ramp, so I would cut a five-drop."],
+  ]);
+  expect(stored.entries[1].interrupted).toBe(true);
+  // Both calls, in order, with the payloads a replay is made of.
+  expect(
+    stored.entries[1].toolCalls.map((call) => [
+      call.signature,
+      call.id,
+      call.result,
+    ]),
+  ).toEqual([
+    ["read_deck()", "call-1", "35 cards, 8 ramp."],
+    [
+      "search_web(budget edh ramp)",
+      "call-2",
+      "Two primers agree on Fellwar Stone.",
+    ],
+  ]);
+  // No revision to report, because nothing passed the panel a deck. Absent rather than
+  // empty: the backend reads a missing revision as the browser declining to say.
+  expect(stored.entries[1].toolCalls.map((call) => call.deckRevision)).toEqual([
+    undefined,
+    undefined,
+  ]);
+
+  expect(screen.getByText("read_deck()")).toBeInTheDocument();
+  expect(screen.getByText("search_web(budget edh ramp)")).toBeInTheDocument();
+  expect(
+    screen.getByText("You are light on ramp, so I would cut a five-drop."),
+  ).toBeInTheDocument();
+  expect(screen.getByText(/^Interrupted —/)).toBeInTheDocument();
+  // The question was asked and answered as far as it got, so it belongs to the
+  // transcript — not back in the composer, where sending would ask it twice.
+  expect(screen.getByLabelText("Message the deck agent")).toHaveValue("");
+  expect(screen.getByText("what should i cut")).toBeInTheDocument();
+  expect(screen.queryByText("Thinking…")).not.toBeInTheDocument();
+});
+
+it("keeps a cancelled turn that only wrote prose, and does not hand its question back", async () => {
+  const stream = drivenStream();
+  const { panel } = await askAndWait(stream, "is my curve fine");
+
+  // No tools at all — a question the model answers straight out. Words on the screen are
+  // as much "something happened" as a tool call is, so this is the control that stops the
+  // withdrawal from being decided by tool calls alone.
+  await stream.text("Your curve is fine, but");
+  await pressEscape(panel);
+
+  const stored = storedChat("deck-a");
+  expect(
+    stored.entries.map((held) => [held.message.content, held.interrupted]),
+  ).toEqual([
+    ["is my curve fine", undefined],
+    ["Your curve is fine, but", true],
+  ]);
+  expect(stored.entries[1].toolCalls).toEqual([]);
+  expect(screen.getByText("Your curve is fine, but")).toBeInTheDocument();
+  expect(screen.getByText(/^Interrupted —/)).toBeInTheDocument();
+  expect(screen.getByLabelText("Message the deck agent")).toHaveValue("");
+});
+
+it("shows a turn cancelled inside its first call as its lines and the marker alone", async () => {
+  const stream = drivenStream();
+  const { panel, unmount } = await askAndWait(stream, "read my deck");
+
+  await stream.tool(replayableCall("read_deck()", "call-1", "{}", "35 cards."));
+  await pressEscape(panel);
+
+  // A real case, not a defect: the cancel landed before a word was written. The entry is
+  // its tool line and its marker, and there is no bubble — one with an author and nothing
+  // in it would claim the agent had answered.
+  expect(screen.getByText("read_deck()")).toBeInTheDocument();
+  expect(screen.getByText(/^Interrupted —/)).toBeInTheDocument();
+  expect(screen.queryByText("Agent")).not.toBeInTheDocument();
+  expect(
+    document.querySelectorAll(".deck-agent__message--assistant"),
+  ).toHaveLength(0);
+  expect(storedChat("deck-a").entries[1].message.content).toBe("");
+
+  // And it reads back the same way after a reload. An empty content is exactly the shape
+  // a reader could turn into an empty bubble, so the round trip is part of the assertion.
+  unmount();
+  render(<DeckAgentPanel deckId="deck-a" client={client(stream.chat)} />);
+  expect(screen.getByText("read_deck()")).toBeInTheDocument();
+  expect(screen.getByText(/^Interrupted —/)).toBeInTheDocument();
+  expect(screen.queryByText("Agent")).not.toBeInTheDocument();
+});
+
+it("replays a cancelled turn's calls and results on the next question", async () => {
+  const stream = drivenStream();
+  const { panel } = await askAndWait(stream, "what ramp am i missing");
+
+  await stream.tool(
+    replayableCall("read_deck()", "call-1", "{}", "35 cards, 8 ramp."),
+  );
+  await stream.text("Looking at your curve");
+  await pressEscape(panel);
+
+  await userEvent.type(
+    screen.getByLabelText("Message the deck agent"),
+    "and now?",
+  );
+  await userEvent.click(screen.getByLabelText("Send message"));
+
+  /*
+   * The seam where the storage and the panel meet, and the only place it is observable.
+   *
+   * The interrupted turn goes back as the provider's own shape for one — the calls it
+   * made, an answer for each, and the prose it got as far as — so the model continues
+   * from what it already read instead of paying for `read_deck` a second time.
+   *
+   * Ids are asserted as a *pair* rather than against a literal, because pairing is the
+   * rule: an unanswered call is a 422 that fails the whole turn, and what an id is
+   * spelled as on the wire belongs to `buildAgentMessages` and its own tests. The stored
+   * call still carries the id the stream reported — asserted above — and the wire may
+   * scope it to keep two turns' ids apart.
+   */
+  const posted = stream.chat.mock.calls[1][0] as DeckAgentRequestMessage[];
+  expect(posted.map((message) => message.role)).toEqual([
+    "user",
+    "assistant",
+    "tool",
+    "assistant",
+    "user",
+  ]);
+  expect(posted[0]).toEqual({
+    role: "user",
+    content: "what ramp am i missing",
+  });
+  const [replayed] = posted[1].tool_calls ?? [];
+  expect(replayed).toMatchObject({ name: "read_deck", arguments_json: "{}" });
+  expect(replayed.id).toBeTruthy();
+  // No prose on the message carrying the calls: that is the provider's own shape for a
+  // round that only called tools, and the partial answer is its own message below.
+  expect(posted[1].content).toBeUndefined();
+  expect(posted[2]).toEqual({
+    role: "tool",
+    tool_call_id: replayed.id,
+    content: "35 cards, 8 ramp.",
+  });
+  expect(posted[3]).toEqual({
+    role: "assistant",
+    content: "Looking at your curve",
+  });
+  expect(posted[4]).toEqual({ role: "user", content: "and now?" });
+});
+
+it("stamps every call with the revision of the deck the turn asked about", async () => {
+  const stream = drivenStream();
+  const deckAt = (updatedAt: string): DeckAgentDeckSnapshot => ({
+    name: "Ghalta Stompy",
+    cards: [],
+    updated_at: updatedAt,
+  });
+  const view = render(
+    <DeckAgentPanel
+      deckId="deck-a"
+      client={client(stream.chat)}
+      deck={deckAt("2026-08-03T09:00:00.000Z")}
+    />,
+  );
+  await userEvent.type(
+    screen.getByLabelText("Message the deck agent"),
+    "what should i cut",
+  );
+  await userEvent.click(screen.getByLabelText("Send message"));
+  await stream.tool(replayableCall("read_deck()", "call-1", "{}", "35 cards."));
+
+  // The user edits the deck while the turn is still running, so the panel re-renders with
+  // a newer revision. The turn is still reading the deck it was asked about.
+  view.rerender(
+    <DeckAgentPanel
+      deckId="deck-a"
+      client={client(stream.chat)}
+      deck={deckAt("2026-08-03T09:05:00.000Z")}
+    />,
+  );
+  await stream.tool(
+    replayableCall(
+      "see_cards(Sol Ring · rules)",
+      "call-2",
+      '{"names":["Sol Ring"]}',
+      "Sol Ring: {1}, adds {C}{C}.",
+    ),
+  );
+  await pressEscape(screen.getByRole("region", { name: "Deck agent" }));
+
+  /*
+   * Both calls carry the older revision, including the one that arrived after the deck
+   * had moved. The backend holds no deck, so a reply cannot report this and the panel is
+   * the only place it can come from — and the comparison it feeds is only meaningful
+   * against the deck the result was actually read from. Stamping the deck open *now*
+   * would tell the backend the reading is current at the exact moment it is not.
+   */
+  expect(
+    storedChat("deck-a").entries[1].toolCalls.map((call) => call.deckRevision),
+  ).toEqual(["2026-08-03T09:00:00.000Z", "2026-08-03T09:00:00.000Z"]);
 });
 
 it("leaves Escape alone when no turn is in flight", async () => {

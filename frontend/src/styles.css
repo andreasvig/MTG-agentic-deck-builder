@@ -1323,6 +1323,25 @@ select {
   color: var(--muted);
 }
 
+/*
+ * The last line of a cancelled turn, closing the entry it belongs to.
+ *
+ * Pitched with the tool lines rather than with the message, because it is the same kind
+ * of thing: a note about the turn, not part of what the agent said. Dashed above rather
+ * than coloured as a failure — a cancel is the user's own doing and the work was kept, so
+ * marking it in danger would read as an error the deck agent had.
+ */
+.deck-agent__interrupted {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  margin: 0 0 6px;
+  padding: 5px 2px 0;
+  color: var(--muted);
+  font-size: 9.5px;
+  border-top: 1px dashed var(--line);
+}
+
 /* Quieter than the word it follows: an offer, not a thing being asked of the reader. */
 .deck-agent__interrupt {
   margin-left: 7px;

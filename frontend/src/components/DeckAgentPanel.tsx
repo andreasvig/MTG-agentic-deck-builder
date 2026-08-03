@@ -5,18 +5,28 @@ import type {
   DeckAgentDeckEdit,
   DeckAgentDeckHistory,
   DeckAgentDeckSnapshot,
-  DeckAgentMessage,
+  DeckAgentRequestMessage,
   DeckAgentToolCall,
+  DeckAgentTranscriptEntry,
 } from "../domain/agent";
 import { Icon } from "./Icon";
-import { formatModelCostUsd, isRefusedDeckEdit } from "../domain/agent";
+import {
+  buildAgentMessages,
+  formatModelCostUsd,
+  isRefusedDeckEdit,
+} from "../domain/agent";
 import type { CardSearchResult } from "../domain/card";
 import { CARD_NAME_DRAG_TYPE } from "../domain/card";
 import { useDeckAgentChats } from "../hooks/useDeckAgentChats";
 import { apiClient, type ApiClient } from "../lib/api";
 import { AgentAnswer } from "./AgentAnswer";
 
-/** The turn in progress: what has been read, and what has been written so far. */
+/**
+ * The turn in progress: what has been read, and what has been written so far.
+ *
+ * Presentation while the turn is running, and the whole turn once a cancel commits it —
+ * which is why it is held in a ref as well as in state. See `updateLive`.
+ */
 interface LiveTurn {
   text: string;
   toolCalls: DeckAgentToolCall[];
@@ -26,28 +36,20 @@ interface LiveTurn {
 
 const NO_LIVE_TURN: LiveTurn = { text: "", toolCalls: [], appliedEdits: [] };
 
-/** A turn in flight, and what cancelling it is still allowed to undo. */
+/** A turn in flight: the question it is answering, and the deck it is about. */
 interface InFlightTurn {
   content: string;
   deckId: string;
-  startedAt: number;
-  editApplied: boolean;
 }
 
-/**
- * How long after sending a cancel still hands the question back to be edited.
- *
- * A cancel inside this is someone catching a typo or a wrong word before the answer
- * lands, and the question they meant to ask is the one they are about to type. Later
- * than this it is a question that was really asked and then abandoned, and its place
- * is the transcript, where sending again retries it.
- *
- * Ten seconds rather than the two or three that "immediately" suggests, because at
- * `xhigh` effort the first tool call can take that long on its own — a window shorter
- * than the model's own latency would only ever be open before anything had happened,
- * which is not the same thing as before the user had noticed.
- */
-const WITHDRAW_WINDOW_MS = 10_000;
+/** Whether a turn has produced anything at all: what decides a cancel's two paths. */
+function hasStreamed(live: LiveTurn): boolean {
+  return (
+    live.toolCalls.length > 0 ||
+    live.text.length > 0 ||
+    live.appliedEdits.length > 0
+  );
+}
 
 interface DeckAgentPanelProps {
   client?: ApiClient;
@@ -103,8 +105,12 @@ interface DeckAgentPanelProps {
  * agent's tools always read the deck as it is right now.
  *
  * A turn is streamed: each tool call shows the moment it runs, and the answer
- * appears as it is written. The stream is presentation only — the turn is committed
- * from the finished reply, so what is stored never depends on what was on screen.
+ * appears as it is written. An **answered** turn is committed from the finished reply, so
+ * what is stored never depends on what was on screen. A **cancelled** turn is the one
+ * exception, and it narrows that rule rather than reversing it: for an interrupted turn no
+ * `done` will ever arrive, so the stream is the only account of what happened, and
+ * throwing it away would throw away paid lookups the next turn could have continued from
+ * (ADR 0031, "what streams must converge on what is committed").
  *
  * A deck edit is the one thing on the stream that is not presentation: the deck has
  * already changed by the time the block describing it appears, which is why that block
@@ -130,6 +136,7 @@ export function DeckAgentPanel({
     chat,
     appendEntry,
     recordReply,
+    recordInterruptedTurn,
     setDraft,
     withdrawQuestion,
     clearChat,
@@ -152,13 +159,28 @@ export function DeckAgentPanel({
   const composer = useRef<HTMLTextAreaElement | null>(null);
   const pendingRequest = useRef<AbortController | null>(null);
   /**
-   * The question a turn in flight is answering, and what has happened to it so far.
+   * The question a turn in flight is answering, and the deck it was asked about.
    *
    * Kept so that cancelling can hand the question back rather than leaving the user to
-   * retype it. A ref because the canceller is a keystroke handler that must see the
+   * retype it, and so that a turn committed by a cancel lands in its own deck's
+   * transcript. A ref because the canceller is a keystroke handler that must see the
    * turn as it is *now*, not as it was when the handler was last rendered.
    */
   const inFlight = useRef<InFlightTurn | null>(null);
+  /**
+   * The same live turn as the state above, readable synchronously.
+   *
+   * Held twice because it is read by two things with different needs. The render needs
+   * state; the canceller needs the turn as it is at the instant the key was pressed, and
+   * a cancel is by definition a race with the stream. A keydown dispatched between a
+   * chunk arriving and React committing it would run a handler closed over the previous
+   * value — and the last thing to arrive before a cancel is exactly the thing the user
+   * was reacting to. Dropping it would drop a paid `search_web` result out of the replay
+   * this whole feature exists to keep.
+   *
+   * Written only by `updateLive`, so the two cannot disagree.
+   */
+  const liveTurn = useRef<LiveTurn>(NO_LIVE_TURN);
   /**
    * Which deck is open *now*, rather than which one a turn in flight was asked about.
    *
@@ -174,19 +196,34 @@ export function DeckAgentPanel({
   // deck's chat rather than following the user to the next one.
   const draft = chat.draft;
 
+  /**
+   * Advance the live turn, in both the ref and the state, from its current value.
+   *
+   * The single writer of either. An updater rather than a value because every caller is
+   * accumulating — another chunk, another call — and the caller is the stream, which has
+   * no render of its own to read the previous value from.
+   */
+  const updateLive = useCallback((next: (current: LiveTurn) => LiveTurn) => {
+    liveTurn.current = next(liveTurn.current);
+    setLive(liveTurn.current);
+  }, []);
+
   // Switching decks abandons a question already in flight rather than answering it
   // into a deck the user has left. The question itself stays in the transcript it
   // was asked in, so going back and sending again retries it.
   useEffect(() => {
     openDeckId.current = deckId;
     setPending(false);
-    setLive(NO_LIVE_TURN);
+    // The abandoned turn goes with it, question and stream alike: a cancel on the deck
+    // the user moved *to* must not commit what the deck they left had read.
+    inFlight.current = null;
+    updateLive(() => NO_LIVE_TURN);
     setError(null);
     return () => {
       pendingRequest.current?.abort();
       pendingRequest.current = null;
     };
-  }, [deckId]);
+  }, [deckId, updateLive]);
 
   useEffect(() => {
     const element = transcript.current;
@@ -236,47 +273,76 @@ export function DeckAgentPanel({
   );
 
   /**
-   * Abandon the turn in flight, and give the question back if it is still the user's
-   * to take back.
+   * Stop the turn in flight, and keep whatever it had already done.
    *
-   * Two conditions, and they are not the same condition. The window is what the user
-   * asked for and is about intent: a question cancelled in the first breath was a
-   * mistake being corrected, while one cancelled a minute in is a question that was
-   * genuinely asked and whose transcript entry is the record of asking it.
+   * One question decides everything: has anything streamed? A turn that ran a tool, wrote
+   * a word or changed the deck **did** something, and that work is committed as an
+   * interrupted entry — the tool lines the user watched appear, the prose so far, the edits
+   * already applied. It is worth keeping for its own sake, and worth more than that
+   * because the next turn replays those calls instead of paying for the same lookups
+   * again (`buildAgentMessages`).
    *
-   * The edit is the hard one. Once a turn has changed the deck, its question is the
-   * only thing on screen explaining why the deck is different, so withdrawing it would
-   * leave a change nothing accounts for. That holds however fast the user was.
+   * A turn that has produced nothing is the other case, and it is the only one where the
+   * question goes back to the composer: nothing has happened, so there is nothing for the
+   * question to be the record of, and the question the user meant to ask is the one they
+   * are about to type. This replaces a ten-second timer (`174b63f`), which was a proxy for
+   * this same test back when a cancel kept nothing — measured directly now that it can be.
+   *
+   * An applied edit therefore still blocks the withdrawal, as it always has, but it needs
+   * no condition of its own: an edit is something that streamed. Once a turn has changed
+   * the deck its question is part of the only account of why the deck is different, and
+   * withdrawing it would leave a change nothing explains.
    */
   const cancel = useCallback(() => {
     const turn = inFlight.current;
+    // Read before anything is cleared, and from the ref rather than from state: this is
+    // the turn as it stands at the instant of the key press. See `liveTurn`.
+    const live = liveTurn.current;
     pendingRequest.current?.abort();
     pendingRequest.current = null;
     inFlight.current = null;
     setPending(false);
-    setLive(NO_LIVE_TURN);
+    updateLive(() => NO_LIVE_TURN);
     setError(null);
-    if (!turn || turn.editApplied) {
+    if (!turn) {
       return;
     }
-    if (Date.now() - turn.startedAt > WITHDRAW_WINDOW_MS) {
+    if (hasStreamed(live)) {
+      const committed: DeckAgentTranscriptEntry = {
+        // Empty when the cancel landed inside the first tool call, which is an ordinary
+        // case rather than a defect: the entry is then its tool lines and its marker, and
+        // the transcript renders no bubble for prose that was never written.
+        message: { role: "assistant", content: live.text },
+        toolCalls: live.toolCalls,
+        // Nothing is resolved for a turn that never finished: card links come from the
+        // backend's pass over the committed answer, and there is no committed answer.
+        cardLinks: [],
+        ...(live.appliedEdits.length > 0
+          ? { appliedEdits: live.appliedEdits }
+          : {}),
+        interrupted: true,
+      };
+      recordInterruptedTurn(turn.deckId, committed);
       return;
     }
     withdrawQuestion(turn.deckId, turn.content);
     setDraft(turn.deckId, turn.content);
     setCaretTarget(turn.content.length);
-  }, [setDraft, withdrawQuestion]);
+  }, [recordInterruptedTurn, setDraft, updateLive, withdrawQuestion]);
 
   const resetChat = useCallback(() => {
     pendingRequest.current?.abort();
     pendingRequest.current = null;
+    // Along with the turn it belonged to: a chat that has been thrown away must not get
+    // the cancelled turn back a moment later.
+    inFlight.current = null;
     // The spend belongs to the conversation being reset, not to the session, so
     // dropping the conversation drops its total with it.
     clearChat(deckId);
     setPending(false);
-    setLive(NO_LIVE_TURN);
+    updateLive(() => NO_LIVE_TURN);
     setError(null);
-  }, [clearChat, deckId]);
+  }, [clearChat, deckId, updateLive]);
 
   const send = useCallback(async () => {
     const content = draft.trim();
@@ -284,14 +350,37 @@ export function DeckAgentPanel({
       return;
     }
     // The sent transcript has to include this turn, because the reply is answered
-    // from the messages alone.
-    const conversation: DeckAgentMessage[] = [
-      ...entries.map((entry) => entry.message),
+    // from the messages alone. Built rather than mapped: an answered turn posts its prose
+    // and nothing else, and an interrupted one posts the calls it made and their results,
+    // which is several messages from one entry. See `buildAgentMessages`.
+    const conversation: DeckAgentRequestMessage[] = [
+      ...buildAgentMessages(entries),
       { role: "user", content },
     ];
     // Captured for the whole turn: the answer belongs to the deck the question was
     // asked about, even if the request outlives the user's attention on it.
     const turnDeckId = deckId;
+    /*
+     * The revision of the deck this turn is asking about, stamped onto every call it
+     * makes.
+     *
+     * The panel is the only place this can come from: the backend holds no deck, so a
+     * reply cannot report when the one it was posted last changed. Without it a replayed
+     * `read_deck` result is handed back to the model with nothing to compare, and the
+     * backend's staleness substitution can never fire — a result read before the user
+     * moved half the deck would come back as a current observation.
+     *
+     * Captured here rather than read when each event arrives, and that is the whole
+     * point: what matters is the deck the call was answered *about*. Editing the deck
+     * mid-turn re-renders the panel with a new revision, and this turn's calls still
+     * carry the one they actually read — which is exactly the difference the backend is
+     * comparing for.
+     *
+     * `undefined` until `App.tsx` passes the deck's `updated_at` (Phase 4), and absent is
+     * not "unchanged": the backend reads a missing revision as the browser declining to
+     * say, so nothing is claimed in the meantime.
+     */
+    const askedRevision = deck?.updated_at;
     // Read now rather than held in state, so the log includes the edit made a moment
     // ago. See `readDeckHistory`.
     const history = readDeckHistory?.() ?? null;
@@ -301,12 +390,7 @@ export function DeckAgentPanel({
     const appliedEdits: DeckAgentAppliedEdit[] = [];
     const controller = new AbortController();
     pendingRequest.current = controller;
-    inFlight.current = {
-      content,
-      deckId: turnDeckId,
-      startedAt: Date.now(),
-      editApplied: false,
-    };
+    inFlight.current = { content, deckId: turnDeckId };
     appendEntry(turnDeckId, {
       message: { role: "user", content },
       toolCalls: [],
@@ -328,7 +412,7 @@ export function DeckAgentPanel({
      */
     setCaretTarget(0);
     setPending(true);
-    setLive(NO_LIVE_TURN);
+    updateLive(() => NO_LIVE_TURN);
     setError(null);
     try {
       const reply = await client.streamDeckAgentChat(
@@ -336,16 +420,22 @@ export function DeckAgentPanel({
         deck,
         {
           onText: (chunk) => {
-            setLive((current) => ({ ...current, text: current.text + chunk }));
+            updateLive((current) => ({ ...current, text: current.text + chunk }));
           },
           onToolCall: (call) => {
             // Text written before a tool call was preamble, not the answer: the
             // committed turn keeps only the final round's prose, so the live view
             // drops it here and ends up showing exactly what gets stored.
-            setLive((current) => ({
+            updateLive((current) => ({
               ...current,
               text: "",
-              toolCalls: [...current.toolCalls, call],
+              toolCalls: [
+                ...current.toolCalls,
+                // Stamped as the call arrives, because this is the only moment the deck it
+                // was answered about is known. Absent rather than empty when there is no
+                // revision to report — see `askedRevision`.
+                askedRevision ? { ...call, deckRevision: askedRevision } : call,
+              ],
             }));
           },
           onDeckEdit: (edit) => {
@@ -370,12 +460,11 @@ export function DeckAgentPanel({
               return;
             }
             appliedEdits.push(block);
-            // From here the question cannot be taken back, however fast the cancel:
-            // it is the only account of why this deck is now different.
-            if (inFlight.current) {
-              inFlight.current.editApplied = true;
-            }
-            setLive((current) => ({
+            // From here the question cannot be taken back, however fast the cancel: it is
+            // the only account of why this deck is now different. No flag says so — the
+            // block below is on the live turn, and a cancel keeps a turn that has anything
+            // on it. One condition rather than two, and the same one.
+            updateLive((current) => ({
               ...current,
               appliedEdits: [...current.appliedEdits, block],
             }));
@@ -424,13 +513,17 @@ export function DeckAgentPanel({
           : "The deck agent is temporarily unavailable.",
       );
     } finally {
+      // Only for the turn this controller belongs to, which is what keeps a cancel and
+      // this block from both committing. A cancel has already nulled `pendingRequest`
+      // and cleared the live turn by the time the aborted promise settles, so this
+      // recognises the turn as no longer its own and touches nothing.
       if (pendingRequest.current === controller) {
         pendingRequest.current = null;
         inFlight.current = null;
         setPending(false);
         // The turn is committed — or failed — so the live copy has served its
         // purpose. Leaving it would show the answer twice.
-        setLive(NO_LIVE_TURN);
+        updateLive(() => NO_LIVE_TURN);
       }
     }
   }, [
@@ -446,6 +539,7 @@ export function DeckAgentPanel({
     readDeckHistory,
     recordReply,
     setDraft,
+    updateLive,
   ]);
 
   if (!client.streamDeckAgentChat) {
@@ -563,27 +657,37 @@ export function DeckAgentPanel({
                   key={`${callIndex}-${call.signature}`}
                 />
               ))}
-              <article
-                className={`deck-agent__message deck-agent__message--${entry.message.role}`}
-              >
-                <span className="deck-agent__author">
-                  {entry.message.role === "user" ? "You" : "Agent"}
-                </span>
-                <p>
-                  {entry.message.role === "assistant" ? (
-                    <AgentAnswer
-                      text={entry.message.content}
-                      links={entry.cardLinks}
-                      client={client}
-                      onOpenCard={onOpenCard}
-                    />
-                  ) : (
-                    // The user's own words are never parsed: braces they typed are
-                    // braces they meant.
-                    entry.message.content
-                  )}
-                </p>
-              </article>
+              {/*
+                * No bubble for a turn that said nothing. Only one kind of turn can be in
+                * that state — one cancelled inside its first tool call, before a word was
+                * written — and an empty bubble with an author on it would claim the agent
+                * answered and then show nothing. Its tool lines and its marker say what
+                * happened. Every other entry has content by contract: a question is
+                * non-blank before it is sent, and a reply is refused if its content is.
+                */}
+              {entry.message.content ? (
+                <article
+                  className={`deck-agent__message deck-agent__message--${entry.message.role}`}
+                >
+                  <span className="deck-agent__author">
+                    {entry.message.role === "user" ? "You" : "Agent"}
+                  </span>
+                  <p>
+                    {entry.message.role === "assistant" ? (
+                      <AgentAnswer
+                        text={entry.message.content}
+                        links={entry.cardLinks}
+                        client={client}
+                        onOpenCard={onOpenCard}
+                      />
+                    ) : (
+                      // The user's own words are never parsed: braces they typed are
+                      // braces they meant.
+                      entry.message.content
+                    )}
+                  </p>
+                </article>
+              ) : null}
               {(entry.appliedEdits ?? []).map((applied, editIndex) => (
                 <AppliedEditBlock
                   applied={applied}
@@ -603,6 +707,7 @@ export function DeckAgentPanel({
                   }
                 />
               ))}
+              {entry.interrupted ? <InterruptedTurnMarker /> : null}
             </div>
           ))
         )}
@@ -700,6 +805,27 @@ export function DeckAgentPanel({
         </button>
       </form>
     </section>
+  );
+}
+
+/**
+ * The last line of a turn that was cancelled.
+ *
+ * Below everything the turn produced, because it is what became of the turn rather than
+ * something the turn did: the tool lines ran, the prose was as far as it got, and then it
+ * stopped. It says why the work was kept as well as that it stopped — the reason it is
+ * still here is that the next question carries on from it, and a user who reads this as
+ * "nothing happened" would retype the question and pay for every lookup again.
+ *
+ * Not to be confused with `deck-agent__interrupt`, which is the *offer* to cancel beside
+ * "Thinking…". This is the record of one having been accepted.
+ */
+function InterruptedTurnMarker() {
+  return (
+    <p className="deck-agent__interrupted">
+      <Icon name="alert" aria-hidden="true" size={11} />
+      <span>Interrupted — kept, and the next question continues from here</span>
+    </p>
   );
 }
 
