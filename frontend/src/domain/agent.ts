@@ -848,7 +848,17 @@ const MAX_POSTED_DECK_REVISION_CHARS = 100;
 export function buildAgentMessages(
   entries: DeckAgentTranscriptEntry[],
 ): DeckAgentRequestMessage[] {
-  const plans = entries.map(planEntryMessages);
+  // Planned newest-turn-first so that an id used twice in one conversation belongs to
+  // the newest turn that used it. The backend matches ids one to one across the whole
+  // request — a call asked for twice is a 422 naming it — and a provider that numbers
+  // its call ids per completion rather than at random hands two interrupted turns the
+  // same `call_1`. The newest turn is the one the next question follows on from, so it
+  // keeps the pair and the older turn names what it ran instead.
+  const claimed = new Set<string>();
+  const plans: DeckAgentEntryPlan[] = [];
+  for (let index = entries.length - 1; index >= 0; index -= 1) {
+    plans[index] = planEntryMessages(entries[index], claimed);
+  }
 
   // The floor: what every kept turn posts with nothing replayed. Reserved before any
   // replay is granted, because a replay that crowded out the conversation it belongs to
@@ -893,7 +903,10 @@ interface DeckAgentEntryPlan {
   replayed: DeckAgentRequestMessage[];
 }
 
-function planEntryMessages(entry: DeckAgentTranscriptEntry): DeckAgentEntryPlan {
+function planEntryMessages(
+  entry: DeckAgentTranscriptEntry,
+  claimed: Set<string>,
+): DeckAgentEntryPlan {
   // An interrupted user message is not a thing: the flag marks a turn the agent was in
   // the middle of, so anything else is posted as the message it is.
   if (entry.interrupted !== true || entry.message.role !== "assistant") {
@@ -907,7 +920,10 @@ function planEntryMessages(entry: DeckAgentTranscriptEntry): DeckAgentEntryPlan 
   const shed: string[] = [];
   for (const call of entry.toolCalls) {
     const pair = pairs.length < MAX_POSTED_REPLAY_CALLS ? toReplayPair(call) : null;
-    if (pair) {
+    // An id already spoken for cannot be paired with this call's result: the request
+    // would name one call twice and neither answer could be matched to either.
+    if (pair && !claimed.has(pair.call.id)) {
+      claimed.add(pair.call.id);
       pairs.push(pair);
     } else {
       shed.push(call.signature);

@@ -599,6 +599,35 @@ describe("posted agent messages", () => {
     ]);
   });
 
+  it("gives a reused call id to the newest turn and frames the older one", () => {
+    // A provider that numbers its call ids per completion hands two interrupted turns
+    // the same `call-1`, and the backend matches ids across the whole request: asked
+    // for twice is a 422 that fails the turn.
+    const messages = buildAgentMessages([
+      interrupted("First go", [storedCall({ result: "older listing" })]),
+      asked("Again?"),
+      interrupted("Second go", [storedCall({ result: "newer listing" })]),
+      asked("Carry on."),
+    ]);
+
+    expect(messages).toEqual([
+      { role: "assistant", content: "interrupted after read_deck()\n\nFirst go" },
+      { role: "user", content: "Again?" },
+      {
+        role: "assistant",
+        tool_calls: [{ id: "call-1", name: "read_deck", arguments_json: "{}" }],
+      },
+      { role: "tool", tool_call_id: "call-1", content: "newer listing" },
+      { role: "assistant", content: "Second go" },
+      { role: "user", content: "Carry on." },
+    ]);
+    // No id is asked for twice, whatever the store holds.
+    const asked_for = messages.flatMap(
+      (message) => message.tool_calls?.map((call) => call.id) ?? [],
+    );
+    expect(new Set(asked_for).size).toBe(asked_for.length);
+  });
+
   it("sheds the oldest replays to framing before the request runs out of messages", () => {
     // Twenty cancelled turns of fifty calls each is 1,040 messages, and the request may
     // carry a thousand. Every one of them is stored, so the budget has to choose.
