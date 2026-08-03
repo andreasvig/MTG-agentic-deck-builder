@@ -830,6 +830,8 @@ const MAX_POSTED_DECK_REVISION_CHARS = 100;
  * the calls themselves go back, in the only shape the provider accepts them in — one
  * `assistant` message carrying every call, then one `tool` message per call naming it
  * by id, then the partial prose as its own `assistant` message when the turn wrote any.
+ * The id each pair travels under is written here rather than taken from the transcript,
+ * so two interrupted turns cannot collide over one — see `replayCallId`.
  *
  * A call whose result is gone — shed by the storage budget, or never stored by an older
  * build — is **not** posted as a call. An unanswered `tool_calls` entry is rejected by
@@ -848,17 +850,7 @@ const MAX_POSTED_DECK_REVISION_CHARS = 100;
 export function buildAgentMessages(
   entries: DeckAgentTranscriptEntry[],
 ): DeckAgentRequestMessage[] {
-  // Planned newest-turn-first so that an id used twice in one conversation belongs to
-  // the newest turn that used it. The backend matches ids one to one across the whole
-  // request — a call asked for twice is a 422 naming it — and a provider that numbers
-  // its call ids per completion rather than at random hands two interrupted turns the
-  // same `call_1`. The newest turn is the one the next question follows on from, so it
-  // keeps the pair and the older turn names what it ran instead.
-  const claimed = new Set<string>();
-  const plans: DeckAgentEntryPlan[] = [];
-  for (let index = entries.length - 1; index >= 0; index -= 1) {
-    plans[index] = planEntryMessages(entries[index], claimed);
-  }
+  const plans = entries.map(planEntryMessages);
 
   // The floor: what every kept turn posts with nothing replayed. Reserved before any
   // replay is granted, because a replay that crowded out the conversation it belongs to
@@ -905,7 +897,7 @@ interface DeckAgentEntryPlan {
 
 function planEntryMessages(
   entry: DeckAgentTranscriptEntry,
-  claimed: Set<string>,
+  turn: number,
 ): DeckAgentEntryPlan {
   // An interrupted user message is not a thing: the flag marks a turn the agent was in
   // the middle of, so anything else is posted as the message it is.
@@ -918,12 +910,12 @@ function planEntryMessages(
 
   const pairs: DeckAgentReplayPair[] = [];
   const shed: string[] = [];
-  for (const call of entry.toolCalls) {
-    const pair = pairs.length < MAX_POSTED_REPLAY_CALLS ? toReplayPair(call) : null;
-    // An id already spoken for cannot be paired with this call's result: the request
-    // would name one call twice and neither answer could be matched to either.
-    if (pair && !claimed.has(pair.call.id)) {
-      claimed.add(pair.call.id);
+  for (const [position, call] of entry.toolCalls.entries()) {
+    const pair =
+      pairs.length < MAX_POSTED_REPLAY_CALLS
+        ? toReplayPair(call, turn, position)
+        : null;
+    if (pair) {
       pairs.push(pair);
     } else {
       shed.push(call.signature);
@@ -994,13 +986,22 @@ function spokenMessages(
  * result that is *absent* is refused. The arguments are a different matter: they are
  * parsed rather than read, so a value that is only whitespace is no more usable than a
  * missing one and takes the same path.
+ *
+ * A call the backend never identified is refused too. Not because the posted id needs
+ * it — that one is written here — but because a record with no id is a record from a
+ * build that kept no replay data at all, and inventing a pairing for it would claim the
+ * turn read something the transcript never held.
  */
-function toReplayPair(call: DeckAgentToolCall): DeckAgentReplayPair | null {
+function toReplayPair(
+  call: DeckAgentToolCall,
+  turn: number,
+  position: number,
+): DeckAgentReplayPair | null {
   const id = call.id ?? "";
   const name = call.name.trim();
   const result = call.result ?? "";
   const argumentsJson = call.arguments_json ?? "";
-  if (!id || id.length > MAX_POSTED_TOOL_CALL_ID_CHARS) {
+  if (!id) {
     return null;
   }
   if (!name || name.length > MAX_POSTED_LABEL_CHARS) {
@@ -1012,7 +1013,7 @@ function toReplayPair(call: DeckAgentToolCall): DeckAgentReplayPair | null {
   const revision = (call.deckRevision ?? "").trim();
   return {
     call: {
-      id,
+      id: replayCallId(turn, position, id),
       name,
       arguments_json: postedText(argumentsJson, MAX_POSTED_TOOL_PAYLOAD_CHARS),
       // Dropped rather than truncated when it will not fit: a revision is compared, so
@@ -1023,6 +1024,29 @@ function toReplayPair(call: DeckAgentToolCall): DeckAgentReplayPair | null {
     },
     result: postedText(result, MAX_POSTED_TOOL_PAYLOAD_CHARS),
   };
+}
+
+/**
+ * The id one replayed call travels under, which is not the id it was made with.
+ *
+ * A `tool_call_id` is transport, not provenance. Both halves of the pair are written
+ * here, and the only rule about them is that the ask and the answer agree inside this
+ * one request — the provider treats the string as opaque. So each replayed call is asked
+ * for under its turn's and its own position, which is unique by construction across the
+ * whole request. That matters because the backend matches ids across the whole request:
+ * a provider that numbers its call ids per completion rather than at random hands every
+ * interrupted turn the same `call_1`, and asked twice is a 422 that fails the turn.
+ * Renaming keeps every turn's replay instead of trading the older one for framing.
+ *
+ * The id the model used comes along behind the prefix, so a 422 naming one can still be
+ * found in the transcript, and the stored transcript keeps it untouched — that is the
+ * record of what actually happened. It is truncated rather than refused when the pair
+ * will not fit in `ToolCallId`, because uniqueness lives entirely in the prefix and the
+ * tail is only there to be recognised.
+ */
+function replayCallId(turn: number, position: number, id: string): string {
+  const prefix = `t${turn}c${position}:`;
+  return prefix + id.slice(0, MAX_POSTED_TOOL_CALL_ID_CHARS - prefix.length);
 }
 
 /**

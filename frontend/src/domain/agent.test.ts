@@ -390,16 +390,22 @@ describe("posted agent messages", () => {
       {
         role: "assistant",
         tool_calls: [
-          { id: "call-a", name: "read_deck", arguments_json: "{}" },
+          // Renamed on the way out — the turn's index and the call's, in front of the
+          // id the model used. See `replayCallId`.
+          { id: "t1c0:call-a", name: "read_deck", arguments_json: "{}" },
           {
-            id: "call-b",
+            id: "t1c1:call-b",
             name: "see_cards",
             arguments_json: '{"cards":["Sol Ring"]}',
           },
         ],
       },
-      { role: "tool", tool_call_id: "call-a", content: "Deck listing" },
-      { role: "tool", tool_call_id: "call-b", content: "Sol Ring — {1}, Artifact" },
+      { role: "tool", tool_call_id: "t1c0:call-a", content: "Deck listing" },
+      {
+        role: "tool",
+        tool_call_id: "t1c1:call-b",
+        content: "Sol Ring — {1}, Artifact",
+      },
       { role: "assistant", content: "Sol Ring is the first thing" },
       { role: "user", content: "Carry on." },
     ]);
@@ -409,7 +415,7 @@ describe("posted agent messages", () => {
     const answered = messages
       .filter((message) => message.role === "tool")
       .map((message) => message.tool_call_id);
-    expect(called).toEqual(["call-a", "call-b"]);
+    expect(called).toEqual(["t1c0:call-a", "t1c1:call-b"]);
     expect(answered).toEqual(called);
   });
 
@@ -449,12 +455,12 @@ describe("posted agent messages", () => {
     // a 422, and a `tool` message with nothing in it is another — and the turn instead
     // says what ran, in the words the user watched appear.
     expect(messages[0].tool_calls?.map((call) => call.id)).toEqual([
-      "call-a",
-      "call-c",
+      "t0c0:call-a",
+      "t0c2:call-c",
     ]);
     expect(
       messages.filter((message) => message.role === "tool").map((m) => m.tool_call_id),
-    ).toEqual(["call-a", "call-c"]);
+    ).toEqual(["t0c0:call-a", "t0c2:call-c"]);
     expect(messages[3]).toEqual({
       role: "assistant",
       content:
@@ -535,7 +541,7 @@ describe("posted agent messages", () => {
     // for that reason. Trimming it here would have quietly rewritten a deck listing.
     expect(messages[1]).toEqual({
       role: "tool",
-      tool_call_id: "call-1",
+      tool_call_id: "t0c0:call-1",
       content: "\n  Deck listing\n  Sol Ring — {1}\n",
     });
   });
@@ -584,25 +590,27 @@ describe("posted agent messages", () => {
     ]);
 
     expect(messages[0].tool_calls?.map((call) => call.id)).toEqual([
-      "call-9",
-      "call-3",
-      "call-7",
+      "t0c0:call-9",
+      "t0c2:call-3",
+      "t0c3:call-7",
     ]);
     expect(
       messages
         .filter((message) => message.role === "tool")
         .map((message) => [message.tool_call_id, message.content]),
     ).toEqual([
-      ["call-9", "nine"],
-      ["call-3", "three"],
-      ["call-7", "seven"],
+      ["t0c0:call-9", "nine"],
+      ["t0c2:call-3", "three"],
+      ["t0c3:call-7", "seven"],
     ]);
   });
 
-  it("gives a reused call id to the newest turn and frames the older one", () => {
+  it("replays two turns that reused one call id, each under its own name", () => {
     // A provider that numbers its call ids per completion hands two interrupted turns
-    // the same `call-1`, and the backend matches ids across the whole request: asked
-    // for twice is a 422 that fails the turn.
+    // the same `call-1`, and the backend matches ids across the whole request: asked for
+    // twice is a 422 that fails the turn. The id is transport rather than provenance —
+    // both halves are written here — so both turns keep their replay under distinct
+    // names instead of the older one being traded for framing.
     const messages = buildAgentMessages([
       interrupted("First go", [storedCall({ result: "older listing" })]),
       asked("Again?"),
@@ -611,21 +619,77 @@ describe("posted agent messages", () => {
     ]);
 
     expect(messages).toEqual([
-      { role: "assistant", content: "interrupted after read_deck()\n\nFirst go" },
+      {
+        role: "assistant",
+        tool_calls: [
+          { id: "t0c0:call-1", name: "read_deck", arguments_json: "{}" },
+        ],
+      },
+      { role: "tool", tool_call_id: "t0c0:call-1", content: "older listing" },
+      { role: "assistant", content: "First go" },
       { role: "user", content: "Again?" },
       {
         role: "assistant",
-        tool_calls: [{ id: "call-1", name: "read_deck", arguments_json: "{}" }],
+        tool_calls: [
+          { id: "t2c0:call-1", name: "read_deck", arguments_json: "{}" },
+        ],
       },
-      { role: "tool", tool_call_id: "call-1", content: "newer listing" },
+      { role: "tool", tool_call_id: "t2c0:call-1", content: "newer listing" },
       { role: "assistant", content: "Second go" },
       { role: "user", content: "Carry on." },
     ]);
-    // No id is asked for twice, whatever the store holds.
-    const asked_for = messages.flatMap(
+    // Every id asked for once, every answer naming a call that was asked for, and the
+    // two turns' names distinct — which is the whole of the backend's pairing rule.
+    const askedFor = messages.flatMap(
       (message) => message.tool_calls?.map((call) => call.id) ?? [],
     );
-    expect(new Set(asked_for).size).toBe(asked_for.length);
+    const answered = messages
+      .filter((message) => message.role === "tool")
+      .map((message) => message.tool_call_id);
+    expect(new Set(askedFor).size).toBe(askedFor.length);
+    expect(answered).toEqual(askedFor);
+    // The id the model used is still legible behind the prefix, so a 422 naming one can
+    // be found in the transcript.
+    expect(askedFor.every((id) => id?.endsWith(":call-1"))).toBe(true);
+  });
+
+  it("replays two calls of one turn that share a stored id", () => {
+    // The other collision axis, and the reason the call's own position is in the name:
+    // a store holding one id twice inside a single turn would otherwise ask for it
+    // twice, which the backend refuses whole.
+    const messages = buildAgentMessages([
+      interrupted("", [
+        storedCall({ result: "first" }),
+        storedCall({ signature: "read_history()", result: "second" }),
+      ]),
+      asked("Carry on."),
+    ]);
+
+    expect(messages[0].tool_calls?.map((call) => call.id)).toEqual([
+      "t0c0:call-1",
+      "t0c1:call-1",
+    ]);
+    expect(
+      messages
+        .filter((message) => message.role === "tool")
+        .map((message) => [message.tool_call_id, message.content]),
+    ).toEqual([
+      ["t0c0:call-1", "first"],
+      ["t0c1:call-1", "second"],
+    ]);
+  });
+
+  it("holds a renamed call id inside the length the contract allows", () => {
+    const messages = buildAgentMessages([
+      interrupted("", [storedCall({ id: "c".repeat(250) })]),
+      asked("Carry on."),
+    ]);
+
+    const id = messages[0].tool_calls?.[0].id ?? "";
+    expect(id).toHaveLength(200);
+    expect(id.startsWith("t0c0:")).toBe(true);
+    // Truncating the tail cannot collide with anything: the prefix alone is unique.
+    expect(messages[1].tool_call_id).toBe(id);
   });
 
   it("sheds the oldest replays to framing before the request runs out of messages", () => {
@@ -692,7 +756,7 @@ describe("posted agent messages", () => {
     ]);
 
     expect(withRevision[0].tool_calls?.[0]).toEqual({
-      id: "call-1",
+      id: "t0c0:call-1",
       name: "read_deck",
       arguments_json: "{}",
       deck_revision: "2026-08-03T09:00:00.000Z",
