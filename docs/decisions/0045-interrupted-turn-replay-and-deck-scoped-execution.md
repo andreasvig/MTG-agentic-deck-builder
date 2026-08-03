@@ -1,0 +1,132 @@
+# ADR 0045: Interrupted Turns Replay Their Work, And Running Turns Belong To Decks
+
+- Status: Accepted
+- Date: 2026-08-03
+
+Extends [ADR 0030](0030-per-deck-chat-history-and-expandable-tool-calls.md) and
+[ADR 0031](0031-streamed-deck-agent-turns.md). It supersedes ADR 0030's decision to
+abandon a reply in flight when the user switches decks.
+
+## Context
+
+The streamed panel showed tool calls, partial prose and applied edits while a turn ran, but
+stored only the finished `done` reply. Escape therefore discarded work the user had already
+watched and paid for. A follow-up could not receive that work either: the browser posted only
+user and assistant prose, while the provider requires an earlier tool call to be replayed as
+an `assistant.tool_calls` message paired with one later `tool` message.
+
+Turn state also belonged to the mounted panel rather than to the deck. Switching decks aborted
+the request, and a background `deck_edit` had no safe destination because `applyEdit` assumed
+the active deck. That contradicted the stronger ownership ADR 0030 had already established for
+saved conversations and drafts: if the conversation belongs to a deck, the unfinished turn
+that may become part of it belongs there too.
+
+## Decision
+
+### An interrupted turn commits from the stream
+
+Escape now distinguishes what happened rather than how long the request ran:
+
+- before the first streamed tool, text or edit, nothing happened, so the question leaves the
+  transcript and returns to the composer;
+- after any streamed work, the turn is stored with `interrupted: true`, keeping its tool lines,
+  partial prose and applied-edit blocks. The question stays as the record of that work.
+
+The old ten-second withdrawal window is removed. An ordinary answered turn still commits from
+the authoritative `done` reply; only an interrupted turn commits from the live stream because
+no `done` can arrive. This is the **answered-from-done / interrupted-from-stream invariant** in
+[`AGENTS.md`](../../AGENTS.md), and narrows ADR 0031's convergence rule rather than reversing it.
+
+### The next turn receives full replay
+
+An interrupted entry's completed calls are rebuilt as provider-shaped
+`assistant.tool_calls` plus paired `tool` messages before its partial assistant prose and the
+next user question. The browser stores the provider call id, arguments and result on every turn,
+not only debug turns. Wire ids are namespaced by transcript and call position on the way out, so
+providers that reuse `call_1` on each completion cannot make a later request ambiguous.
+
+Replay is bounded rather than all-or-nothing:
+
+- a tool result may carry 24,000 characters, matching the backend's tool-payload contract;
+- the posted conversation is bounded by message count and character budgets, shedding older
+  replay before refusing the whole new question;
+- storage protects interrupted payloads ahead of payloads on answered turns;
+- a call whose result is absent—because an older build never stored it or the storage budget
+  shed it—uses the named **framing-only replay fallback**. The next turn receives prose such as
+  “interrupted after `read_deck()`” rather than a malformed unanswered tool call.
+
+Deck observations receive one further guard. `read_deck`, `edit_deck` and `read_history` calls
+carry the deck's `updated_at` when they ran. If that revision differs from the snapshot posted
+with the follow-up, the backend keeps the call/result pairing but substitutes an instruction to
+read the current deck. `see_cards`, `search_cards`, `search_web` and `read_page` are not changed,
+because their results do not depend on this deck. This is the **stale deck-result substitution
+invariant** in [`AGENTS.md`](../../AGENTS.md).
+
+History trimming never starts inside a call/result group. The request validator rejects orphaned
+answers, unanswered calls, duplicate asks and duplicate answers with 422 before the provider can
+turn the same malformed shape into an opaque 502.
+
+### A running turn belongs to its deck
+
+Pending state, live frames, the question, request controller and errors are keyed by deck id.
+Switching decks changes the view and leaves the request running. Up to three decks may run at
+once; a fourth is refused visibly with its question still in that deck's composer. The rail
+shows an activity dot only for a running deck that is not open, because the open panel already
+exposes its state.
+
+Replies, failures, costs and edits land in the conversation and deck that started the turn.
+`applyEdit` resolves an explicit target deck and refuses a target no longer in the library; it
+never falls back to the open deck. A background edit names its deck in the announcement. Escape
+and **Reset chat** affect the open deck's turn only, while unmounting the application aborts all
+remaining turns.
+
+## Cross-Side Contract Corpus
+
+The replay request is a contract jointly produced by TypeScript and consumed by Pydantic, so a
+committed corpus at `contracts/replay-seam/` is generated by the real frontend builder and
+validated by the real backend model. It exists because two historical defects crossed that
+boundary while each side's own tests were green against its own assumption:
+
+- the frontend asserted an 8,000-character result truncation as correct while the backend tool
+  contract allowed 24,000;
+- the backend added a request-wide one-ask-per-id rule while nothing in the browser knew ids had
+  to be unique across interrupted turns.
+
+That historical evidence is the justification. A later claim that an answer-id mutant passed
+the whole frontend suite was false: pre-existing `agent.test.ts` coverage fails it. The corpus
+still pins malformed fixtures, required case names, deterministic regeneration, both sides'
+fingerprints and the answered-conversation negative control so it cannot pass vacuously.
+
+## Verification
+
+- Unit tests drive cancellation at the render-lag boundary, full and framing-only replay,
+  staleness substitution, group-aware trimming, two concurrent decks, background edits and
+  per-deck errors.
+- Browser tests leave two response streams open together, finish them in opposite order and
+  assert each transcript, then cancel after a real streamed tool/text pair and assert the next
+  request's paired replay.
+- The manual gate ran two real model turns. After cancellation, `read_deck(mana)` remained in
+  the transcript; the follow-up did not call `read_deck` again, continued with `search_cards`,
+  `search_web` and `edit_deck`, and answered in terms of the retained result.
+
+Implementation history has one misleading boundary and is recorded rather than rewritten:
+`d5e73ca` contains the Phase 3 render-lag and ordinary-turn tests under a Phase 4 message;
+`b8f3df3` carries the actual per-deck behavior. The commits are not amended because published
+history should remain history, while this ADR gives the reader the correct map.
+
+## Consequences And Known Gaps
+
+- Cancelling after the first event can store an assistant entry with tool lines and no prose;
+  that is an honest interrupted turn rather than an empty answer.
+- A cancelled completion has no final usage report, so its spend is recorded as unpriced rather
+  than as zero.
+- Reasoning tokens are neither streamed nor replayed; interruption preserves observable work,
+  not hidden thinking.
+- A failed background turn is silent until that deck is opened, and there is no stop control on
+  the rail's activity dot.
+- Replay across a full browser reload should work because interrupted payloads are persisted,
+  but it is not part of this decision's browser verification.
+- Shared frontend card fixtures still use slug ids where backend contracts require UUIDs. The
+  seam corpus uses valid local UUID fixtures, so messages receive broad coverage while only one
+  corpus case exercises the deck snapshot. Fixing the shared fixtures is separate mechanical
+  work.

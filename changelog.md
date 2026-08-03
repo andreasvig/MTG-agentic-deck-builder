@@ -6,6 +6,19 @@ All notable changes to this project are documented here.
 
 ### Added
 
+- **A cancelled agent turn keeps the work it already did.** Escape before the first
+  event still hands the question back; after a tool, prose or edit, the transcript keeps
+  those lines with an interrupted marker and the next turn receives the completed calls
+  and results in provider-shaped replay. Deck-dependent results are substituted if the
+  deck moved, missing old payloads degrade to a framing-only sentence, and a committed
+  cross-side fixture corpus now feeds the browser's real request builder to the backend's
+  real validator (ADR 0045).
+
+- **A running agent turn belongs to its deck.** Switching decks leaves it working and
+  up to three decks can run at once. The rail marks only background turns; replies,
+  failures, cost and edits land in the conversation and deck that started them, and a
+  background edit names the deck it changed (ADR 0045).
+
 - **A deck can leave, in a shape a shop can read.** An **Export** button in the editor
   toolbar opens a dialog holding the generated list: **plain text** (`1 Sol Ring`),
   **MTG Arena** (`1 Sol Ring (CMM) 396`, with `Commander` / `Deck` headings), and **CSV**
@@ -48,15 +61,10 @@ All notable changes to this project are documented here.
 
 ### Added
 
-- **Escape cancels the turn the deck agent is working on.** From anywhere in the panel,
-  not only the composer, because a waiting user rarely sits in the textarea — and
-  sending now keeps the focus there, which it did not: clicking Send disables the button
-  clicked, a disabled element cannot hold focus, and the browser dropped it outside the
-  panel where the key reached nothing. A question cancelled within ten seconds goes back
-  to the composer to be edited, and out of the transcript so sending again does not ask
-  it twice. Two exceptions, and only one of them is the clock: a turn that has already
-  changed the deck keeps its question however fast the cancel, because it is the only
-  thing on screen saying why the deck is different.
+- **Escape cancels the open deck's turn from anywhere in the panel.** Sending keeps the
+  composer focused so the key reaches the conversation even after clicking Send. The old
+  ten-second proxy is gone; the event boundary above now decides whether the question is
+  returned or the interrupted work is kept.
 
 - **The visual board stacks, and a card can be carried into the chat.** Each card is
   overlapped by the one below it so all that shows is the band across its top that the
@@ -317,9 +325,9 @@ All notable changes to this project are documented here.
   included; **Reset chat** now clears one deck's conversation and no other's. The
   store is persisted under `manabase.deck-agent-chats.v1` beside the deck library, so
   a reload no longer forgets the chat (ADR 0030).
-  - A reply still in flight when the deck changes is abandoned rather than answered
-    into the deck the user has left. Its question stays in the transcript it was asked
-    in, exactly as a failed turn does, so sending again retries it.
+  - ADR 0030 initially abandoned a reply in flight when the deck changed. ADR 0045
+    supersedes that boundary: the running turn now belongs to its deck just as the saved
+    conversation does, so switching views leaves it working.
   - The chat store spends a fixed character budget newest-chat-first and
     newest-turn-first: tool payloads are dropped before turns, turns before the newest
     conversation, and only the twelve most recently used decks are written at all. The
@@ -407,13 +415,11 @@ All notable changes to this project are documented here.
     and none of the answer.
 - Made a tool call openable while debug mode is on. The line becomes a disclosure over
   two sub-boxes — the arguments the model sent, and the exact text the tool returned —
-  the same shape as the search trace's nested layers (ADR 0030). Both payloads travel
-  only for a turn whose request set `debug`: a `read_deck` result is kilobytes of text,
-  and posting it to a client with nowhere to show it is waste. Turns taken before debug
-  mode was switched on therefore stay plain lines, because an expander onto an empty
-  box would claim the payload was empty rather than absent. An oversized payload is
-  truncated with a marker naming how much is missing, and only the copy sent to the
-  browser is trimmed — the model read the whole thing.
+  the same shape as the search trace's nested layers (ADR 0030). ADR 0045 makes both
+  payloads ordinary traffic because an interrupted turn may need to replay them; debug
+  mode still controls the disclosure, and answered turns shed their payloads first when
+  storage is tight. An oversized payload is bounded with a visible marker, while the
+  model's original tool execution still read the whole result.
 - Added what the agents cost, taken from the provider's own `usage.cost` rather
   than from token arithmetic. The search trace shows the price of that round
   beside its duration, including for a round that failed after paying for a call,

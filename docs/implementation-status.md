@@ -122,9 +122,10 @@ not the intended end state.
 - Conversation memory: the browser holds the transcript and posts it back on every
   turn, trimmed to the newest `agent.max_history_messages` entries (ADR 0027).
 - One conversation per deck, saved under `manabase.deck-agent-chats.v1` and restored
-  on return, running spend included. A reply still in flight when the deck changes is
-  abandoned rather than answered into the deck the user left; its question stays put
-  so sending again retries it (ADR 0030).
+  on return, running spend included. The running turn belongs to the deck too: switching
+  decks leaves it working, and up to three decks may run at once. A background-only rail
+  marker says which deck is still active; replies, errors, cost and edits land on the deck
+  that started them (ADR 0045).
 - The chat store spends a fixed character budget newest-first, dropping tool payloads
   before turns, so it can never crowd the deck library out of browser storage.
 - The composer's unsent draft is per deck too, saved with the conversation and held to
@@ -143,9 +144,10 @@ not the intended end state.
   committed to the repository by `npm run symbols:sync` rather than fetched at render
   time. A braced run the symbol table does not list stays exactly as written.
 - Turns are streamed over `POST /api/v1/agent/chat/stream`: each tool call appears the
-  moment it runs, and the answer appears as it is written. Only the finished turn is
-  stored, so what streams converges on what is kept (ADR 0031). A half-streamed answer
-  is discarded when the turn fails or the deck changes.
+  moment it runs, and the answer appears as it is written. An answered turn is stored
+  from `done`; an interrupted turn has no `done`, so Escape stores the streamed tool
+  calls, partial prose and applied edits with an interrupted marker. Cancelling before
+  the first event returns the question to the composer instead (ADR 0045).
 - Enter sends, Shift+Enter breaks a line, and a failed turn keeps its question in
   the transcript so sending again retries with the context intact.
 - Running conversation cost in the header while debug mode is on, marked `+` when
@@ -260,15 +262,17 @@ not the intended end state.
 - Every tool call is shown in the transcript as its own line above the answer,
   regardless of debug mode, with failed calls marked.
 - With debug mode on, a call opens onto two sub-boxes — the arguments the model sent
-  and the exact text the tool returned. Both travel only for a turn whose request set
-  `debug`, and an oversized payload is truncated with a visible marker (ADR 0030).
+  and the exact text the tool returned. Both travel on every turn for interrupted replay;
+  debug mode controls their disclosure, while storage sheds answered-turn payloads before
+  interrupted ones (ADR 0045).
 - A bounded loop of `agent.tools.max_iterations` tool rounds followed by one
   no-tools completion, so a turn always ends in an answer. That last pass is told it
   has no tools as well as shown it, because a model out of rounds otherwise writes the
   call it wanted into the answer as text (ADR 0029).
-- Escape abandons a turn in flight from anywhere in the agent panel, and hands the
-  question back to the composer to be edited when it is under ten seconds old and the
-  turn has not yet changed the deck.
+- The next question receives completed calls from an interrupted turn as paired
+  provider-shaped call/result messages. A result missing from an old or budget-shed
+  entry degrades to framing only. A replayed deck-dependent result is substituted when
+  the deck revision moved; catalog and web results replay unchanged (ADR 0045).
 
 Missing:
 
@@ -281,8 +285,10 @@ Missing:
 - Any mobile entry point.
 - Streamed reasoning: at `xhigh` it is most of the turn and none of the answer, so the
   panel says it is thinking instead of narrating.
-- Payloads for turns taken before debug mode was switched on: they were never
-  requested, so those lines stay plain rather than opening onto nothing.
+- Stopping a background turn from its rail marker; cancellation acts on the open panel.
+- A failed background turn is silent until its deck is opened.
+- Browser verification of replay across a full reload. Interrupted payloads persist, but
+  the e2e contract currently covers replay in the same mounted session.
 
 ### Deck Editor
 

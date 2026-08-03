@@ -8,6 +8,7 @@ import {
 
 import {
   failedAgentSearchDebugSummary,
+  counterspell,
   gamble,
   ghalta,
   llanowarElves,
@@ -68,6 +69,169 @@ async function fulfillSse(route: Route, events: unknown[]) {
     },
     body: events.map((event) => `data: ${JSON.stringify(event)}\n\n`).join(""),
   });
+}
+
+/**
+ * Replace only the deck-agent stream fetch with browser-owned streams the test can advance.
+ *
+ * `route.fulfill` hands Chromium one completed body, which is enough for wire-format tests but
+ * cannot leave two replies open or put a tool line on screen before Escape. This lives in the
+ * page instead: the application still runs its real fetch reader against a real
+ * `ReadableStream`, while the test decides which deck receives the next frame and when the
+ * connection ends.
+ */
+async function installOpenAgentStreams(page: Page) {
+  await page.addInitScript(() => {
+    interface AgentStreamHarness {
+      requests: unknown[];
+      controllers: Array<ReadableStreamDefaultController<Uint8Array>>;
+      push: (index: number, event: unknown) => void;
+      close: (index: number) => void;
+    }
+    type HarnessWindow = Window & { __agentStreamHarness?: AgentStreamHarness };
+
+    const realFetch = window.fetch.bind(window);
+    const encoder = new TextEncoder();
+    const harness: AgentStreamHarness = {
+      requests: [],
+      controllers: [],
+      push(index, event) {
+        const controller = this.controllers[index];
+        if (!controller) {
+          throw new Error(`agent stream ${index} was never opened`);
+        }
+        controller.enqueue(
+          encoder.encode(`data: ${JSON.stringify(event)}\n\n`),
+        );
+      },
+      close(index) {
+        const controller = this.controllers[index];
+        if (!controller) {
+          throw new Error(`agent stream ${index} was never opened`);
+        }
+        controller.close();
+      },
+    };
+    (window as HarnessWindow).__agentStreamHarness = harness;
+    window.fetch = async (input, init) => {
+      const url =
+        typeof input === "string"
+          ? input
+          : input instanceof URL
+            ? input.href
+            : input.url;
+      if (!url.includes("/api/v1/agent/chat/stream")) {
+        return realFetch(input, init);
+      }
+      harness.requests.push(JSON.parse(String(init?.body ?? "{}")));
+      const body = new ReadableStream<Uint8Array>({
+        start(controller) {
+          harness.controllers.push(controller);
+        },
+      });
+      return new Response(body, {
+        status: 200,
+        headers: { "Content-Type": "text/event-stream" },
+      });
+    };
+  });
+}
+
+async function openAgentRequestCount(page: Page): Promise<number> {
+  return page.evaluate(() => {
+    const held = window as Window & {
+      __agentStreamHarness?: { requests: unknown[] };
+    };
+    return held.__agentStreamHarness?.requests.length ?? 0;
+  });
+}
+
+async function openAgentRequests(page: Page): Promise<unknown[]> {
+  return page.evaluate(() => {
+    const held = window as Window & {
+      __agentStreamHarness?: { requests: unknown[] };
+    };
+    return held.__agentStreamHarness?.requests ?? [];
+  });
+}
+
+async function pushAgentFrame(page: Page, index: number, event: unknown) {
+  await page.evaluate(
+    ([streamIndex, frame]) => {
+      const held = window as Window & {
+        __agentStreamHarness?: {
+          push: (index: number, event: unknown) => void;
+        };
+      };
+      held.__agentStreamHarness?.push(streamIndex, frame);
+    },
+    [index, event] as const,
+  );
+}
+
+async function closeAgentStream(page: Page, index: number) {
+  await page.evaluate((streamIndex) => {
+    const held = window as Window & {
+      __agentStreamHarness?: { close: (index: number) => void };
+    };
+    held.__agentStreamHarness?.close(streamIndex);
+  }, index);
+}
+
+/** Two named decks, each with one commander, without spending the test on setup UI. */
+async function seedTwoAgentDecks(page: Page) {
+  await page.addInitScript(
+    ([firstCommander, secondCommander, rock, answer]) => {
+      const entry = (
+        card: typeof firstCommander,
+        section: "command_zone" | "mainboard",
+      ) => ({
+        card: {
+          oracle_id: card.oracle_id,
+          scryfall_id: card.scryfall_id,
+          name: card.name,
+          details: card,
+        },
+        quantity: 1,
+        section,
+      });
+      const now = "2026-08-03T15:00:00.000Z";
+      const decks = [
+        {
+          id: "e2e-deck-a",
+          name: "Ghalta Ramp",
+          format: "commander",
+          cards: [entry(firstCommander, "command_zone"), entry(rock, "mainboard")],
+          created_at: now,
+          updated_at: now,
+        },
+        {
+          id: "e2e-deck-b",
+          name: "Atraxa Control",
+          format: "commander",
+          cards: [entry(secondCommander, "command_zone"), entry(answer, "mainboard")],
+          created_at: now,
+          updated_at: now,
+        },
+      ];
+      window.localStorage.setItem(
+        "manabase.deck-library.v2",
+        JSON.stringify({ active_deck_id: decks[0].id, decks }),
+      );
+    },
+    [
+      ghalta,
+      {
+        ...ghalta,
+        oracle_id: counterspell.oracle_id,
+        scryfall_id: counterspell.scryfall_id,
+        name: "Atraxa, Praetors' Voice",
+        type_line: "Legendary Creature — Phyrexian Angel Horror",
+      },
+      solRing,
+      counterspell,
+    ],
+  );
 }
 
 async function openSearch(page: Page) {
@@ -1808,6 +1972,220 @@ test("a stacked column shows each card's own printed top and opens the one under
   await page.locator('[aria-label="Increase Ccc Sol Ring quantity"]').focus();
   await expect.poll(() => pressable("Increase Ccc Sol Ring quantity")).toBe(true);
   await expect.poll(() => gap(2, 3)).toBeGreaterThan(resting[2] * 2);
+});
+
+test("two deck-agent turns keep running and finish in the conversations that started them", async ({
+  page,
+}, testInfo) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await seedTwoAgentDecks(page);
+  await installOpenAgentStreams(page);
+  await page.goto("/");
+
+  const panel = page.getByRole("region", { name: "Deck agent" });
+  const composer = panel.getByRole("textbox", { name: "Message the deck agent" });
+  const send = panel.getByRole("button", { name: "Send message" });
+  const ask = async (question: string) => {
+    await composer.fill(question);
+    await send.click();
+  };
+
+  await ask("Question for Ghalta");
+  await expect.poll(() => openAgentRequestCount(page)).toBe(1);
+  await expect(panel.getByText("Thinking…")).toBeVisible();
+
+  await page.getByRole("button", { name: /Atraxa Control/ }).click();
+  // Deck B owns its own empty transcript and draft. A's request is still represented by the
+  // background-only rail marker rather than being aborted or rendered in the wrong panel.
+  await expect(composer).toHaveValue("");
+  await expect(panel.getByText("Question for Ghalta")).toHaveCount(0);
+  await expect(
+    page
+      .getByRole("button", { name: /Ghalta Ramp/ })
+      .getByText("Deck agent working", { exact: true }),
+  ).toBeVisible();
+  await page.screenshot({
+    path: testInfo.outputPath("background-agent-turn.png"),
+    fullPage: false,
+  });
+
+  await ask("Question for Atraxa");
+  await expect.poll(() => openAgentRequestCount(page)).toBe(2);
+  // The open deck already has the live panel, so the rail does not repeat its state.
+  await expect(
+    page
+      .getByRole("button", { name: /Atraxa Control/ })
+      .getByText("Deck agent working", { exact: true }),
+  ).toHaveCount(0);
+
+  // A keeps accumulating while B is open. Then B finishes first.
+  await pushAgentFrame(page, 0, {
+    type: "text",
+    content: "Ghalta is still working.",
+  });
+  await pushAgentFrame(page, 1, {
+    type: "text",
+    content: "Atraxa finished first.",
+  });
+  await pushAgentFrame(page, 1, {
+    type: "done",
+    reply: {
+      message: { role: "assistant", content: "Atraxa finished first." },
+      model: "openai/gpt-5.6-luna",
+      replayed_message_count: 1,
+      cost_usd: 0.0002,
+      unpriced_call_count: 0,
+      tool_calls: [],
+    },
+  });
+  await closeAgentStream(page, 1);
+  await expect(panel.getByText("Atraxa finished first.")).toBeVisible();
+  await expect(panel.getByText("Ghalta is still working.")).toHaveCount(0);
+
+  await page.getByRole("button", { name: /Ghalta Ramp/ }).click();
+  // Not merely "the request survived": the frame written while this deck was away survived
+  // with it. A global live buffer would make this sentence disappear.
+  await expect(panel.getByText("Ghalta is still working.")).toBeVisible();
+  await expect(panel.getByText("Atraxa finished first.")).toHaveCount(0);
+
+  await pushAgentFrame(page, 0, {
+    type: "done",
+    reply: {
+      message: { role: "assistant", content: "Ghalta finished second." },
+      model: "openai/gpt-5.6-luna",
+      replayed_message_count: 1,
+      cost_usd: 0.0001,
+      unpriced_call_count: 0,
+      tool_calls: [],
+    },
+  });
+  await closeAgentStream(page, 0);
+  await expect(panel.getByText("Ghalta finished second.")).toBeVisible();
+
+  await page.getByRole("button", { name: /Atraxa Control/ }).click();
+  await expect(panel.getByText("Atraxa finished first.")).toBeVisible();
+  await expect(panel.getByText("Ghalta finished second.")).toHaveCount(0);
+
+  const requests = (await openAgentRequests(page)) as Array<{
+    deck: { name: string };
+    messages: Array<{ content?: string }>;
+  }>;
+  expect(requests.map((request) => request.deck.name)).toEqual([
+    "Ghalta Ramp",
+    "Atraxa Control",
+  ]);
+  expect(requests.map((request) => request.messages.at(-1)?.content)).toEqual([
+    "Question for Ghalta",
+    "Question for Atraxa",
+  ]);
+});
+
+test("escape keeps a streamed tool and partial answer for the next turn", async ({
+  page,
+}, testInfo) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await installOpenAgentStreams(page);
+  await page.goto("/");
+
+  const panel = page.getByRole("region", { name: "Deck agent" });
+  const composer = panel.getByRole("textbox", { name: "Message the deck agent" });
+  await composer.fill("What ramp am I missing?");
+  await panel.getByRole("button", { name: "Send message" }).click();
+  await expect.poll(() => openAgentRequestCount(page)).toBe(1);
+
+  const call = {
+    id: "call-read-deck",
+    name: "read_deck",
+    signature: "read_deck(mana)",
+    ok: true,
+    detail: null,
+    arguments_json: '{"extra_info":["mana"]}',
+    result: "Deck has Sol Ring and no other ramp.",
+  };
+  await pushAgentFrame(page, 0, { type: "tool", call });
+  await pushAgentFrame(page, 0, {
+    type: "text",
+    content: "You have one rock so far.",
+  });
+  await expect(panel.getByText("read_deck(mana)")).toBeVisible();
+  await expect(panel.getByText("You have one rock so far.")).toBeVisible();
+  await expect(composer).toBeFocused();
+
+  await page.keyboard.press("Escape");
+  await closeAgentStream(page, 0);
+
+  await expect(
+    panel.getByText("Interrupted — kept, and the next question continues from here"),
+  ).toBeVisible();
+  await expect(panel.getByText("read_deck(mana)")).toBeVisible();
+  await expect(panel.getByText("You have one rock so far.")).toBeVisible();
+  await expect(panel.getByText("What ramp am I missing?")).toBeVisible();
+  // Something happened, so the question stays in the transcript instead of being handed
+  // back as though the turn never ran.
+  await expect(composer).toHaveValue("");
+  await page.screenshot({
+    path: testInfo.outputPath("interrupted-turn-kept.png"),
+    fullPage: false,
+  });
+
+  await composer.fill("Continue from there.");
+  await composer.press("Enter");
+  await expect.poll(() => openAgentRequestCount(page)).toBe(2);
+
+  const requests = (await openAgentRequests(page)) as Array<{
+    messages: Array<{
+      role: string;
+      content?: string;
+      tool_call_id?: string;
+      tool_calls?: Array<{ id: string; name: string }>;
+    }>;
+  }>;
+  const replay = requests[1].messages;
+  expect(replay).toHaveLength(5);
+  expect(replay[0]).toEqual({
+    role: "user",
+    content: "What ramp am I missing?",
+  });
+  const replayedCall = replay[1].tool_calls?.[0];
+  expect(replayedCall).toMatchObject({
+    name: "read_deck",
+    arguments_json: '{"extra_info":["mana"]}',
+    deck_revision: expect.any(String),
+  });
+  expect(replayedCall?.id).toEqual(expect.any(String));
+  // Pair by the one generated id rather than by its spelling. The replay builder owns the
+  // namespace; the transport contract is that the answer names the exact call it answers.
+  expect(replay[2]).toEqual({
+    role: "tool",
+    content: "Deck has Sol Ring and no other ramp.",
+    tool_call_id: replayedCall?.id,
+  });
+  expect(replay[3]).toEqual({
+    role: "assistant",
+    content: "You have one rock so far.",
+  });
+  expect(replay[4]).toEqual({
+    role: "user",
+    content: "Continue from there.",
+  });
+
+  await pushAgentFrame(page, 1, {
+    type: "text",
+    content: "Continuing with that result.",
+  });
+  await pushAgentFrame(page, 1, {
+    type: "done",
+    reply: {
+      message: { role: "assistant", content: "Continuing with that result." },
+      model: "openai/gpt-5.6-luna",
+      replayed_message_count: 5,
+      cost_usd: 0.0001,
+      unpriced_call_count: 0,
+      tool_calls: [],
+    },
+  });
+  await closeAgentStream(page, 1);
+  await expect(panel.getByText("Continuing with that result.")).toBeVisible();
 });
 
 test("escape cancels a turn and hands the question back to the composer", async ({

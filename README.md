@@ -25,7 +25,7 @@ The first manual editing slice is usable and tested.
 | On-demand EDHREC commander/theme ranking | Shipped for browsing and agentic search |
 | Import/export and analytics | Not implemented |
 | Progressive one-tool agentic card search | Shipped |
-| Deck agent chat | Shipped, desktop only, streamed, one saved conversation per deck |
+| Deck agent chat | Shipped, desktop only, streamed, one saved conversation and running turn per deck |
 | Deck agent read-only tools | Shipped: `read_deck` (with `extra_info` for costs, the curve and prices), `see_cards`, `search_cards`, `read_history` |
 | Deck agent web research | Shipped: `search_web` on Perplexity `sonar` with its sources, `read_page` for a plain fetch of one, paginated so a long page is read on rather than cut off — leads only, never card data |
 | Deck site parsers | Shipped: EDHREC, Archidekt, MTGGoldfish, TappedOut, Aetherhub, Commander Spellbook, cEDHstat and YouTube read through their own endpoints behind `read_page`, with any miss falling back to the generic reader. A fetched decklist's names are checked against the local catalog |
@@ -297,10 +297,12 @@ The inline trace viewer exposes:
 - What the round cost, beside its duration, taken from the provider's reported
   `usage.cost`. A local fuzzy search shows no figure because it called no model.
 
-**Escape abandons a turn** from anywhere in the agent panel. Cancel within ten seconds
-and the question comes back to the composer, out of the transcript, so it can be fixed
-and asked once — unless the turn has already changed the deck, in which case it stays
-where it is as the record of why.
+**Escape interrupts the open deck's turn** from anywhere in the agent panel. Before the
+first streamed event, nothing happened, so the question returns to the composer. After a
+tool, some prose or an edit, that work stays in the transcript with an interrupted marker;
+the next question receives the completed tool calls and results instead of paying to repeat
+them. Switching decks does not interrupt anything: up to three decks can have turns running,
+and a small rail marker identifies each one working in the background (ADR 0045).
 
 The deck agent panel shows the running cost of the current conversation in its
 header while debug mode is on. A turn that used tools paid for several model
@@ -313,9 +315,10 @@ the answer — `read_deck()`, `see_cards(Sol Ring, Cultivate · inclusion, tags)
 `search_cards(mana rock, ramp · weighted · Atraxa, Praetors' Voice)` —
 regardless of debug mode, because what the agent read is part of the answer.
 While debug mode is on, that line opens onto two sub-boxes: the arguments the
-model sent, and the exact text the tool returned. Only a turn asked with debug
-mode on carries them, so lines from earlier turns stay plain rather than opening
-onto nothing.
+model sent, and the exact text the tool returned. Those payloads now travel on every
+turn because an interruption may need to replay them; answered turns shed theirs first
+when browser storage is tight, while an interrupted turn keeps them ahead of older
+diagnostics (ADR 0045).
 
 An edit is reported the same way, in the past tense, because by the time it renders the
 board already looks different: `Applied: +2 / −1` over the card names, with an **Undo**

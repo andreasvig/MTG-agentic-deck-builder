@@ -82,9 +82,18 @@ Do not change these without an explicit product decision and ADR update:
   server-side chat session; `--reload` would drop it on every backend edit.
 - One conversation per deck. The transcript belongs to the deck, not to the panel, so
   switching decks switches chat and **Reset chat** clears exactly one of them.
-- A turn is streamed, and only the finished turn is stored. Anything shown while it
-  streams must converge on what `done` commits — never add a live element that survives
-  into the transcript, or a stored one that the stream cannot produce.
+- A turn belongs to its deck too. Switching decks must not abort it, and every reply,
+  error, cost and edit must land on the deck that started it rather than whichever deck
+  is open when a frame arrives (ADR 0045).
+- **Answered-from-done / interrupted-from-stream invariant:** an answered turn is stored
+  from the finished `done` reply, so its live presentation converges on the authoritative
+  result. An interrupted turn has no `done`; it commits the tool lines, partial prose and
+  applied edits already present in the stream. Before the first event, cancellation returns
+  the question to the composer instead (ADR 0045).
+- **Stale deck-result substitution invariant:** a replayed `read_deck`, `edit_deck` or
+  `read_history` result whose recorded deck revision differs from the posted snapshot is
+  substituted with the instruction to read the current deck. Never replay it as an
+  observation; non-deck-dependent tool results remain unchanged (ADR 0045).
 - Debug mode is one interface-wide preference in the editor toolbar, shared by the
   search trace and the deck agent cost. Do not reintroduce a per-surface toggle.
 - Model cost is read from the provider's reported `usage.cost`, never computed from
