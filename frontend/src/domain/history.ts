@@ -12,7 +12,7 @@ import { sectionLabel } from "./deck";
  * edit is nothing but swapping `before` for `after` on every change it carries.
  *
  * That only holds while the diff models everything a `Deck` can differ by. It models
- * `cards[]` (quantity and section) and `name`. It deliberately excludes `id`, `format` and
+ * `cards[]` (quantity and section), `name` and `description`. It deliberately excludes `id`, `format` and
  * `created_at`, which never change, and `updated_at`, which the reducer stamps on every
  * mutation — recording that would make every inversion fight the reducer over a field
  * neither of them means to restore.
@@ -89,6 +89,11 @@ export interface DeckNameChange {
   after: string;
 }
 
+export interface DeckDescriptionChange {
+  before: string;
+  after: string;
+}
+
 /**
  * Everything one edit changed. `deriveDeckDiff` produces this; the caller stamps identity
  * onto it to get a `DeckEditEntry`.
@@ -102,6 +107,7 @@ export interface DeckDiff {
   summary: string;
   cards: DeckCardChange[];
   name?: DeckNameChange;
+  description?: DeckDescriptionChange;
 }
 
 /** One recorded edit: a diff plus who-when-why. */
@@ -198,7 +204,8 @@ export interface DeckDiffApplyFailure {
  * find a payload has to leave the deck alone and say so; an exception there would strand
  * the reducer mid-action.
  */
-export type DeckDiffApplyResult = { ok: true; deck: Deck } | DeckDiffApplyFailure;
+export type DeckDiffApplyResult =
+  { ok: true; deck: Deck } | DeckDiffApplyFailure;
 
 /**
  * Where the deck should stand afterwards.
@@ -208,9 +215,7 @@ export type DeckDiffApplyResult = { ok: true; deck: Deck } | DeckDiffApplyFailur
  * edit, which is reachable and is not the same as "no history".
  */
 export type DeckHistoryDestination =
-  | "back"
-  | "forward"
-  | { editId: string | null };
+  "back" | "forward" | { editId: string | null };
 
 /**
  * A journey the deck can actually make: the deck it lands on, and the cursor to record.
@@ -233,7 +238,8 @@ export interface DeckHistoryTravel {
  * which is what a disabled Back button at the start of history means. It is distinct from a
  * refusal, which is an edit that cannot be replayed and must be announced.
  */
-export type DeckHistoryTravelResult = DeckHistoryTravel | DeckDiffApplyFailure | null;
+export type DeckHistoryTravelResult =
+  DeckHistoryTravel | DeckDiffApplyFailure | null;
 
 export function createDeckHistory(deckId: string): DeckHistory {
   return { deck_id: deckId, sessions: [], cards: {}, at: null };
@@ -368,7 +374,7 @@ function destinationIndex(
  * Compare two states of one deck and describe the difference.
  *
  * Complete by construction: it walks the union of both card lists and compares the deck
- * name, so a change no call site remembered to declare is still recorded. A card whose
+ * name and description, so a change no call site remembered to declare is still recorded. A card whose
  * quantity and section both match is not a change, however far its position moved.
  */
 export function deriveDeckDiff(before: Deck, after: Deck): DeckDiffDerivation {
@@ -415,12 +421,17 @@ export function deriveDeckDiff(before: Deck, after: Deck): DeckDiffDerivation {
     before.name === after.name
       ? undefined
       : { before: before.name, after: after.name };
+  const description =
+    before.description === after.description
+      ? undefined
+      : { before: before.description, after: after.description };
 
   return {
     diff: {
-      summary: summariseDeckDiff(cards, name),
+      summary: summariseDeckDiff(cards, name, description),
       cards,
       ...(name ? { name } : {}),
+      ...(description ? { description } : {}),
     },
     payloads,
   };
@@ -428,7 +439,11 @@ export function deriveDeckDiff(before: Deck, after: Deck): DeckDiffDerivation {
 
 /** True when a derivation found nothing. `appendToHistory` refuses these. */
 export function isEmptyDeckDiff(diff: DeckDiff): boolean {
-  return diff.cards.length === 0 && diff.name === undefined;
+  return (
+    diff.cards.length === 0 &&
+    diff.name === undefined &&
+    diff.description === undefined
+  );
 }
 
 /**
@@ -449,12 +464,16 @@ export function invertDeckDiff(entry: DeckEditEntry): DeckEditEntry {
   const name = entry.name
     ? { before: entry.name.after, after: entry.name.before }
     : undefined;
+  const description = entry.description
+    ? { before: entry.description.after, after: entry.description.before }
+    : undefined;
 
   return {
     ...entry,
     cards,
     ...(name ? { name } : {}),
-    summary: summariseDeckDiff(cards, name),
+    ...(description ? { description } : {}),
+    summary: summariseDeckDiff(cards, name, description),
   };
 }
 
@@ -536,6 +555,7 @@ export function applyDeckDiff(
     deck: {
       ...deck,
       name: diff.name ? diff.name.after : deck.name,
+      description: diff.description ? diff.description.after : deck.description,
       cards,
     },
   };
@@ -650,7 +670,9 @@ export function pruneHistory(
   const retainedEdits = sessions.flatMap((session) => session.edits);
   const pooledEdits = payloadCap > 0 ? retainedEdits.slice(-payloadCap) : [];
   const referenced = new Set(
-    pooledEdits.flatMap((edit) => edit.cards.map((change) => change.scryfall_id)),
+    pooledEdits.flatMap((edit) =>
+      edit.cards.map((change) => change.scryfall_id),
+    ),
   );
 
   const cards: Record<string, CardSearchResult> = {};
@@ -748,6 +770,7 @@ export function describeDeckCardChange(change: DeckCardChange): string {
 function summariseDeckDiff(
   cards: DeckCardChange[],
   name: DeckNameChange | undefined,
+  description: DeckDescriptionChange | undefined,
 ): string {
   let added = 0;
   let removed = 0;
@@ -763,6 +786,13 @@ function summariseDeckDiff(
 
   if (name) {
     parts.push(`renamed to ${name.after}`);
+  }
+  if (description) {
+    parts.push(
+      description.after
+        ? "updated deck description"
+        : "cleared deck description",
+    );
   }
 
   const counts = [
@@ -821,15 +851,15 @@ function cardPlacementsMatch(
   if (before === null || after === null) {
     return before === after;
   }
-  return (
-    before.quantity === after.quantity && before.section === after.section
-  );
+  return before.quantity === after.quantity && before.section === after.section;
 }
 
 function sortedByIndex<T extends { placement: { index: number } }>(
   values: T[],
 ): T[] {
-  return [...values].sort((left, right) => left.placement.index - right.placement.index);
+  return [...values].sort(
+    (left, right) => left.placement.index - right.placement.index,
+  );
 }
 
 function clampIndex(index: number, length: number): number {

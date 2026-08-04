@@ -68,12 +68,14 @@ from mtg_deck_builder.domain.agent_chat import (
     DeckAgentDeckHistory,
     DeckAgentDeckHistoryChange,
     DeckAgentDeckSession,
+    DeckAgentDeckTextEdit,
     DeckAgentModel,
     DeckEditChange,
     DeckEditZone,
     DeckExtraInfo,
     DeckSection,
     EditDeckArguments,
+    EditDeckTextArguments,
     ReadHistoryArguments,
 )
 from mtg_deck_builder.edhrec_catalog import (
@@ -91,11 +93,12 @@ READ_DECK = "read_deck"
 SEE_CARDS = "see_cards"
 SEARCH_CARDS = "search_cards"
 EDIT_DECK = "edit_deck"
+EDIT_DECK_TEXT = "edit_deck_text"
 READ_HISTORY = "read_history"
 SEARCH_WEB = "search_web"
 READ_PAGE = "read_page"
 
-DECK_DEPENDENT_TOOLS = frozenset({READ_DECK, EDIT_DECK, READ_HISTORY})
+DECK_DEPENDENT_TOOLS = frozenset({READ_DECK, EDIT_DECK, EDIT_DECK_TEXT, READ_HISTORY})
 """Which tools' results describe the deck rather than the world.
 
 It lives here, beside the tools, because the backend is the authority on what a tool's
@@ -213,8 +216,7 @@ if _MISSING_FROM_EXTRA_ORDER:
     # Same reason as the detail order below: an extra left out of the order is silently
     # never applied, and the tool would answer a request for it with a bare listing.
     raise RuntimeError(
-        "read_deck extras missing from the render order: "
-        f"{sorted(_MISSING_FROM_EXTRA_ORDER)}"
+        f"read_deck extras missing from the render order: {sorted(_MISSING_FROM_EXTRA_ORDER)}"
     )
 
 _MISSING_FROM_DETAIL_ORDER = set(get_args(CardDetail)) - set(_DETAIL_ORDER)
@@ -304,8 +306,8 @@ _SIGNATURE_LIMIT = 200
 class ToolOutcome:
     """One executed tool call: what the model reads, and what the chat shows.
 
-    `edit` is the one thing a tool result can carry beyond text, and only
-    `edit_deck` ever sets it. It is absent on every failure and absent when the call
+    The two edit fields are what a tool result can carry beyond text. They are absent
+    on every failure and absent when the call
     changed nothing, so a caller can treat its presence as "there is something for the
     browser to apply" without re-deriving that from the content.
     """
@@ -315,6 +317,7 @@ class ToolOutcome:
     ok: bool = True
     detail: str | None = None
     edit: DeckAgentDeckEdit | None = None
+    text_edit: DeckAgentDeckTextEdit | None = None
 
 
 class ReadDeckArguments(DeckAgentModel):
@@ -435,9 +438,7 @@ class SearchCardsArguments(LocalCardSearchRequest):
         return CardSearchFilters(
             include_non_commander_legal=not self.commander_legal_only,
             commander_color_identity=(
-                list(commander.color_identity)
-                if restricted and commander is not None
-                else None
+                list(commander.color_identity) if restricted and commander is not None else None
             ),
         )
 
@@ -573,6 +574,14 @@ class DeckAgentToolbox:
             {
                 "type": "function",
                 "function": {
+                    "name": EDIT_DECK_TEXT,
+                    "description": self._settings.edit_deck_text_description,
+                    "parameters": provider_tool_schema(EditDeckTextArguments),
+                },
+            },
+            {
+                "type": "function",
+                "function": {
                     "name": READ_HISTORY,
                     "description": self._settings.read_history_description,
                     "parameters": provider_tool_schema(ReadHistoryArguments),
@@ -662,6 +671,11 @@ class DeckAgentToolbox:
                     EditDeckArguments.model_validate(arguments),
                     deck,
                 )
+            if name == EDIT_DECK_TEXT:
+                return self._edit_deck_text(
+                    EditDeckTextArguments.model_validate(arguments),
+                    deck,
+                )
             if name == READ_HISTORY:
                 return self._read_history(
                     ReadHistoryArguments.model_validate(arguments),
@@ -722,11 +736,16 @@ class DeckAgentToolbox:
 
         entries, unresolved = await self._resolve_deck(deck)
         if not entries and not unresolved:
+            brief = (
+                f' Deck description: "{deck.description}"'
+                if deck.description
+                else " The deck description is empty."
+            )
             return ToolOutcome(
                 signature=signature,
                 content=(
                     f'The deck "{deck.name}" is open and completely empty — no '
-                    "commander and no cards yet."
+                    f"commander and no cards yet.{brief}"
                 ),
             )
 
@@ -742,12 +761,11 @@ class DeckAgentToolbox:
         total = sum(entry.quantity for entry in entries)
         lines = [
             f'Deck "{deck.name}" — {total} cards, {len(entries)} distinct.',
+            f"Deck description: {deck.description or '(empty)'}",
             "",
         ]
         if commanders:
-            lines.append(
-                f"Commander ({len(commanders)}){_heading_total(commanders, extras)}"
-            )
+            lines.append(f"Commander ({len(commanders)}){_heading_total(commanders, extras)}")
             lines.extend(
                 _deck_line(entry, prefixes, extras=extras, with_quantity=False)
                 for entry in commanders
@@ -828,9 +846,7 @@ class DeckAgentToolbox:
         )
         blocks: list[str] = []
         for card in resolved:
-            blocks.append(
-                await self._card_block(card, details=details, commander=commander)
-            )
+            blocks.append(await self._card_block(card, details=details, commander=commander))
         lines: list[str] = []
         if blocks:
             lines.append("\n\n".join(blocks))
@@ -887,11 +903,7 @@ class DeckAgentToolbox:
 
         entries, _ = await self._resolve_deck(deck)
         resolved = await self._resolve_token_cards(tokens, entries)
-        unknown = [
-            token
-            for token, card in zip(tokens, resolved, strict=True)
-            if card is None
-        ]
+        unknown = [token for token, card in zip(tokens, resolved, strict=True) if card is None]
         if unknown:
             return ToolOutcome(
                 signature=signature,
@@ -947,6 +959,50 @@ class DeckAgentToolbox:
             ),
         )
 
+    def _edit_deck_text(
+        self,
+        arguments: EditDeckTextArguments,
+        deck: DeckAgentDeckSnapshot | None,
+    ) -> ToolOutcome:
+        """Resolve full text replacements; the browser owns the actual mutation."""
+
+        signature = _edit_deck_text_signature(arguments.name, arguments.description)
+        if deck is None:
+            return ToolOutcome(
+                signature=signature,
+                content="No deck is open, so there is no name or description to edit.",
+                ok=False,
+                detail="no deck open",
+            )
+        name = arguments.name if arguments.name != deck.name else None
+        description = (
+            arguments.description
+            if arguments.description is not None and arguments.description != deck.description
+            else None
+        )
+        if name is None and description is None:
+            return ToolOutcome(
+                signature=signature,
+                content="The deck already has that name and description. Nothing changed.",
+            )
+        changed = []
+        if name is not None:
+            changed.append(f'name to "{name}"')
+        if description is not None:
+            changed.append(
+                "the deck description" if description else "cleared the deck description"
+            )
+        return ToolOutcome(
+            signature=signature,
+            content="Updated " + " and ".join(changed) + ".",
+            text_edit=DeckAgentDeckTextEdit(
+                deck_name=deck.name,
+                reason=arguments.reason,
+                name=name,
+                description=description,
+            ),
+        )
+
     def _read_history(
         self,
         arguments: ReadHistoryArguments,
@@ -998,21 +1054,14 @@ class DeckAgentToolbox:
         # about "what did we change" is almost always about.
         shown = sessions[::-1][:limit]
         total = len(sessions)
-        counted = (
-            f"{total} {'session' if total == 1 else 'sessions'} recorded"
-            + (
-                f", showing the last {len(shown)}."
-                if len(shown) < total
-                else ", all of them below."
-            )
+        counted = f"{total} {'session' if total == 1 else 'sessions'} recorded" + (
+            f", showing the last {len(shown)}." if len(shown) < total else ", all of them below."
         )
         lines = ["## History", f"{subject} — {counted}"]
         # Said once, at the top, rather than beside every marked line. Only when there is
         # something marked: an explanation of a marker that does not appear is a sentence
         # the model has to work out is irrelevant.
-        undone = sum(
-            1 for session in shown for edit in session.edits if edit.undone
-        )
+        undone = sum(1 for session in shown for edit in session.edits if edit.undone)
         if undone:
             lines.append(
                 f"{undone} {'edit is' if undone == 1 else 'edits are'} marked "
@@ -1099,9 +1148,7 @@ class DeckAgentToolbox:
                 detail="invalid search",
             )
         except CardSearchUnavailable as exc:
-            raise DeckAgentToolError(
-                f"The card catalog could not be searched: {exc}."
-            ) from exc
+            raise DeckAgentToolError(f"The card catalog could not be searched: {exc}.") from exc
 
         return ToolOutcome(
             signature=signature,
@@ -1273,9 +1320,7 @@ class DeckAgentToolbox:
 
         lines = _identity_lines(card)
         for detail in details:
-            lines.extend(
-                await self._detail_lines(card, detail=detail, commander=commander)
-            )
+            lines.extend(await self._detail_lines(card, detail=detail, commander=commander))
         return "\n".join(lines)
 
     async def _detail_lines(
@@ -1519,13 +1564,9 @@ class DeckAgentToolbox:
         # so they resolve against the snapshot rather than the whole catalog.
         by_prefix = {
             prefix.casefold(): oracle_id
-            for oracle_id, prefix in _short_ids(
-                [entry.card.oracle_id for entry in entries]
-            ).items()
+            for oracle_id, prefix in _short_ids([entry.card.oracle_id for entry in entries]).items()
         }
-        by_scryfall = {
-            str(card.scryfall_id).casefold(): card.oracle_id for card in cards.values()
-        }
+        by_scryfall = {str(card.scryfall_id).casefold(): card.oracle_id for card in cards.values()}
 
         resolved: list[CardSearchResult | None] = []
         for token in tokens:
@@ -1579,9 +1620,7 @@ class DeckAgentToolbox:
             # for.
             raise DeckAgentToolError(str(exc)) from exc
         return ToolOutcome(
-            signature=_read_page_signature(
-                arguments.url, page=page.page, total=page.total_pages
-            ),
+            signature=_read_page_signature(arguments.url, page=page.page, total=page.total_pages),
             content="\n".join(_page_lines(page, await self._unknown_cards(page))),
         )
 
@@ -1608,9 +1647,7 @@ class DeckAgentToolbox:
         # the answer back through the same map.
         canonical = {name: _catalog_spelling(name) for name in names}
         known = await self.oracle_ids_for_names(sorted(set(canonical.values())))
-        return tuple(
-            name for name in names if canonical[name].casefold() not in known
-        )
+        return tuple(name for name in names if canonical[name].casefold() not in known)
 
 
 def _as_uuid(value: str) -> UUID | None:
@@ -1684,10 +1721,7 @@ def _deck_line(
     # No placement suffix: a card is either under the `Commander` heading or it is in the
     # deck, and the heading already says which.
     line = f"  {quantity}{entry.card.name} [{prefix}]"
-    figures = [
-        _mana_figure(entry) if extra == "mana" else _price_figure(entry)
-        for extra in extras
-    ]
+    figures = [_mana_figure(entry) if extra == "mana" else _price_figure(entry) for extra in extras]
     return f"{line} — {' · '.join(figures)}" if figures else line
 
 
@@ -1773,9 +1807,7 @@ def _extras_hint(missing: list[DeckExtraInfo]) -> str:
 def _read_deck_signature(extras: tuple[str, ...]) -> str:
     """Render the call the way the chat shows it: which extras it asked for."""
 
-    return _bounded(
-        f"{READ_DECK}({', '.join(extras)})" if extras else f"{READ_DECK}()"
-    )
+    return _bounded(f"{READ_DECK}({', '.join(extras)})" if extras else f"{READ_DECK}()")
 
 
 def _counts_toward_curve(entry: _DeckEntry) -> bool:
@@ -1832,13 +1864,10 @@ def _curve_lines(entries: list[_DeckEntry]) -> list[str]:
         "| MV | Cards |",
         "| --- | --- |",
     ]
-    lines.extend(
-        f"| {_bucket_label(value)} | {count} |" for value, count in enumerate(buckets)
-    )
+    lines.extend(f"| {_bucket_label(value)} | {count} |" for value, count in enumerate(buckets))
     lines.append("")
     lines.append(
-        f"Average mana value {total_mana / quantity:.2f} across "
-        f"{quantity} {_cards(quantity)}."
+        f"Average mana value {total_mana / quantity:.2f} across {quantity} {_cards(quantity)}."
     )
     return lines
 
@@ -1872,9 +1901,7 @@ def _price_lines(entries: list[_DeckEntry], *, unresolved_count: int = 0) -> lis
     quantity = sum(entry.quantity for entry in entries)
     if not quantity:
         return []
-    unpriced = sum(
-        entry.quantity for entry in entries if entry.card.prices.eur is None
-    )
+    unpriced = sum(entry.quantity for entry in entries if entry.card.prices.eur is None)
     if unpriced == quantity:
         return [
             f"Price unknown: none of the {quantity} {_cards(quantity)} has a EUR "
@@ -2026,9 +2053,7 @@ def _edit_warnings(
         if change.delta <= 0 or commander is None:
             continue
         outside = [
-            color
-            for color in change.card.color_identity
-            if color not in commander.color_identity
+            color for color in change.card.color_identity if color not in commander.color_identity
         ]
         if outside:
             warnings.append(
@@ -2094,9 +2119,7 @@ def _edit_lines(
             f"Nothing changed in {_quoted(deck_name)} — the deck was already exactly as "
             f"you asked for it. It still has {after_total} {_cards(after_total)}."
         )
-    lines.extend(
-        _noop_sentences([change for change in planned if not change.effective])
-    )
+    lines.extend(_noop_sentences([change for change in planned if not change.effective]))
     if warnings:
         lines.append("")
         lines.append("Warnings, and the edit was applied anyway:")
@@ -2138,13 +2161,8 @@ def _noop_sentences(noops: list[_PlannedChange]) -> list[str]:
 
 def _noop_sentence(change: _PlannedChange) -> str:
     if change.previous_quantity == 0:
-        return (
-            f"{_quoted(change.card.name)} is not in the deck, so there was nothing to "
-            "remove."
-        )
-    placement = (
-        " in the command zone" if change.previous_section == "command_zone" else ""
-    )
+        return f"{_quoted(change.card.name)} is not in the deck, so there was nothing to remove."
+    placement = " in the command zone" if change.previous_section == "command_zone" else ""
     return (
         f"{_quoted(change.card.name)} was already in the deck at "
         f"{change.previous_quantity} {_copies(change.previous_quantity)}{placement}, so "
@@ -2206,9 +2224,7 @@ def _session_time(session: DeckAgentDeckSession, *, newest_day: date) -> str:
 
     start = session.started_at
     stamp = (
-        start.strftime("%H:%M")
-        if start.date() == newest_day
-        else start.strftime("%Y-%m-%d %H:%M")
+        start.strftime("%H:%M") if start.date() == newest_day else start.strftime("%Y-%m-%d %H:%M")
     )
     if _is_later(session.ended_at, start):
         stamp += f"{_TIME_RANGE}{session.ended_at.strftime('%H:%M')}"
@@ -2307,9 +2323,7 @@ def _merged_similar(related: dict[str, list[str]], edhrec: list[str]) -> list[st
     """
 
     claimed = {
-        name.casefold()
-        for field in _MORE_SPECIFIC_THAN_SIMILAR
-        for name in related.get(field, ())
+        name.casefold() for field in _MORE_SPECIFIC_THAN_SIMILAR for name in related.get(field, ())
     }
     merged: list[str] = []
     for name in (*related.get(_SIMILAR_FIELD, ()), *edhrec):
@@ -2324,10 +2338,7 @@ def _merged_similar(related: dict[str, list[str]], edhrec: list[str]) -> list[st
 def _restricted(arguments: SearchCardsArguments) -> bool:
     """Report whether this search actually applied a commander's colour identity."""
 
-    return (
-        arguments.commander is not None
-        and arguments.commander.restrict_to_color_identity
-    )
+    return arguments.commander is not None and arguments.commander.restrict_to_color_identity
 
 
 def _commander_lines(
@@ -2378,9 +2389,7 @@ def _theme_lines(themes: tuple[EdhrecDeckTheme, ...]) -> list[str]:
     line = f"  Deck themes, most played first: {named}"
     remaining = len(themes) - len(shown)
     if remaining:
-        line += (
-            f" — and {remaining} more, none in over {shown[-1].deck_count:,} decks."
-        )
+        line += f" — and {remaining} more, none in over {shown[-1].deck_count:,} decks."
     else:
         line += "."
     return [line]
@@ -2398,9 +2407,7 @@ def _evidence_lines(
     # search the price is one selection signal among several, and this is the currency
     # every other price surface in the application leads with. A card with no reported
     # price is not a free card, so it must not render as one.
-    lines = [
-        f"  Price: EUR {eur}" if eur is not None else "  Price: none reported."
-    ]
+    lines = [f"  Price: EUR {eur}" if eur is not None else "  Price: none reported."]
     if candidate.semantic_score is not None:
         lines.append(f"  Semantic closeness: {candidate.semantic_score:.3f} of 1")
     if commander is None or candidate.edhrec_inclusion is None:
@@ -2408,8 +2415,7 @@ def _evidence_lines(
             # Said rather than left blank: a card EDHREC does not list scores zero for
             # inclusion, which is a real signal about the card and not missing data.
             lines.append(
-                "  Inclusion: not among the cards EDHREC lists for "
-                f"{commander.card.name}."
+                f"  Inclusion: not among the cards EDHREC lists for {commander.card.name}."
             )
         return lines
     share = f"{candidate.edhrec_inclusion * 100:.0f}%"
@@ -2490,10 +2496,22 @@ _SITE_DATA_CAUTION = (
 # without this scored real cards as fabrications during the bake-off, which is how a
 # metric ends up measuring its own parser rather than the thing it was aimed at.
 _TYPOGRAPHIC: Final = {
-    0x2018: "'", 0x2019: "'", 0x201A: "'", 0x201B: "'",
-    0x201C: '"', 0x201D: '"', 0x2032: "'", 0x2035: "'",
-    0x2010: "-", 0x2011: "-", 0x2012: "-", 0x2013: "-", 0x2014: "-", 0x2015: "-",
-    0x2212: "-", 0x00A0: " ",
+    0x2018: "'",
+    0x2019: "'",
+    0x201A: "'",
+    0x201B: "'",
+    0x201C: '"',
+    0x201D: '"',
+    0x2032: "'",
+    0x2035: "'",
+    0x2010: "-",
+    0x2011: "-",
+    0x2012: "-",
+    0x2013: "-",
+    0x2014: "-",
+    0x2015: "-",
+    0x2212: "-",
+    0x00A0: " ",
 }
 
 
@@ -2572,7 +2590,7 @@ def _page_lines(page: Any, unknown: tuple[str, ...] = ()) -> list[str]:
     if page.has_more_pages:
         lines.append(
             f"Part {page.page} of {page.total_pages} ends here. Call {READ_PAGE} again "
-            f'with the same url and page: {page.page + 1} to read on.'
+            f"with the same url and page: {page.page + 1} to read on."
         )
     elif page.total_pages > 1:
         lines.append(f"That is the end of the page, {page.total_pages} parts in total.")
@@ -2580,14 +2598,11 @@ def _page_lines(page: Any, unknown: tuple[str, ...] = ()) -> list[str]:
         # A separate claim from having more parts: the download itself hit its cap, so
         # the last part is not the end of the document either.
         lines.append(
-            "The page was too large to fetch whole, so there is more of it that no "
-            "part will reach."
+            "The page was too large to fetch whole, so there is more of it that no part will reach."
         )
     lines += _unknown_card_lines(unknown)
     lines.append("")
-    lines.append(
-        _SITE_DATA_CAUTION if getattr(page, "from_site_data", False) else _WEB_CAUTION
-    )
+    lines.append(_SITE_DATA_CAUTION if getattr(page, "from_site_data", False) else _WEB_CAUTION)
     return lines
 
 
@@ -2651,17 +2666,20 @@ def _signature(name: object, arguments: dict[str, Any]) -> str:
         # Built from the raw arguments rather than a validated model, because this is
         # the path taken when validation is what failed.
         intent = arguments.get("semantic_sort") or arguments.get("name_sort")
-        return _bounded(
-            f"{SEARCH_CARDS}({_elided(str(intent)) if intent else 'filters only'})"
-        )
+        return _bounded(f"{SEARCH_CARDS}({_elided(str(intent)) if intent else 'filters only'})")
     if name == EDIT_DECK:
         return _edit_deck_signature(_raw_edit_tokens(arguments.get("changes")))
+    if name == EDIT_DECK_TEXT:
+        raw_name = arguments.get("name")
+        raw_description = arguments.get("description")
+        return _edit_deck_text_signature(
+            raw_name if isinstance(raw_name, str) else None,
+            raw_description if isinstance(raw_description, str) else None,
+        )
     if name == READ_HISTORY:
         limit = arguments.get("limit")
         return _bounded(
-            f"{READ_HISTORY}({limit} sessions)"
-            if isinstance(limit, int)
-            else f"{READ_HISTORY}(?)"
+            f"{READ_HISTORY}({limit} sessions)" if isinstance(limit, int) else f"{READ_HISTORY}(?)"
         )
     # Both web signatures are built from the raw argument, because this is the path
     # taken when validation is what failed and the rejected text is the whole point.
@@ -2773,6 +2791,15 @@ def _edit_deck_signature(tokens: list[str]) -> str:
         shown += f", +{len(tokens) - _SIGNATURE_NAMED_CARDS} more"
     label = f"{len(tokens)} {'change' if len(tokens) == 1 else 'changes'}"
     return _bounded(f"{EDIT_DECK}({label} · {shown})" if shown else f"{EDIT_DECK}({label})")
+
+
+def _edit_deck_text_signature(name: str | None, description: str | None) -> str:
+    fields = [
+        field
+        for field, value in (("name", name), ("description", description))
+        if value is not None
+    ]
+    return _bounded(f"{EDIT_DECK_TEXT}({', '.join(fields) or '?'})")
 
 
 def _read_history_signature(limit: int) -> str:

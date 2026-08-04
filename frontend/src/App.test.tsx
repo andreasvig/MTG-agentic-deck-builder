@@ -54,6 +54,47 @@ afterEach(() => {
 });
 
 describe("deck workspace", () => {
+  it("edits, collapses, expands, persists, and undoes the deck description", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.click(
+      screen.getByRole("button", { name: "Add description" }),
+    );
+    const editor = screen.getByRole("textbox", { name: "Deck description" });
+    const description = [
+      "cEDH power target.",
+      "Easy to pilot.",
+      "Avoid long combo turns.",
+      "Prefer low decision density and little instant-speed interaction.",
+    ].join("\n");
+    fireEvent.change(editor, { target: { value: description } });
+    await user.click(screen.getByRole("button", { name: "Save" }));
+
+    expect(screen.getByText(/cEDH power target/)).toHaveClass(
+      "deck-description__text--collapsed",
+    );
+    const seeAll = screen.getByRole("button", { name: "See all" });
+    expect(seeAll).toHaveAttribute("aria-expanded", "false");
+    await user.click(seeAll);
+    expect(screen.getByRole("button", { name: "Show less" })).toHaveAttribute(
+      "aria-expanded",
+      "true",
+    );
+    expect(window.localStorage.getItem(DECK_LIBRARY_STORAGE_KEY)).toContain(
+      "Avoid long combo turns",
+    );
+
+    await user.click(
+      screen.getByRole("button", { name: "Undo last deck change" }),
+    );
+    expect(
+      screen.getByText(
+        "Add the deck's intent, preferred play pattern, and constraints.",
+      ),
+    ).toBeInTheDocument();
+  });
+
   it("builds, validates, persists, and undoes a local deck", async () => {
     const user = userEvent.setup();
     render(<App />);
@@ -848,6 +889,53 @@ describe("agent deck edits", () => {
     await user.type(screen.getByLabelText("Message the deck agent"), question);
     await user.click(screen.getByLabelText("Send message"));
   }
+
+  it("applies one streamed name and brief edit and offers the same Undo", async () => {
+    seedDeck({ name: "Untitled Commander", description: "" });
+    serveAgentTurn([
+      {
+        type: "deck_text_edit",
+        edit: {
+          deck_name: "Untitled Commander",
+          reason: "capturing the cEDH target and low-friction play pattern",
+          name: "Decisive Kinnan",
+          description:
+            "cEDH power target. Easy to pilot, with short combo turns and little instant-speed interaction.",
+        },
+      },
+      doneFrame("I captured that as the deck's current direction."),
+    ]);
+    render(<App />);
+
+    await ask("Make this cEDH, but easy to pilot without long combo turns.");
+    expect(
+      await screen.findByRole("heading", { name: "Decisive Kinnan" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        "cEDH power target. Easy to pilot, with short combo turns and little instant-speed interaction.",
+      ),
+    ).toBeInTheDocument();
+
+    const transcript = screen.getByRole("log", {
+      name: "Deck agent conversation",
+    });
+    expect(within(transcript).getByText("Applied deck details")).toBeInTheDocument();
+    expect(
+      within(transcript).getByText("✎ Renamed deck to Decisive Kinnan"),
+    ).toBeInTheDocument();
+    expect(
+      within(transcript).getByText("✎ Updated deck description"),
+    ).toBeInTheDocument();
+
+    await userEvent.setup().click(
+      within(transcript).getByRole("button", { name: "Undo" }),
+    );
+    expect(
+      screen.getByRole("heading", { name: "Untitled Commander" }),
+    ).toBeInTheDocument();
+    expect(storedDeck().description).toBe("");
+  });
 
   it("applies a streamed deck edit, records it as the agent's, and undoes it", async () => {
     seedDeck({ cards: [deckEntry(gamble)] });

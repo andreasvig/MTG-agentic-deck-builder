@@ -160,7 +160,7 @@ not the intended end state.
   streaming route reports availability before it starts; a later failure arrives as an
   `error` event with the same code and wording. The interface uses the streaming route
   only — the JSON one remains the plain API contract.
-- Five tools, four of them read-only (ADRs 0029, 0035, 0036 and 0039):
+- Eight tools, six of them read-only (ADRs 0029, 0035, 0036, 0039 and 0046):
   - `read_deck(extra_info)` — the open deck grouped under each card's primary type, with
     names and short ids, and no card text. `extra_info` adds figures to that listing and
     nothing is sent unasked (ADR 0039): `mana` puts every card's printed mana cost on its
@@ -177,6 +177,10 @@ not the intended end state.
   - `see_cards(cards, details)` — named or short-id cards at the requested depth:
     rules, prices, Tagger tags, EDHREC similar cards, EDHREC inclusion for this
     deck's commander, Commander legality. Defaults to rules.
+  - `edit_deck_text(name, description, reason)` — full replacements for the deck's
+    human-readable identity and shared intent. It proactively reconciles durable user
+    preferences into a current brief, may freely replace only the exact default name, and
+    applies as one visible, undoable history entry (ADR 0046).
   - Each card renders as labelled, quoted fields, and the details always appear in
     one fixed order with `similar` last, whatever order they were asked for. `similar`
     groups Tagger's relationship lists under the labels the card panel uses, merges
@@ -294,6 +298,9 @@ Missing:
 
 - Browser-local deck library with active-deck switching.
 - Create, inline rename, confirm-delete, and session-restore decks.
+- A plain multiline deck description directly under the name, collapsed to three lines
+  behind **See all**, editable by the user and maintained proactively by the agent as a
+  concise current brief with open notes rather than an append-only diary (ADR 0046).
 - Deleting the final deck creates a fresh empty fallback; restoring it removes
   that untouched placeholder.
 - Commander-art thumbnails in the deck rail.
@@ -365,7 +372,7 @@ Missing:
 - Frontend tests for API validation, deck migration, mutations, search, traces,
   and primary application workflows.
 - A round-trip property test over the diff derivation, in both directions, across a
-  twelve-case table covering every field a `Deck` can differ by. It is what stands between
+  a table covering every field a `Deck` can differ by. It is what stands between
   a new `Deck` field and an undo that silently stops undoing it (ADR 0036).
 - Playwright workflows for desktop editing, search failure recovery, filters,
   color warnings, legal commander pairs, recoverable deck deletion, deck export, and

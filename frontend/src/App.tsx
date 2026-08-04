@@ -3,14 +3,22 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Icon } from "./components/Icon";
 import { CardInspector } from "./components/CardInspector";
 import { DeckAgentPanel } from "./components/DeckAgentPanel";
-import { DeckBoard, type SortMode, type ViewMode } from "./components/DeckBoard";
+import {
+  DeckBoard,
+  type SortMode,
+  type ViewMode,
+} from "./components/DeckBoard";
 import { DeckHistoryPanel } from "./components/DeckHistoryPanel";
 import { DeleteDeckDialog } from "./components/DeleteDeckDialog";
 import { ExportDeckDialog } from "./components/ExportDeckDialog";
 import { SearchDrawer } from "./components/SearchDrawer";
 import type { CardSearchResult, CardTagFilter } from "./domain/card";
 import { formatEuro, getCardImage } from "./domain/card";
-import type { DeckAgentAppliedEdit, DeckAgentDeckEdit } from "./domain/agent";
+import type {
+  DeckAgentAppliedEdit,
+  DeckAgentDeckEdit,
+  DeckAgentDeckTextEdit,
+} from "./domain/agent";
 import {
   refusedDeckEdit,
   summarizeDeckEditRecord,
@@ -49,10 +57,12 @@ function App() {
     statistics,
     addCard,
     applyEdit,
+    applyTextEdit,
     setQuantity,
     removeCard,
     moveCard,
     renameDeck,
+    setDescription,
     createDeck,
     selectDeck,
     deleteDeck,
@@ -70,9 +80,16 @@ function App() {
   // is its name AND its cost, so the curve is readable straight down the column.
   const [sort, setSort] = useState<SortMode>("mana");
   const [navigationOpen, setNavigationOpen] = useState(false);
-  const [searchRequest, setSearchRequest] = useState<SearchRequest | null>(null);
-  const [selectedCard, setSelectedCard] = useState<CardSearchResult | null>(null);
+  const [searchRequest, setSearchRequest] = useState<SearchRequest | null>(
+    null,
+  );
+  const [selectedCard, setSelectedCard] = useState<CardSearchResult | null>(
+    null,
+  );
   const [renamingDeck, setRenamingDeck] = useState(false);
+  const [editingDescription, setEditingDescription] = useState(false);
+  const [descriptionExpanded, setDescriptionExpanded] = useState(false);
+  const [descriptionOverflows, setDescriptionOverflows] = useState(false);
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [historyOpen, setHistoryOpen] = useState(false);
@@ -89,8 +106,9 @@ function App() {
    * deck comes back to the model as a current observation.
    */
   const deckSnapshot = useMemo(
-    () => toDeckSnapshot(deck.name, deck.cards, deck.updated_at),
-    [deck.cards, deck.name, deck.updated_at],
+    () =>
+      toDeckSnapshot(deck.name, deck.cards, deck.updated_at, deck.description),
+    [deck.cards, deck.description, deck.name, deck.updated_at],
   );
   /**
    * Which decks the agent is working on right now, reported by the panel.
@@ -156,6 +174,36 @@ function App() {
     [applyEdit],
   );
 
+  const applyAgentTextEdit = useCallback(
+    (
+      edit: DeckAgentDeckTextEdit,
+      deckId: string,
+    ): DeckAgentAppliedEdit | null => {
+      const outcome = applyTextEdit(
+        {
+          ...(edit.name !== undefined ? { name: edit.name } : {}),
+          ...(edit.description !== undefined
+            ? { description: edit.description }
+            : {}),
+          reason: edit.reason,
+        },
+        "agent",
+        deckId,
+      );
+      if (!outcome.applied) {
+        return refusedDeckEdit(outcome.reason);
+      }
+      return outcome.recorded
+        ? summarizeDeckEditRecord(
+            outcome.recorded.diff,
+            edit.reason,
+            outcome.recorded.editId,
+          )
+        : null;
+    },
+    [applyTextEdit],
+  );
+
   /**
    * The deck's recorded history, read from the browser at the moment a turn is sent.
    *
@@ -174,9 +222,13 @@ function App() {
   }, [deck.id]);
 
   const [deckNameDraft, setDeckNameDraft] = useState(deck.name);
+  const [deckDescriptionDraft, setDeckDescriptionDraft] = useState(
+    deck.description,
+  );
   const returnFocus = useRef<HTMLElement | null>(null);
   const nextSearchRequestId = useRef(1);
   const menuTrigger = useRef<HTMLButtonElement>(null);
+  const descriptionText = useRef<HTMLParagraphElement>(null);
   const sidebarRef = useRef<HTMLElement>(null);
   const sidebarClose = useRef<HTMLButtonElement>(null);
 
@@ -279,10 +331,39 @@ function App() {
 
   useEffect(() => {
     setRenamingDeck(false);
+    setEditingDescription(false);
+    setDescriptionExpanded(false);
     setDeleteDialogOpen(false);
     setDeckNameDraft(deck.name);
+    setDeckDescriptionDraft(deck.description);
     setSelectedCard(null);
-  }, [deck.id, deck.name]);
+  }, [deck.description, deck.id, deck.name]);
+
+  useEffect(() => {
+    if (!deck.description) {
+      setDescriptionOverflows(false);
+      return;
+    }
+    if (descriptionExpanded) {
+      return;
+    }
+    const measure = () => {
+      const node = descriptionText.current;
+      if (!node) {
+        return;
+      }
+      // The content fallback makes the behavior testable in jsdom, which reports no
+      // layout dimensions; real browsers use the actual three-line box.
+      setDescriptionOverflows(
+        node.scrollHeight > node.clientHeight + 1 ||
+          deck.description.length > 180 ||
+          deck.description.split("\n").length > 3,
+      );
+    };
+    measure();
+    window.addEventListener("resize", measure);
+    return () => window.removeEventListener("resize", measure);
+  }, [deck.description, descriptionExpanded]);
 
   const beginDeckRename = () => {
     setDeckNameDraft(deck.name);
@@ -296,6 +377,22 @@ function App() {
       setDeckNameDraft(deck.name);
     }
     setRenamingDeck(false);
+  };
+
+  const beginDescriptionEdit = () => {
+    setDeckDescriptionDraft(deck.description);
+    setEditingDescription(true);
+  };
+
+  const cancelDescriptionEdit = () => {
+    setDeckDescriptionDraft(deck.description);
+    setEditingDescription(false);
+  };
+
+  const saveDescription = () => {
+    setDescription(deckDescriptionDraft);
+    setEditingDescription(false);
+    setDescriptionExpanded(false);
   };
 
   const chooseDeck = (deckId: string) => {
@@ -411,14 +508,14 @@ function App() {
                     <small>{cardCount} cards · saved locally</small>
                   </span>
                   {/*
-                    * The agent is working on a deck the user is not looking at. The open
-                    * deck already has the panel as its surface; repeating that state here
-                    * adds noise, including to a screen reader. A background turn has no
-                    * other surface at all: without this the only evidence it is still
-                    * building is the deck changing under the user later. Labelled rather
-                    * than decorative, because a dot that only a sighted user is told about
-                    * is not a surface either.
-                    */}
+                   * The agent is working on a deck the user is not looking at. The open
+                   * deck already has the panel as its surface; repeating that state here
+                   * adds noise, including to a screen reader. A background turn has no
+                   * other surface at all: without this the only evidence it is still
+                   * building is the deck changing under the user later. Labelled rather
+                   * than decorative, because a dot that only a sighted user is told about
+                   * is not a surface either.
+                   */}
                   {libraryDeck.id !== deck.id &&
                   agentTurnDeckIds.includes(libraryDeck.id) ? (
                     <span
@@ -580,7 +677,10 @@ function App() {
             <Icon name="plus" aria-hidden="true" size={16} />
             Add cards
           </button>
-          <div className="segmented-control view-control" aria-label="Deck view">
+          <div
+            className="segmented-control view-control"
+            aria-label="Deck view"
+          >
             <button
               className={view === "visual" ? "is-active" : ""}
               type="button"
@@ -702,9 +802,77 @@ function App() {
         <div className="workspace-body">
           <section className="deck-canvas" aria-labelledby="deck-heading">
             <div className="canvas-heading">
-              <div>
+              <div className="deck-heading-copy">
                 <p className="eyebrow">Deck editor</p>
                 <h1 id="deck-heading">{deck.name}</h1>
+                {editingDescription ? (
+                  <div className="deck-description-editor">
+                    <label htmlFor="deck-description">Deck description</label>
+                    <textarea
+                      id="deck-description"
+                      autoFocus
+                      maxLength={2_000}
+                      rows={6}
+                      value={deckDescriptionDraft}
+                      placeholder="Capture this deck's intended power, play pattern, constraints, and open decisions."
+                      onChange={(event) =>
+                        setDeckDescriptionDraft(event.target.value)
+                      }
+                      onKeyDown={(event) => {
+                        if (event.key === "Escape") {
+                          event.preventDefault();
+                          cancelDescriptionEdit();
+                        }
+                      }}
+                    />
+                    <div className="deck-description-editor__footer">
+                      <span>{deckDescriptionDraft.length} / 2,000</span>
+                      <button type="button" onClick={cancelDescriptionEdit}>
+                        Cancel
+                      </button>
+                      <button
+                        className="primary-button"
+                        type="button"
+                        onClick={saveDescription}
+                      >
+                        Save
+                      </button>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="deck-description">
+                    <p
+                      ref={descriptionText}
+                      className={
+                        descriptionExpanded
+                          ? "deck-description__text"
+                          : "deck-description__text deck-description__text--collapsed"
+                      }
+                    >
+                      {deck.description ||
+                        "Add the deck's intent, preferred play pattern, and constraints."}
+                    </p>
+                    <div className="deck-description__actions">
+                      {descriptionOverflows ? (
+                        <button
+                          type="button"
+                          aria-expanded={descriptionExpanded}
+                          onClick={() =>
+                            setDescriptionExpanded((expanded) => !expanded)
+                          }
+                        >
+                          {descriptionExpanded ? "Show less" : "See all"}
+                        </button>
+                      ) : null}
+                      <button type="button" onClick={beginDescriptionEdit}>
+                        <Icon name="pencil" aria-hidden="true" size={12} />
+                        {deck.description
+                          ? "Edit description"
+                          : "Add description"}
+                      </button>
+                    </div>
+                  </div>
+                )}
               </div>
               <span>{deck.cards.length} unique printings</span>
             </div>
@@ -733,6 +901,7 @@ function App() {
             deck={deckSnapshot}
             onOpenCard={setSelectedCard}
             onDeckEdit={applyAgentEdit}
+            onDeckTextEdit={applyAgentTextEdit}
             onUndoDeckEdit={back}
             undoableEditId={lastRecordedEditId}
             readDeckHistory={readDeckHistory}
@@ -759,7 +928,9 @@ function App() {
         </button>
         <button
           type="button"
-          onClick={() => setView((current) => (current === "visual" ? "list" : "visual"))}
+          onClick={() =>
+            setView((current) => (current === "visual" ? "list" : "visual"))
+          }
         >
           {view === "visual" ? (
             <Icon name="list" aria-hidden="true" size={20} />

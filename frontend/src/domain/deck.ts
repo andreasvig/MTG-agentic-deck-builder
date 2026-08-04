@@ -37,6 +37,8 @@ type StoredDeckCardEntry = Omit<DeckCardEntry, "section"> & {
 export interface Deck {
   id: string;
   name: string;
+  /** The deck's current intent: a concise brief, with open notes where useful. */
+  description: string;
   format: "commander";
   cards: DeckCardEntry[];
   created_at: string;
@@ -145,9 +147,7 @@ export function validateCommandZoneAddition(
     return { allowed: true, reason: null };
   }
   if (
-    commanders.some(
-      (entry) => entry.card.oracle_id === candidate.oracle_id,
-    )
+    commanders.some((entry) => entry.card.oracle_id === candidate.oracle_id)
   ) {
     return {
       allowed: false,
@@ -179,9 +179,7 @@ export function validateCommandZoneAddition(
   return { allowed: true, reason: null };
 }
 
-export function getCommandZoneProblem(
-  entries: DeckCardEntry[],
-): string | null {
+export function getCommandZoneProblem(entries: DeckCardEntry[]): string | null {
   const commanders = entries.filter(
     (entry) => entry.section === "command_zone",
   );
@@ -219,10 +217,7 @@ export function canShareCommandZone(
     return false;
   }
 
-  if (
-    hasOracleKeyword(left, "Partner") &&
-    hasOracleKeyword(right, "Partner")
-  ) {
+  if (hasOracleKeyword(left, "Partner") && hasOracleKeyword(right, "Partner")) {
     return true;
   }
   if (
@@ -271,6 +266,7 @@ export function createEmptyDeck(
         ? crypto.randomUUID()
         : `local-${now.getTime()}`,
     name,
+    description: "",
     format: "commander",
     cards: [],
     created_at: timestamp,
@@ -322,9 +318,7 @@ export function parseStoredDeckLibrary(
     }
     const decks = parsed.decks.map(normalizeDeck);
     return {
-      active_deck_id: decks.some(
-        (deck) => deck.id === parsed.active_deck_id,
-      )
+      active_deck_id: decks.some((deck) => deck.id === parsed.active_deck_id)
         ? parsed.active_deck_id
         : decks[0].id,
       decks,
@@ -358,6 +352,11 @@ function normalizeDeck(value: Record<string, unknown>): Deck {
   return {
     id: value.id as string,
     name: value.name as string,
+    // Decks written before the brief existed remain valid and begin with an empty one.
+    description:
+      typeof value.description === "string"
+        ? value.description.slice(0, 2_000)
+        : "",
     format: "commander",
     cards,
     created_at: value.created_at as string,
@@ -414,10 +413,7 @@ function oracleLines(card: CardSearchResult): string[] {
   return text.split("\n").map((line) => line.trim());
 }
 
-function hasOracleKeyword(
-  card: CardSearchResult,
-  keyword: string,
-): boolean {
+function hasOracleKeyword(card: CardSearchResult, keyword: string): boolean {
   const normalizedKeyword = keyword.toLocaleLowerCase();
   return oracleLines(card).some((line) => {
     const normalizedLine = line.toLocaleLowerCase();

@@ -55,7 +55,8 @@ Replay is bounded rather than all-or-nothing:
   shed it—uses the named **framing-only replay fallback**. The next turn receives prose such as
   “interrupted after `read_deck()`” rather than a malformed unanswered tool call.
 
-Deck observations receive one further guard. `read_deck`, `edit_deck` and `read_history` calls
+Deck observations receive one further guard. `read_deck`, `edit_deck`, `edit_deck_text` and
+`read_history` calls
 carry the deck's `updated_at` when they ran. If that revision differs from the snapshot posted
 with the follow-up, the backend keeps the call/result pairing but substitutes an instruction to
 read the current deck. `see_cards`, `search_cards`, `search_web` and `read_page` are not changed,

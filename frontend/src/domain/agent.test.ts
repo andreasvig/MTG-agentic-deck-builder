@@ -12,6 +12,7 @@ import {
   isRefusedDeckEdit,
   parseStoredAgentChats,
   readDeckAgentDeckEdit,
+  readDeckAgentDeckTextEdit,
   refusedDeckEdit,
   serializeAgentChats,
   summarizeDeckEditRecord,
@@ -807,6 +808,21 @@ describe("posted deck snapshot", () => {
       cards: [],
     });
   });
+
+  it("posts a non-empty deck description with the snapshot", () => {
+    expect(
+      toDeckSnapshot(
+        "Gruul Stompy",
+        [],
+        "2026-08-03T09:00:00.000Z",
+        "High power, simple turns, little instant-speed interaction.",
+      ),
+    ).toMatchObject({
+      name: "Gruul Stompy",
+      description:
+        "High power, simple turns, little instant-speed interaction.",
+    });
+  });
 });
 
 /** The event as the backend emits it: an add carrying its card, and a cut that cannot. */
@@ -836,6 +852,35 @@ function deckEditEvent(
 }
 
 describe("agent deck edits", () => {
+  it("reads a bounded name and description replacement whole", () => {
+    expect(
+      readDeckAgentDeckTextEdit({
+        deck_name: "Untitled Commander",
+        reason: "capturing the user's intent",
+        name: "Low-Friction Kinnan",
+        description: "cEDH, but easy to pilot with short combo turns.",
+      }),
+    ).toEqual({
+      deck_name: "Untitled Commander",
+      reason: "capturing the user's intent",
+      name: "Low-Friction Kinnan",
+      description: "cEDH, but easy to pilot with short combo turns.",
+    });
+    expect(
+      readDeckAgentDeckTextEdit({
+        deck_name: "Untitled Commander",
+        reason: "nothing",
+      }),
+    ).toBeNull();
+    expect(
+      readDeckAgentDeckTextEdit({
+        deck_name: "Untitled Commander",
+        reason: "too much",
+        description: "x".repeat(2_001),
+      }),
+    ).toBeNull();
+  });
+
   it("reads a resolved edit, keeping the card payload only where it is needed", () => {
     const edit = readDeckAgentDeckEdit(deckEditEvent());
 

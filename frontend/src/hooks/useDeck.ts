@@ -82,6 +82,16 @@ export interface DeckEdit {
   reason?: string;
 }
 
+/** One atomic change to the deck's human-readable identity and intent. */
+export interface DeckTextEdit {
+  /** A full replacement. Omit to leave the name alone. */
+  name?: string;
+  /** A full replacement. An empty string deliberately clears the brief. */
+  description?: string;
+  /** The one-liner recorded for an agent edit. */
+  reason?: string;
+}
+
 /**
  * What one edit the deck took became in the log: the entry's id, and the diff behind it.
  *
@@ -260,10 +270,7 @@ export function useDeck() {
               };
             }
           }
-          const validation = validateCommandZoneAddition(
-            current.cards,
-            card,
-          );
+          const validation = validateCommandZoneAddition(current.cards, card);
           if (!validation.allowed) {
             return {
               error:
@@ -334,8 +341,7 @@ export function useDeck() {
         }
         if (entry.section === "command_zone" && quantity > 1) {
           return {
-            error:
-              "A commander may only have one copy in the command zone.",
+            error: "A commander may only have one copy in the command zone.",
           };
         }
         if (quantity <= 0) {
@@ -447,6 +453,23 @@ export function useDeck() {
     [mutate],
   );
 
+  const setDescription = useCallback(
+    (description: string) => {
+      const normalizedDescription = normalizeDeckDescription(description);
+      mutate((current) =>
+        current.description === normalizedDescription
+          ? null
+          : {
+              deck: { ...current, description: normalizedDescription },
+              announcement: normalizedDescription
+                ? "Deck description updated."
+                : "Deck description cleared.",
+            },
+      );
+    },
+    [mutate],
+  );
+
   /**
    * Apply a whole edit as one change, and report what became of it. It runs the same
    * validators the drag path runs, refuses entirely rather than in part, and lands as a
@@ -498,6 +521,37 @@ export function useDeck() {
         current,
         deckEditMutation(plan),
         { actor, reason: plan.reason },
+        target,
+      );
+      commit(next);
+      return outcome;
+    },
+    [commit],
+  );
+
+  /** Apply an agent's name/brief replacement to its turn's deck as one undo step. */
+  const applyTextEdit = useCallback(
+    (
+      edit: DeckTextEdit,
+      actor: DeckHistoryActor,
+      deckId?: string,
+    ): DeckEditOutcome => {
+      const current = latest.current;
+      const target =
+        deckId === undefined
+          ? activeDeck(current.library)
+          : current.library.decks.find((deck) => deck.id === deckId);
+      if (!target) {
+        return {
+          applied: false,
+          reason:
+            "That deck is no longer in the library, so the text edit was not applied.",
+        };
+      }
+      const { state: next, outcome } = commitMutation(
+        current,
+        deckTextMutation(edit),
+        { actor, reason: edit.reason },
         target,
       );
       commit(next);
@@ -658,10 +712,12 @@ export function useDeck() {
     statistics,
     addCard,
     applyEdit,
+    applyTextEdit,
     setQuantity,
     removeCard,
     moveCard,
     renameDeck,
+    setDescription,
     createDeck,
     selectDeck,
     deleteDeck,
@@ -890,7 +946,8 @@ function deckReducer(state: DeckState, action: DeckAction): DeckState {
 
   // A user's own change is one mutation with no stated intent, recorded against them. It
   // reaches the same single derivation an agent edit does.
-  return commitMutation(state, action.mutation, { actor: "user" }, current).state;
+  return commitMutation(state, action.mutation, { actor: "user" }, current)
+    .state;
 }
 
 /**
@@ -1045,6 +1102,56 @@ interface DeckEditChangeResult {
   added: number;
   removed: number;
   moved: number;
+}
+
+function deckTextMutation(edit: DeckTextEdit): DeckMutation {
+  return (current) => {
+    const hasName = edit.name !== undefined;
+    const hasDescription = edit.description !== undefined;
+    if (!hasName && !hasDescription) {
+      return { error: "That text edit did not include a name or description." };
+    }
+
+    const name = hasName ? (edit.name?.trim() ?? "") : current.name;
+    if (!name) {
+      return { error: "A deck name cannot be empty." };
+    }
+    if (name.length > 80) {
+      return { error: "A deck name cannot be longer than 80 characters." };
+    }
+
+    const description = hasDescription
+      ? normalizeDeckDescription(edit.description ?? "")
+      : current.description;
+    if (description.length > 2_000) {
+      return {
+        error: "A deck description cannot be longer than 2,000 characters.",
+      };
+    }
+    if (name === current.name && description === current.description) {
+      return null;
+    }
+
+    const changedName = name !== current.name;
+    const changedDescription = description !== current.description;
+    const announcement =
+      changedName && changedDescription
+        ? `Deck renamed to ${name} and description updated.`
+        : changedName
+          ? `Deck renamed to ${name}.`
+          : description
+            ? "Deck description updated."
+            : "Deck description cleared.";
+    return {
+      deck: { ...current, name, description },
+      announcement,
+    };
+  };
+}
+
+/** Trim only the outside; paragraph breaks and deliberate plain-text structure survive. */
+function normalizeDeckDescription(value: string): string {
+  return value.replace(/\r\n?/g, "\n").trim();
 }
 
 /**

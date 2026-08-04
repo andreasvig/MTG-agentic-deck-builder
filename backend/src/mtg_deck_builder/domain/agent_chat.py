@@ -33,6 +33,15 @@ ShortLabel = Annotated[
     StringConstraints(strip_whitespace=True, min_length=1, max_length=200),
 ]
 
+DeckName = Annotated[
+    str,
+    StringConstraints(strip_whitespace=True, min_length=1, max_length=80),
+]
+DeckDescription = Annotated[
+    str,
+    StringConstraints(strip_whitespace=True, max_length=2_000),
+]
+
 MAX_TOOL_PAYLOAD_CHARS = 24_000
 """How much of one tool call's arguments or result may travel, per payload.
 
@@ -216,9 +225,7 @@ class DeckAgentMessage(DeckAgentModel):
     @model_validator(mode="after")
     def a_message_must_say_something(self) -> "DeckAgentMessage":
         if self.content is None and not self.tool_calls:
-            raise ValueError(
-                "a chat message must carry content, tool calls, or both"
-            )
+            raise ValueError("a chat message must carry content, tool calls, or both")
         return self
 
     @model_validator(mode="after")
@@ -237,9 +244,7 @@ class DeckAgentMessage(DeckAgentModel):
         if not text:
             raise ValueError("a message must carry more than whitespace")
         if len(text) > MAX_MESSAGE_CHARS:
-            raise ValueError(
-                f"a message must be at most {MAX_MESSAGE_CHARS} characters"
-            )
+            raise ValueError(f"a message must be at most {MAX_MESSAGE_CHARS} characters")
         self.content = text
         return self
 
@@ -282,10 +287,9 @@ class DeckAgentDeckSnapshot(DeckAgentModel):
     deck as it was when the question was asked.
     """
 
-    name: ShortLabel
-    cards: Annotated[list[DeckAgentDeckCard], Field(max_length=500)] = Field(
-        default_factory=list
-    )
+    name: DeckName
+    description: DeckDescription = ""
+    cards: Annotated[list[DeckAgentDeckCard], Field(max_length=500)] = Field(default_factory=list)
     # When this deck last changed, so a replayed call's `deck_revision` can be compared
     # against it. Optional because an older client posts no revision at all, and a deck
     # whose revision is unknown is one whose replayed reads cannot be trusted — which
@@ -327,6 +331,20 @@ class EditDeckArguments(DeckAgentModel):
     # Per call rather than per card, because one intent usually covers a whole swap.
     # It is the field that makes the history worth reading a week later.
     reason: ShortLabel
+
+
+class EditDeckTextArguments(DeckAgentModel):
+    """Full replacements for the deck's name and intent, applied as one edit."""
+
+    name: DeckName | None = None
+    description: DeckDescription | None = None
+    reason: ShortLabel
+
+    @model_validator(mode="after")
+    def at_least_one_text_field_changes(self) -> "EditDeckTextArguments":
+        if self.name is None and self.description is None:
+            raise ValueError("name or description is required")
+        return self
 
 
 class ReadHistoryArguments(DeckAgentModel):
@@ -419,9 +437,7 @@ class DeckAgentDeckHistory(DeckAgentModel):
     def edits_must_stay_inside_the_budget(self) -> "DeckAgentDeckHistory":
         total = sum(len(session.edits) for session in self.sessions)
         if total > MAX_HISTORY_EDITS:
-            raise ValueError(
-                f"history must carry at most {MAX_HISTORY_EDITS} edits in total"
-            )
+            raise ValueError(f"history must carry at most {MAX_HISTORY_EDITS} edits in total")
         return self
 
 
@@ -497,9 +513,7 @@ class DeckAgentChatRequest(DeckAgentModel):
                 calls[call.id] = index
         unanswered = [identifier for identifier in calls if identifier not in answered]
         if unanswered:
-            raise ValueError(
-                f"tool call {unanswered[0]!r} has no answering tool message"
-            )
+            raise ValueError(f"tool call {unanswered[0]!r} has no answering tool message")
         return self
 
 
@@ -641,6 +655,22 @@ class DeckAgentDeckEditEvent(DeckAgentModel):
     edit: DeckAgentDeckEdit
 
 
+class DeckAgentDeckTextEdit(DeckAgentModel):
+    """A name/description replacement resolved against the posted deck."""
+
+    deck_name: DeckName
+    reason: ShortLabel
+    name: DeckName | None = None
+    description: DeckDescription | None = None
+
+
+class DeckAgentDeckTextEditEvent(DeckAgentModel):
+    """A text edit for the browser to apply to the turn's deck."""
+
+    type: Literal["deck_text_edit"] = "deck_text_edit"
+    edit: DeckAgentDeckTextEdit
+
+
 class DeckAgentDoneEvent(DeckAgentModel):
     """The finished turn, carrying the same reply the plain JSON route returns."""
 
@@ -664,6 +694,7 @@ DeckAgentStreamEvent = (
     DeckAgentTextEvent
     | DeckAgentToolEvent
     | DeckAgentDeckEditEvent
+    | DeckAgentDeckTextEditEvent
     | DeckAgentDoneEvent
     | DeckAgentErrorEvent
 )

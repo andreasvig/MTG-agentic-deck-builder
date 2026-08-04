@@ -3,6 +3,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type {
   DeckAgentAppliedEdit,
   DeckAgentDeckEdit,
+  DeckAgentDeckTextEdit,
   DeckAgentDeckHistory,
   DeckAgentDeckSnapshot,
   DeckAgentRequestMessage,
@@ -124,6 +125,11 @@ interface DeckAgentPanelProps {
     edit: DeckAgentDeckEdit,
     deckId: string,
   ) => DeckAgentAppliedEdit | null;
+  /** Apply a name/description edit to the deck that owns the turn. */
+  onDeckTextEdit?: (
+    edit: DeckAgentDeckTextEdit,
+    deckId: string,
+  ) => DeckAgentAppliedEdit | null;
   /** Reverse the deck's last recorded change, behind the transcript's Undo. */
   onUndoDeckEdit?: () => void;
   /**
@@ -195,6 +201,7 @@ export function DeckAgentPanel({
   deck = null,
   onOpenCard,
   onDeckEdit,
+  onDeckTextEdit,
   onUndoDeckEdit,
   undoableEditId = null,
   readDeckHistory,
@@ -445,13 +452,7 @@ export function DeckAgentPanel({
     withdrawQuestion(turnDeckId, question);
     setDraft(turnDeckId, question);
     setCaretTarget(question.length);
-  }, [
-    clearLive,
-    deckId,
-    recordInterruptedTurn,
-    setDraft,
-    withdrawQuestion,
-  ]);
+  }, [clearLive, deckId, recordInterruptedTurn, setDraft, withdrawQuestion]);
 
   const resetChat = useCallback(() => {
     // Every line here is scoped to the open deck, and `clearChat` was the one that already
@@ -620,6 +621,17 @@ export function DeckAgentPanel({
               appliedEdits: [...current.appliedEdits, block],
             }));
           },
+          onDeckTextEdit: (edit) => {
+            const block = onDeckTextEdit?.(edit, turnDeckId) ?? null;
+            if (!block) {
+              return;
+            }
+            appliedEdits.push(block);
+            updateLive(turnDeckId, (current) => ({
+              ...current,
+              appliedEdits: [...current.appliedEdits, block],
+            }));
+          },
         },
         controller.signal,
         debugEnabled,
@@ -693,6 +705,7 @@ export function DeckAgentPanel({
     draft,
     entries,
     onDeckEdit,
+    onDeckTextEdit,
     openPending,
     readDeckHistory,
     recordReply,
@@ -802,8 +815,8 @@ export function DeckAgentPanel({
       >
         {entries.length === 0 ? (
           <p className="deck-agent__empty">
-            Ask about the deck you are building. The agent can read your deck and
-            look cards up, but it cannot change anything.
+            Ask about the deck you are building. The agent can read your deck
+            and look cards up, but it cannot change anything.
           </p>
         ) : (
           entries.map((entry, index) => (
@@ -816,13 +829,13 @@ export function DeckAgentPanel({
                 />
               ))}
               {/*
-                * No bubble for a turn that said nothing. Only one kind of turn can be in
-                * that state — one cancelled inside its first tool call, before a word was
-                * written — and an empty bubble with an author on it would claim the agent
-                * answered and then show nothing. Its tool lines and its marker say what
-                * happened. Every other entry has content by contract: a question is
-                * non-blank before it is sent, and a reply is refused if its content is.
-                */}
+               * No bubble for a turn that said nothing. Only one kind of turn can be in
+               * that state — one cancelled inside its first tool call, before a word was
+               * written — and an empty bubble with an author on it would claim the agent
+               * answered and then show nothing. Its tool lines and its marker say what
+               * happened. Every other entry has content by contract: a question is
+               * non-blank before it is sent, and a reply is refused if its content is.
+               */}
               {entry.message.content ? (
                 <article
                   className={`deck-agent__message deck-agent__message--${entry.message.role}`}
@@ -870,10 +883,10 @@ export function DeckAgentPanel({
           ))
         )}
         {/*
-          * The turn in progress, hidden from assistive technology: a live region
-          * that announced every chunk would be unusable. The committed turn is
-          * announced once, whole, the moment it lands.
-          */}
+         * The turn in progress, hidden from assistive technology: a live region
+         * that announced every chunk would be unusable. The committed turn is
+         * announced once, whole, the moment it lands.
+         */}
         {openLive.toolCalls.length > 0 ||
         openLive.text ||
         openLive.appliedEdits.length > 0 ? (
@@ -886,10 +899,10 @@ export function DeckAgentPanel({
               />
             ))}
             {/*
-              * The edit is on screen the moment the deck takes it, with no Undo: the
-              * committed block carries that, and a button inside a hidden region is
-              * one nobody can press anyway.
-              */}
+             * The edit is on screen the moment the deck takes it, with no Undo: the
+             * committed block carries that, and a button inside a hidden region is
+             * one nobody can press anyway.
+             */}
             {openLive.appliedEdits.map((applied, editIndex) => (
               <AppliedEditBlock
                 applied={applied}
@@ -901,11 +914,11 @@ export function DeckAgentPanel({
                 <span className="deck-agent__author">Agent</span>
                 <p>
                   {/*
-                    * Parsed with no links yet: nothing is resolved until the turn
-                    * commits. The words are therefore identical to the committed
-                    * ones — braces already gone — and only the ability to open a
-                    * card arrives at the end.
-                    */}
+                   * Parsed with no links yet: nothing is resolved until the turn
+                   * commits. The words are therefore identical to the committed
+                   * ones — braces already gone — and only the ability to open a
+                   * card arrives at the end.
+                   */}
                   <AgentAnswer text={openLive.text} client={client} />
                   <span className="deck-agent__caret" />
                 </p>
@@ -917,9 +930,9 @@ export function DeckAgentPanel({
           <p className="deck-agent__thinking" role="status">
             Thinking…
             {/*
-              * Inside the status, so it is announced with it rather than being a
-              * shortcut only a sighted user is told about.
-              */}
+             * Inside the status, so it is announced with it rather than being a
+             * shortcut only a sighted user is told about.
+             */}
             <span className="deck-agent__interrupt">esc to cancel</span>
           </p>
         ) : null}
@@ -1022,12 +1035,19 @@ function AppliedEditBlock({
     ["−", applied.removed.join(", ")],
     ["→", applied.moved.join(", ")],
   ];
+  const textChanges = applied.textChanges ?? [];
 
   return (
     <div className="deck-agent__edit">
       <p className="deck-agent__edit-summary" title={applied.reason}>
         <Icon name="check" aria-hidden="true" size={12} />
-        <span>{`Applied: +${applied.addedCopies} / −${applied.removedCopies}`}</span>
+        <span>
+          {textChanges.length > 0 &&
+          applied.addedCopies === 0 &&
+          applied.removedCopies === 0
+            ? "Applied deck details"
+            : `Applied: +${applied.addedCopies} / −${applied.removedCopies}`}
+        </span>
         {onUndo ? (
           <button
             className="deck-agent__edit-undo"
@@ -1047,6 +1067,11 @@ function AppliedEditBlock({
           </p>
         ) : null,
       )}
+      {textChanges.map((change) => (
+        <p className="deck-agent__edit-cards" key={change}>
+          {`✎ ${change}`}
+        </p>
+      ))}
     </div>
   );
 }

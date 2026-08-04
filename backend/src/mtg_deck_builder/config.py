@@ -402,9 +402,7 @@ class DeckAgentToolSettings(BaseModel):
     # read of a longer posted history, so it must not exceed the request contract's own
     # `MAX_HISTORY_SESSIONS` — the schema bound the model reads and the runtime bound
     # cannot be allowed to disagree.
-    read_history_default_sessions: Annotated[
-        int, Field(ge=1, le=MAX_HISTORY_SESSIONS)
-    ] = 10
+    read_history_default_sessions: Annotated[int, Field(ge=1, le=MAX_HISTORY_SESSIONS)] = 10
     history_max_sessions: Annotated[int, Field(ge=1, le=MAX_HISTORY_SESSIONS)] = (
         MAX_HISTORY_SESSIONS
     )
@@ -413,6 +411,7 @@ class DeckAgentToolSettings(BaseModel):
     see_cards_description: str = "Look up details for named cards."
     search_cards_description: str = "Search the local card catalog."
     edit_deck_description: str = "Change what the open deck holds."
+    edit_deck_text_description: str = "Update the open deck's name or description."
     read_history_description: str = "Read the open deck's recorded edits."
     search_web_description: str = "Search the web for Magic writing and decklists."
     read_page_description: str = "Read one web page as text."
@@ -422,6 +421,7 @@ class DeckAgentToolSettings(BaseModel):
         "see_cards_description",
         "search_cards_description",
         "edit_deck_description",
+        "edit_deck_text_description",
         "read_history_description",
         "search_web_description",
         "read_page_description",
@@ -435,9 +435,7 @@ class DeckAgentToolSettings(BaseModel):
 
     @model_validator(mode="after")
     def details_must_not_repeat(self) -> "DeckAgentToolSettings":
-        if len(set(self.see_cards_default_details)) != len(
-            self.see_cards_default_details
-        ):
+        if len(set(self.see_cards_default_details)) != len(self.see_cards_default_details):
             raise ValueError("see_cards_default_details must not repeat a detail")
         return self
 
@@ -445,17 +443,14 @@ class DeckAgentToolSettings(BaseModel):
     def search_bounds_must_agree(self) -> "DeckAgentToolSettings":
         if self.search_cards_default_max_results > self.search_cards_hard_max_results:
             raise ValueError(
-                "search_cards_default_max_results must not exceed "
-                "search_cards_hard_max_results"
+                "search_cards_default_max_results must not exceed search_cards_hard_max_results"
             )
         return self
 
     @model_validator(mode="after")
     def history_bounds_must_agree(self) -> "DeckAgentToolSettings":
         if self.read_history_default_sessions > self.history_max_sessions:
-            raise ValueError(
-                "read_history_default_sessions must not exceed history_max_sessions"
-            )
+            raise ValueError("read_history_default_sessions must not exceed history_max_sessions")
         return self
 
 
@@ -655,9 +650,7 @@ class Settings(BaseSettings):
     scryfall_bulk_timeout_seconds: Annotated[float, Field(gt=0, le=3_600)] = 900.0
     scryfall_request_interval_seconds: Annotated[float, Field(ge=0, le=10)] = 0.1
     card_catalog_path: Path = Path("local-data/cards.sqlite3")
-    printing_selection: PrintingSelectionSettings = Field(
-        default_factory=PrintingSelectionSettings
-    )
+    printing_selection: PrintingSelectionSettings = Field(default_factory=PrintingSelectionSettings)
     openrouter_api_key: SecretStr | None = Field(
         default=None,
         validation_alias=AliasChoices(

@@ -517,6 +517,45 @@ describe("API client", () => {
     );
   });
 
+  it("delivers a valid deck text edit and drops a malformed one whole", async () => {
+    const onDeckTextEdit = vi.fn();
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValue(
+      sseResponse([
+        'data: {"type":"deck_text_edit","edit":{"deck_name":"Untitled Commander","reason":"capturing intent","name":"Decisive Ghalta","description":"High power and easy to pilot."}}\n\n',
+        'data: {"type":"deck_text_edit","edit":{"deck_name":"Untitled Commander","reason":"missing fields"}}\n\n',
+        `data: ${JSON.stringify({
+          type: "done",
+          reply: {
+            message: { role: "assistant", content: "I captured that." },
+            model: "openai/gpt-5.6-luna",
+            replayed_message_count: 1,
+            cost_usd: 0.001,
+            unpriced_call_count: 0,
+            tool_calls: [],
+            card_links: [],
+          },
+        })}\n\n`,
+      ]),
+    );
+
+    await createApiClient(
+      "http://localhost/api/v1",
+      fetcher,
+    ).streamDeckAgentChat?.(
+      [{ role: "user", content: "Make it high power but simple." }],
+      { name: "Untitled Commander", description: "", cards: [] },
+      { onText: () => {}, onToolCall: () => {}, onDeckTextEdit },
+    );
+
+    expect(onDeckTextEdit).toHaveBeenCalledTimes(1);
+    expect(onDeckTextEdit).toHaveBeenCalledWith({
+      deck_name: "Untitled Commander",
+      reason: "capturing intent",
+      name: "Decisive Ghalta",
+      description: "High power and easy to pilot.",
+    });
+  });
+
   it("posts a replayed turn whole, and reads back the ids that pair it", async () => {
     const fetcher = vi.fn<typeof fetch>().mockResolvedValue(
       sseResponse([

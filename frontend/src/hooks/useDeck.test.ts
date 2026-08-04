@@ -419,6 +419,52 @@ describe("useDeck history", () => {
 });
 
 describe("useDeck applied edits", () => {
+  it("applies name and description together to the turn's background deck and undoes both", () => {
+    const { result } = renderHook(() => useDeck());
+    const deckId = result.current.deck.id;
+    act(() => result.current.createDeck());
+    const openDeckId = result.current.deck.id;
+    let outcome: DeckEditOutcome | undefined;
+
+    act(() => {
+      outcome = result.current.applyTextEdit(
+        {
+          name: "Low-Friction Kinnan",
+          description: "cEDH with short lines and little stack interaction.",
+          reason: "capturing the user's durable intent",
+        },
+        "agent",
+        deckId,
+      );
+    });
+
+    expect(outcome?.applied).toBe(true);
+    expect(result.current.deck.id).toBe(openDeckId);
+    expect(result.current.deck).toMatchObject({
+      name: "Untitled Commander 2",
+      description: "",
+    });
+    expect(result.current.decks.find((deck) => deck.id === deckId)).toMatchObject({
+      name: "Low-Friction Kinnan",
+      description: "cEDH with short lines and little stack interaction.",
+    });
+    const recorded = recordedEdits(storedLog(deckId));
+    expect(recorded).toHaveLength(1);
+    expect(recorded[0]).toMatchObject({
+      reason: "capturing the user's durable intent",
+      name: { before: "Untitled Commander", after: "Low-Friction Kinnan" },
+      description: {
+        before: "",
+        after: "cEDH with short lines and little stack interaction.",
+      },
+    });
+
+    act(() => result.current.selectDeck(deckId));
+    act(() => result.current.back());
+    expect(result.current.deck.name).toBe("Untitled Commander");
+    expect(result.current.deck.description).toBe("");
+  });
+
   it("applies a multi-card edit as one history entry and one undo step", () => {
     const { result } = renderHook(() => useDeck());
     act(() => result.current.addCard(counterspell));

@@ -35,6 +35,7 @@ from mtg_deck_builder.domain.agent_chat import (
     DeckAgentDeckHistoryEdit,
     DeckAgentDeckPlacement,
     DeckAgentDeckSession,
+    DeckAgentDeckTextEdit,
 )
 from mtg_deck_builder.main import create_app
 from mtg_deck_builder.providers.openrouter import OpenRouterClient, OpenRouterError
@@ -121,6 +122,27 @@ def test_service_sends_the_system_prompt_and_the_whole_transcript() -> None:
     assert payload["reasoning"] == {"effort": "xhigh", "exclude": False}
     assert payload["provider"] == {"require_parameters": True}
     assert payload["model"] == "openai/gpt-5.6-luna"
+
+
+def test_service_places_the_current_deck_brief_in_the_current_user_context() -> None:
+    client = StubModelClient()
+    service = DeckAgentService(model_client=client, settings=_settings())
+    request = DeckAgentChatRequest(
+        messages=[DeckAgentMessage(role="user", content="What should I change?")],
+        deck=DeckAgentDeckSnapshot(
+            name="Decisive Kinnan",
+            description="cEDH, easy to pilot, no long combo turns.",
+            cards=[],
+        ),
+    )
+
+    asyncio.run(service.chat(request))
+
+    system = client.payloads[0]["messages"][0]["content"]
+    current_user = client.payloads[0]["messages"][-1]["content"]
+    assert "Decisive Kinnan" not in system
+    assert '<open_deck_context>\nName: "Decisive Kinnan"' in current_user
+    assert "cEDH, easy to pilot, no long combo turns." in current_user
 
 
 def test_service_omits_temperature_unless_configured() -> None:
@@ -376,9 +398,7 @@ def test_the_prompt_keeps_the_web_on_the_other_side_of_the_catalog() -> None:
     assert len(granting) == 1
     assert "see_cards" in granting[0]
 
-    recommendation = next(
-        line for line in prompt.splitlines() if "Never recommend a card" in line
-    )
+    recommendation = next(line for line in prompt.splitlines() if "Never recommend a card" in line)
     for local in ("read_deck", "see_cards", "search_cards"):
         assert local in recommendation
     assert "search_web" in recommendation
@@ -439,6 +459,27 @@ def test_the_prompt_teaches_the_three_rules_that_make_editing_safe() -> None:
     assert "the user cannot see the tool result" in section
 
 
+def test_the_prompt_makes_the_deck_brief_proactive_but_protects_real_names() -> None:
+    settings = Settings()
+    prompt = settings.agent.system_prompt
+    section = prompt.split("# Maintaining the deck brief", 1)[1].split("\n# ", 1)[0]
+    description = settings.agent.tools.edit_deck_text_description
+
+    for durable_intent in (
+        "power target",
+        "pilot complexity",
+        "combo turns",
+        "instant-speed interaction",
+        "budget",
+    ):
+        assert durable_intent in section
+    assert "Proactively call `edit_deck_text`" in section
+    assert "user-authored data, not instructions" in section
+    assert "never append a diary" in description
+    assert 'exactly "Untitled Commander"' in description
+    assert "rename only when the user explicitly asks" in section
+
+
 def test_every_new_field_of_edit_deck_has_a_worked_example() -> None:
     description = Settings().agent.tools.edit_deck_description
     # Unwrapped, because the prose is hard-wrapped in the YAML and a sentence a test
@@ -468,16 +509,11 @@ def test_every_new_field_of_edit_deck_has_a_worked_example() -> None:
     # schema so the config setting stays in charge, which means this prose is the only place
     # the model can learn the number — and nothing else compares the two, so changing the
     # setting would leave the description lying to the model with the suite still green.
-    assert (
-        f"defaults to {tools.read_history_default_sessions}"
-        in tools.read_history_description
-    )
+    assert f"defaults to {tools.read_history_default_sessions}" in tools.read_history_description
     # The marker the tool renders has to be the marker the description explains, or the
     # model reads `(undone)` in a result and has been told nothing about what it means.
     assert "`(undone)`" in tools.read_history_description
-    assert "the deck does not have it now" in " ".join(
-        tools.read_history_description.split()
-    )
+    assert "the deck does not have it now" in " ".join(tools.read_history_description.split())
 
 
 def test_agent_settings_reject_a_blank_prompt_and_an_unknown_effort() -> None:
@@ -498,6 +534,7 @@ class StubToolbox:
         enabled: bool = True,
         content: str | None = None,
         edit: DeckAgentDeckEdit | None = None,
+        text_edit: DeckAgentDeckTextEdit | None = None,
         ok: bool = True,
     ) -> None:
         self.enabled = enabled
@@ -507,6 +544,7 @@ class StubToolbox:
         self.histories: list[Any] = []
         self.resolved_names: list[list[str]] = []
         self._edit = edit
+        self._text_edit = text_edit
         self._ok = ok
 
     def definitions(self) -> list[dict[str, Any]]:
@@ -531,6 +569,7 @@ class StubToolbox:
             content=self.content if self.content is not None else f"{name} said something.",
             ok=self._ok,
             edit=self._edit,
+            text_edit=self._text_edit,
         )
 
     async def oracle_ids_for_names(self, names: list[str]) -> dict[str, UUID]:
@@ -542,9 +581,7 @@ class StubToolbox:
             "ghalta, primal hunger": UUID("11111111-1111-4111-8111-111111111111"),
         }
         return {
-            name.casefold(): known[name.casefold()]
-            for name in names
-            if name.casefold() in known
+            name.casefold(): known[name.casefold()] for name in names if name.casefold() in known
         }
 
 
@@ -690,9 +727,7 @@ def test_a_model_that_never_stops_calling_tools_still_answers() -> None:
     assert [message["role"] for message in final[:2]] == ["system", "user"]
     # ...and only there. A round that still has tools left is not told it has none.
     for payload in client.payloads[:-1]:
-        assert all(
-            message["content"] != final[-1]["content"] for message in payload["messages"]
-        )
+        assert all(message["content"] != final[-1]["content"] for message in payload["messages"])
 
 
 def test_service_rejects_a_tool_call_written_as_prose() -> None:
@@ -703,7 +738,7 @@ def test_service_rejects_a_tool_call_written_as_prose() -> None:
     client = StubModelClient(
         [
             _answer_response(
-                'to=search_local_cards  (json)\n'
+                "to=search_local_cards  (json)\n"
                 '{"semantic_sort":"mana rock, ramp","sort_by":"weighted"}'
             )
         ]
@@ -840,9 +875,7 @@ def test_deck_snapshot_contract_bounds_what_a_client_may_post() -> None:
     }
     assert DeckAgentDeckSnapshot(name="Deck", cards=[card]).cards[0].quantity == 1
     # A deck is optional: a client with none open still chats.
-    assert DeckAgentChatRequest(
-        messages=[DeckAgentMessage(role="user", content="Hi")]
-    ).deck is None
+    assert DeckAgentChatRequest(messages=[DeckAgentMessage(role="user", content="Hi")]).deck is None
     for invalid in (
         {**card, "section": "sideboard"},
         {**card, "quantity": 0},
@@ -877,9 +910,9 @@ def _session(edits: int = 1) -> DeckAgentDeckSession:
 def test_history_contract_bounds_what_a_client_may_post() -> None:
     # Optional, like the deck: a client that records no history still chats, and the
     # tool reports which of the two it is rather than pretending the deck has no past.
-    assert DeckAgentChatRequest(
-        messages=[DeckAgentMessage(role="user", content="Hi")]
-    ).history is None
+    assert (
+        DeckAgentChatRequest(messages=[DeckAgentMessage(role="user", content="Hi")]).history is None
+    )
     inside = DeckAgentChatRequest(
         messages=[DeckAgentMessage(role="user", content="Hi")],
         history=DeckAgentDeckHistory(sessions=[_session()] * MAX_HISTORY_SESSIONS),
@@ -892,9 +925,7 @@ def test_history_contract_bounds_what_a_client_may_post() -> None:
     # Both bounds are needed: fifty sessions of ten edits is a body worth carrying and
     # fifty sessions of five hundred edits is not, so the total is bounded too.
     with pytest.raises(ValidationError):
-        DeckAgentDeckHistory(
-            sessions=[_session(edits=MAX_HISTORY_EDITS // 4) for _ in range(5)]
-        )
+        DeckAgentDeckHistory(sessions=[_session(edits=MAX_HISTORY_EDITS // 4) for _ in range(5)])
     # A change that carries neither a before nor an after records nothing at all.
     with pytest.raises(ValidationError):
         DeckAgentDeckHistoryChange(name="Sol Ring")
@@ -907,9 +938,7 @@ def test_the_open_deck_and_its_history_both_reach_the_tools() -> None:
     toolbox = StubToolbox()
     deck = DeckAgentDeckSnapshot(name="Gruul Stompy", cards=[])
     posted = DeckAgentDeckHistory(sessions=[_session()])
-    service = DeckAgentService(
-        model_client=client, settings=_settings(), toolbox=toolbox
-    )
+    service = DeckAgentService(model_client=client, settings=_settings(), toolbox=toolbox)
 
     asyncio.run(
         service.chat(
@@ -967,17 +996,40 @@ def test_a_deck_edit_travels_as_its_own_event_beside_the_tool_line() -> None:
     assert events[1].edit.changes[0].name == "Sol Ring"
 
 
+def test_a_deck_text_edit_travels_as_its_own_event_beside_the_tool_line() -> None:
+    text_edit = DeckAgentDeckTextEdit(
+        deck_name="Untitled Commander",
+        reason="capturing intent",
+        name="Decisive Kinnan",
+        description="cEDH with short, simple turns.",
+    )
+    client = StubStreamingClient([[_tool_chunk("edit_deck_text", "{}")], _text_chunks("Captured.")])
+    service = DeckAgentService(
+        model_client=client,
+        settings=_settings(),
+        toolbox=StubToolbox(text_edit=text_edit),
+    )
+
+    events = _collect(_request("Keep this simple."), service)
+
+    assert [type(event).__name__ for event in events] == [
+        "DeckAgentToolEvent",
+        "DeckAgentDeckTextEditEvent",
+        "DeckAgentTextEvent",
+        "DeckAgentDoneEvent",
+    ]
+    assert events[1].type == "deck_text_edit"
+    assert events[1].edit.name == "Decisive Kinnan"
+
+
 def test_no_deck_edit_event_for_a_turn_that_changed_nothing_or_failed() -> None:
     def kinds(toolbox: StubToolbox) -> list[str]:
         client = StubStreamingClient(
             [[_tool_chunk("edit_deck", "{}")], _text_chunks("Nothing to do.")]
         )
-        service = DeckAgentService(
-            model_client=client, settings=_settings(), toolbox=toolbox
-        )
+        service = DeckAgentService(model_client=client, settings=_settings(), toolbox=toolbox)
         return [
-            type(event).__name__
-            for event in _collect(_request("Cut the weakest rock."), service)
+            type(event).__name__ for event in _collect(_request("Cut the weakest rock."), service)
         ]
 
     # A tool that carried no edit changed nothing, and a failed call changed nothing
@@ -1243,9 +1295,7 @@ def test_streaming_client_reads_chunks_and_ignores_keep_alives() -> None:
 
 
 def test_streaming_client_raises_an_error_chunk() -> None:
-    response = FakeStreamResponse(
-        [b'data: {"error": {"message": "rate limited", "code": 429}}\n']
-    )
+    response = FakeStreamResponse([b'data: {"error": {"message": "rate limited", "code": 429}}\n'])
     client = OpenRouterClient(
         api_key="test-key",
         base_url="https://openrouter.test/api/v1",
@@ -1445,11 +1495,7 @@ def test_stream_route_reports_an_empty_answer_as_a_contract_error_event() -> Non
 def _read_sse(lines: Any) -> list[dict[str, Any]]:
     """Parse a server-sent-event body into its JSON payloads."""
 
-    return [
-        json.loads(line[len("data:") :].strip())
-        for line in lines
-        if line.startswith("data:")
-    ]
+    return [json.loads(line[len("data:") :].strip()) for line in lines if line.startswith("data:")]
 
 
 def test_settings_load_the_repository_tool_yaml() -> None:
@@ -1467,17 +1513,13 @@ def test_settings_load_the_repository_tool_yaml() -> None:
 
 
 def _answering(text: str) -> StubModelClient:
-    return StubModelClient(
-        [{"choices": [{"message": {"role": "assistant", "content": text}}]}]
-    )
+    return StubModelClient([{"choices": [{"message": {"role": "assistant", "content": text}}]}])
 
 
 def test_braced_card_names_come_back_resolved_in_the_order_they_were_written() -> None:
     toolbox = StubToolbox()
     service = DeckAgentService(
-        model_client=_answering(
-            "Play {Ghalta, Primal Hunger} behind {Sol Ring}, not {Sol Rong}."
-        ),
+        model_client=_answering("Play {Ghalta, Primal Hunger} behind {Sol Ring}, not {Sol Rong}."),
         settings=_settings(),
         toolbox=toolbox,
     )
@@ -1654,10 +1696,7 @@ def test_a_replayed_tool_result_may_be_longer_than_prose_ever_is() -> None:
 
     listing = "x" * (MAX_MESSAGE_CHARS + 1_000)
     assert (
-        len(
-            DeckAgentMessage(role="tool", tool_call_id="call-1", content=listing).content
-            or ""
-        )
+        len(DeckAgentMessage(role="tool", tool_call_id="call-1", content=listing).content or "")
         == MAX_MESSAGE_CHARS + 1_000
     )
     # Prose keeps the bound it always had, and keeps being stripped.
@@ -1693,9 +1732,7 @@ def test_every_replayed_call_must_be_answered_by_id() -> None:
     with pytest.raises(ValidationError) as orphaned:
         DeckAgentChatRequest(
             messages=[
-                DeckAgentMessage(
-                    role="tool", tool_call_id="call-9", content="read_deck said so."
-                ),
+                DeckAgentMessage(role="tool", tool_call_id="call-9", content="read_deck said so."),
                 DeckAgentMessage(role="user", content="Carry on."),
             ]
         )
@@ -1703,8 +1740,7 @@ def test_every_replayed_call_must_be_answered_by_id() -> None:
 
     # A whole pair is accepted.
     assert (
-        len(DeckAgentChatRequest(messages=_interrupted_transcript(_call("call-1"))).messages)
-        == 4
+        len(DeckAgentChatRequest(messages=_interrupted_transcript(_call("call-1"))).messages) == 4
     )
 
 
@@ -1721,9 +1757,7 @@ def test_a_call_and_an_answer_that_do_not_refer_to_each_other_are_rejected() -> 
             messages=[
                 DeckAgentMessage(role="user", content="What is missing?"),
                 DeckAgentMessage(role="assistant", tool_calls=[_call("call-a")]),
-                DeckAgentMessage(
-                    role="tool", tool_call_id="call-b", content="read_deck said so."
-                ),
+                DeckAgentMessage(role="tool", tool_call_id="call-b", content="read_deck said so."),
                 DeckAgentMessage(role="user", content="Carry on."),
             ]
         )
@@ -1734,9 +1768,7 @@ def test_a_call_and_an_answer_that_do_not_refer_to_each_other_are_rejected() -> 
     with pytest.raises(ValidationError):
         DeckAgentChatRequest(
             messages=[
-                DeckAgentMessage(
-                    role="tool", tool_call_id="call-a", content="read_deck said so."
-                ),
+                DeckAgentMessage(role="tool", tool_call_id="call-a", content="read_deck said so."),
                 DeckAgentMessage(role="assistant", tool_calls=[_call("call-a")]),
                 DeckAgentMessage(role="user", content="Carry on."),
             ]
@@ -1744,9 +1776,7 @@ def test_a_call_and_an_answer_that_do_not_refer_to_each_other_are_rejected() -> 
 
     # Two calls sharing an id cannot be paired with one answer each.
     with pytest.raises(ValidationError):
-        DeckAgentChatRequest(
-            messages=_interrupted_transcript(_call("call-a"), _call("call-a"))
-        )
+        DeckAgentChatRequest(messages=_interrupted_transcript(_call("call-a"), _call("call-a")))
 
 
 def test_the_chat_route_rejects_an_unpaired_call_with_a_422() -> None:
@@ -1790,9 +1820,7 @@ def test_the_memory_window_never_cuts_a_replayed_group_in_half() -> None:
 
     reply = asyncio.run(
         service.chat(
-            DeckAgentChatRequest(
-                messages=_interrupted_transcript(_call("call-1"), _call("call-2"))
-            )
+            DeckAgentChatRequest(messages=_interrupted_transcript(_call("call-1"), _call("call-2")))
         )
     )
 
@@ -1812,9 +1840,7 @@ def test_the_window_only_reaches_back_when_a_kept_result_needs_it() -> None:
     """
 
     client = StubModelClient()
-    service = DeckAgentService(
-        model_client=client, settings=_settings(max_history_messages=2)
-    )
+    service = DeckAgentService(model_client=client, settings=_settings(max_history_messages=2))
 
     reply = asyncio.run(service.chat(_request("first", "second", "third", "fourth")))
 
@@ -1887,12 +1913,8 @@ def test_the_trim_keeps_moving_back_past_an_interleaved_group() -> None:
                 messages=[
                     DeckAgentMessage(role="assistant", tool_calls=[_call("call-a")]),
                     DeckAgentMessage(role="assistant", tool_calls=[_call("call-b")]),
-                    DeckAgentMessage(
-                        role="tool", tool_call_id="call-b", content="second."
-                    ),
-                    DeckAgentMessage(
-                        role="tool", tool_call_id="call-a", content="first."
-                    ),
+                    DeckAgentMessage(role="tool", tool_call_id="call-b", content="second."),
+                    DeckAgentMessage(role="tool", tool_call_id="call-a", content="first."),
                     DeckAgentMessage(role="user", content="Carry on."),
                 ]
             )
@@ -1905,9 +1927,7 @@ def test_the_trim_keeps_moving_back_past_an_interleaved_group() -> None:
 
 def test_a_replayed_group_reaches_the_provider_in_its_own_shape() -> None:
     client = StubModelClient()
-    service = DeckAgentService(
-        model_client=client, settings=_settings(), toolbox=StubToolbox()
-    )
+    service = DeckAgentService(model_client=client, settings=_settings(), toolbox=StubToolbox())
 
     asyncio.run(
         service.chat(
@@ -1954,14 +1974,10 @@ def test_a_replayed_group_reaches_the_provider_in_its_own_shape() -> None:
 
 def test_an_assistant_message_with_no_prose_replays_as_an_empty_string() -> None:
     client = StubModelClient()
-    service = DeckAgentService(
-        model_client=client, settings=_settings(), toolbox=StubToolbox()
-    )
+    service = DeckAgentService(model_client=client, settings=_settings(), toolbox=StubToolbox())
 
     asyncio.run(
-        service.chat(
-            DeckAgentChatRequest(messages=_interrupted_transcript(_call("call-1")))
-        )
+        service.chat(DeckAgentChatRequest(messages=_interrupted_transcript(_call("call-1"))))
     )
 
     # A cancelled turn that wrote nothing before it was stopped still has to carry its
@@ -1979,16 +1995,12 @@ def _replay_payload(
     """Run one turn over a replayed group and return what reached the provider."""
 
     client = StubModelClient()
-    service = DeckAgentService(
-        model_client=client, settings=_settings(), toolbox=StubToolbox()
-    )
+    service = DeckAgentService(model_client=client, settings=_settings(), toolbox=StubToolbox())
     asyncio.run(
         service.chat(
             DeckAgentChatRequest(
                 messages=_interrupted_transcript(*calls, results=results),
-                deck=DeckAgentDeckSnapshot(
-                    name="Gruul Stompy", cards=[], updated_at=updated_at
-                ),
+                deck=DeckAgentDeckSnapshot(name="Gruul Stompy", cards=[], updated_at=updated_at),
             )
         )
     )
@@ -1998,12 +2010,12 @@ def _replay_payload(
 def test_a_replayed_deck_read_survives_only_while_the_deck_has_not_moved() -> None:
     unchanged = _replay_payload(
         _call("call-1", "read_deck", revision="2026-08-03T10:00:00.000Z"),
-        results=["Deck \"Gruul Stompy\" — 99 cards, 99 distinct."],
+        results=['Deck "Gruul Stompy" — 99 cards, 99 distinct.'],
         updated_at="2026-08-03T10:00:00.000Z",
     )
     moved = _replay_payload(
         _call("call-1", "read_deck", revision="2026-08-03T10:00:00.000Z"),
-        results=["Deck \"Gruul Stompy\" — 99 cards, 99 distinct."],
+        results=['Deck "Gruul Stompy" — 99 cards, 99 distinct.'],
         updated_at="2026-08-03T11:30:00.000Z",
     )
 
@@ -2029,8 +2041,13 @@ def test_every_deck_dependent_tool_is_substituted_and_nothing_else_is() -> None:
         )
         return messages[3]["content"]
 
-    # The three whose output describes the deck.
-    assert sorted(DECK_DEPENDENT_TOOLS) == ["edit_deck", "read_deck", "read_history"]
+    # Every tool whose output describes the deck.
+    assert sorted(DECK_DEPENDENT_TOOLS) == [
+        "edit_deck",
+        "edit_deck_text",
+        "read_deck",
+        "read_history",
+    ]
     for name in sorted(DECK_DEPENDENT_TOOLS):
         assert replayed(name) == STALE_REPLAY_RESULT
 
@@ -2071,9 +2088,9 @@ def test_the_replay_note_reaches_the_model_only_when_something_is_replayed() -> 
     ordinary = StubModelClient()
     settings = _settings()
     asyncio.run(
-        DeckAgentService(
-            model_client=replaying, settings=settings, toolbox=StubToolbox()
-        ).chat(DeckAgentChatRequest(messages=_interrupted_transcript(_call("call-1"))))
+        DeckAgentService(model_client=replaying, settings=settings, toolbox=StubToolbox()).chat(
+            DeckAgentChatRequest(messages=_interrupted_transcript(_call("call-1")))
+        )
     )
     asyncio.run(
         DeckAgentService(model_client=ordinary, settings=settings).chat(
@@ -2208,9 +2225,7 @@ def test_the_streamed_done_event_carries_the_shed_reply() -> None:
     # The events carry every payload as it happens, because a turn cancelled after the
     # second one has to keep what it saw. The budget is applied to the finished reply,
     # which is what an answered turn stores.
-    assert [len(event.call.result or "") for event in tool_events] == [
-        MAX_TOOL_PAYLOAD_CHARS
-    ] * 3
+    assert [len(event.call.result or "") for event in tool_events] == [MAX_TOOL_PAYLOAD_CHARS] * 3
     assert [call.result is None for call in done.reply.tool_calls] == [
         True,
         False,
@@ -2287,9 +2302,7 @@ def test_an_answer_may_not_be_given_twice() -> None:
             messages=[
                 DeckAgentMessage(role="user", content="What is missing?"),
                 DeckAgentMessage(role="assistant", tool_calls=[_call("call-a")]),
-                DeckAgentMessage(
-                    role="tool", tool_call_id="call-a", content="read_deck said so."
-                ),
+                DeckAgentMessage(role="tool", tool_call_id="call-a", content="read_deck said so."),
                 DeckAgentMessage(
                     role="tool", tool_call_id="call-a", content="read_deck said so again."
                 ),
@@ -2403,12 +2416,8 @@ def test_the_trim_iterates_when_the_answers_come_in_call_order() -> None:
                 messages=[
                     DeckAgentMessage(role="assistant", tool_calls=[_call("call-a")]),
                     DeckAgentMessage(role="assistant", tool_calls=[_call("call-b")]),
-                    DeckAgentMessage(
-                        role="tool", tool_call_id="call-a", content="first."
-                    ),
-                    DeckAgentMessage(
-                        role="tool", tool_call_id="call-b", content="second."
-                    ),
+                    DeckAgentMessage(role="tool", tool_call_id="call-a", content="first."),
+                    DeckAgentMessage(role="tool", tool_call_id="call-b", content="second."),
                     DeckAgentMessage(role="user", content="Carry on."),
                 ]
             )
@@ -2417,12 +2426,8 @@ def test_the_trim_iterates_when_the_answers_come_in_call_order() -> None:
 
     assert reply.replayed_message_count == 5
     shaped = client.payloads[0]["messages"][1:]
-    asked = [
-        call["id"] for message in shaped for call in message.get("tool_calls", [])
-    ]
-    answered = [
-        message["tool_call_id"] for message in shaped if message["role"] == "tool"
-    ]
+    asked = [call["id"] for message in shaped for call in message.get("tool_calls", [])]
+    answered = [message["tool_call_id"] for message in shaped if message["role"] == "tool"]
     # The invariant itself rather than a message count: whatever the window did, every
     # result the provider is handed has the call it answers in front of it.
     assert asked == ["call-a", "call-b"]

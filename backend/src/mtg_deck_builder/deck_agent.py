@@ -41,6 +41,8 @@ from mtg_deck_builder.domain.agent_chat import (
     DeckAgentDeckEdit,
     DeckAgentDeckEditEvent,
     DeckAgentDeckSnapshot,
+    DeckAgentDeckTextEdit,
+    DeckAgentDeckTextEditEvent,
     DeckAgentDoneEvent,
     DeckAgentStreamEvent,
     DeckAgentTextEvent,
@@ -62,6 +64,7 @@ _BRACED_NAME = re.compile(r"\{([^{}\n]{1,200})\}")
 TextEmitter = Callable[[str], Awaitable[None]]
 ToolEmitter = Callable[[DeckAgentToolCall], Awaitable[None]]
 EditEmitter = Callable[[DeckAgentDeckEdit], Awaitable[None]]
+TextEditEmitter = Callable[[DeckAgentDeckTextEdit], Awaitable[None]]
 
 
 class DeckAgentUnavailable(RuntimeError):
@@ -129,20 +132,22 @@ class DeckAgentService:
         async def emit_edit(edit: DeckAgentDeckEdit) -> None:
             await events.put(DeckAgentDeckEditEvent(edit=edit))
 
+        async def emit_text_edit(edit: DeckAgentDeckTextEdit) -> None:
+            await events.put(DeckAgentDeckTextEditEvent(edit=edit))
+
         turn = asyncio.create_task(
             self._run(
                 request,
                 emit_text=emit_text,
                 emit_tool=emit_tool,
                 emit_edit=emit_edit,
+                emit_text_edit=emit_text_edit,
             )
         )
         try:
             while True:
                 queued = asyncio.create_task(events.get())
-                done, _ = await asyncio.wait(
-                    {queued, turn}, return_when=asyncio.FIRST_COMPLETED
-                )
+                done, _ = await asyncio.wait({queued, turn}, return_when=asyncio.FIRST_COMPLETED)
                 if queued in done:
                     yield queued.result()
                     continue
@@ -162,6 +167,7 @@ class DeckAgentService:
         emit_text: TextEmitter | None,
         emit_tool: ToolEmitter | None = None,
         emit_edit: EditEmitter | None = None,
+        emit_text_edit: TextEditEmitter | None = None,
     ) -> DeckAgentChatReply:
         """Answer one turn, reporting progress to whichever emitters were given."""
 
@@ -229,6 +235,8 @@ class DeckAgentService:
                     # and nothing has happened until the browser acts on this. A failed
                     # call carries no edit, so nothing is applied for one.
                     await emit_edit(outcome.edit)
+                if outcome.ok and outcome.text_edit is not None and emit_text_edit is not None:
+                    await emit_text_edit(outcome.text_edit)
                 conversation.append(
                     {
                         "role": "tool",
@@ -321,9 +329,7 @@ class DeckAgentService:
 
         message: dict[str, Any] = {"role": "assistant", "content": "".join(content)}
         if fragments:
-            message["tool_calls"] = [
-                fragments[index] for index in sorted(fragments)
-            ]
+            message["tool_calls"] = [fragments[index] for index in sorted(fragments)]
         return message, cost
 
     def _completion_payload(
@@ -389,12 +395,11 @@ class DeckAgentService:
         when something is marked.
         """
 
+        parts = [self._settings.system_prompt]
         instruction = self._settings.tools.replayed_call_instruction.strip()
-        if not instruction or not any(
-            message.role == "tool" for message in replayed
-        ):
-            return self._settings.system_prompt
-        return f"{self._settings.system_prompt}\n\n{instruction}"
+        if instruction and any(message.role == "tool" for message in replayed):
+            parts.append(instruction)
+        return "\n\n".join(parts)
 
     async def _card_links(self, text: str) -> list[DeckAgentCardLink]:
         """Resolve the card names the answer braced, in the order it named them.
@@ -466,9 +471,7 @@ def _group_start(messages: list[DeckAgentMessage], start: int) -> int:
     """
 
     owners = {
-        call.id: index
-        for index, message in enumerate(messages)
-        for call in message.tool_calls
+        call.id: index for index, message in enumerate(messages) for call in message.tool_calls
     }
     kept = start
     while True:
@@ -533,7 +536,33 @@ def _provider_messages(
             )
             continue
         shaped.append({"role": message.role, "content": message.content})
+    if deck is not None:
+        # User-authored deck text stays at user trust. Putting it in the system message
+        # would turn a description such as "ignore prior instructions" into an instruction.
+        for index in range(len(shaped) - 1, -1, -1):
+            if shaped[index]["role"] != "user":
+                continue
+            content = str(shaped[index].get("content") or "")
+            shaped[index] = {
+                **shaped[index],
+                "content": f"{content}\n\n{_deck_brief_context(deck)}",
+            }
+            break
     return shaped
+
+
+def _deck_brief_context(deck: DeckAgentDeckSnapshot | None) -> str:
+    """Give every turn the durable intent without requiring a paid read first."""
+
+    if deck is None:
+        return ""
+    description = deck.description or "(empty)"
+    return (
+        "<open_deck_context>\n"
+        f'Name: "{deck.name}"\n'
+        f"Description:\n{description}\n"
+        "</open_deck_context>"
+    )
 
 
 def _replayed_result(
@@ -587,9 +616,7 @@ def _within_replay_budget(calls: list[DeckAgentToolCall]) -> list[DeckAgentToolC
 def _payload_chars(calls: list[DeckAgentToolCall]) -> int:
     """Count the payload text one reply is carrying."""
 
-    return sum(
-        len(call.arguments_json or "") + len(call.result or "") for call in calls
-    )
+    return sum(len(call.arguments_json or "") + len(call.result or "") for call in calls)
 
 
 def _response_message(response: dict[str, Any]) -> dict[str, Any]:

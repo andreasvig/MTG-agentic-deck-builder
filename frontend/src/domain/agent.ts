@@ -2,11 +2,7 @@ import type { CardSearchResult } from "./card";
 import type { DeckCardEntry, DeckSection } from "./deck";
 import { isDeckSection } from "./deck";
 import type { DeckCardPlacement, DeckDiff, DeckHistory } from "./history";
-import {
-  createDeckHistory,
-  parseDeckHistory,
-  undoneEdits,
-} from "./history";
+import { createDeckHistory, parseDeckHistory, undoneEdits } from "./history";
 
 export type DeckAgentRole = "user" | "assistant";
 
@@ -120,6 +116,8 @@ export interface DeckAgentDeckCard {
 
 export interface DeckAgentDeckSnapshot {
   name: string;
+  /** Optional only for callers and stored turns from before deck briefs existed. */
+  description?: string;
   cards: DeckAgentDeckCard[];
   /**
    * When this deck last changed, so a replayed result can be told from a stale one.
@@ -178,6 +176,46 @@ export interface DeckAgentDeckEdit {
   deck_name: string;
   reason: string;
   changes: DeckAgentDeckEditChange[];
+}
+
+/** Full replacements emitted by `edit_deck_text`; omitted fields stay unchanged. */
+export interface DeckAgentDeckTextEdit {
+  deck_name: string;
+  reason: string;
+  name?: string;
+  description?: string;
+}
+
+export function readDeckAgentDeckTextEdit(
+  value: unknown,
+): DeckAgentDeckTextEdit | null {
+  if (
+    !isRecord(value) ||
+    typeof value.deck_name !== "string" ||
+    typeof value.reason !== "string" ||
+    (value.name !== undefined && typeof value.name !== "string") ||
+    (value.description !== undefined && typeof value.description !== "string")
+  ) {
+    return null;
+  }
+  const name = typeof value.name === "string" ? value.name.trim() : undefined;
+  const description =
+    typeof value.description === "string"
+      ? value.description.trim()
+      : undefined;
+  if (
+    (name === undefined && description === undefined) ||
+    (name !== undefined && (name.length === 0 || name.length > 80)) ||
+    (description !== undefined && description.length > 2_000)
+  ) {
+    return null;
+  }
+  return {
+    deck_name: value.deck_name,
+    reason: value.reason,
+    ...(name !== undefined ? { name } : {}),
+    ...(description !== undefined ? { description } : {}),
+  };
 }
 
 /**
@@ -317,6 +355,8 @@ export interface DeckAgentAppliedEdit {
   removed: string[];
   /** Same count, new section: a move states neither an addition nor a cut. */
   moved: string[];
+  /** Human-readable metadata changes; absent on transcripts written before they existed. */
+  textChanges?: string[];
   /**
    * The history entry this block describes, when the deck recorded one.
    *
@@ -362,6 +402,7 @@ export function summarizeDeckEditRecord(
     moved: [],
     editId,
   };
+  const textChanges: string[] = [];
   for (const change of diff.cards) {
     // Absent on a side means the card was not in the deck on that side, which counts as
     // none of it — an added card is every copy in, and a cut card is every copy out.
@@ -379,7 +420,17 @@ export function summarizeDeckEditRecord(
       summary.moved.push(change.name);
     }
   }
-  return summary;
+  if (diff.name) {
+    textChanges.push(`Renamed deck to ${diff.name.after}`);
+  }
+  if (diff.description) {
+    textChanges.push(
+      diff.description.after
+        ? "Updated deck description"
+        : "Cleared deck description",
+    );
+  }
+  return textChanges.length > 0 ? { ...summary, textChanges } : summary;
 }
 
 /**
@@ -410,7 +461,8 @@ export function isRefusedDeckEdit(applied: DeckAgentAppliedEdit): boolean {
   return (
     applied.added.length === 0 &&
     applied.removed.length === 0 &&
-    applied.moved.length === 0
+    applied.moved.length === 0 &&
+    (applied.textChanges?.length ?? 0) === 0
   );
 }
 
@@ -499,7 +551,9 @@ const MAX_STORED_CHATS = 12;
 const MAX_STORED_CHARS = 200_000;
 
 /** Read the persisted chats, treating anything malformed as no chats at all. */
-export function parseStoredAgentChats(raw: string | null): DeckAgentChatsByDeck {
+export function parseStoredAgentChats(
+  raw: string | null,
+): DeckAgentChatsByDeck {
   if (!raw) {
     return {};
   }
@@ -543,13 +597,17 @@ export function serializeAgentChats(chats: DeckAgentChatsByDeck): string {
   const stored: DeckAgentChatsByDeck = {};
   let used = 0;
   const recent = Object.entries(chats)
-    .sort(([, left], [, right]) => right.updatedAt.localeCompare(left.updatedAt))
+    .sort(([, left], [, right]) =>
+      right.updatedAt.localeCompare(left.updatedAt),
+    )
     .slice(0, MAX_STORED_CHATS);
 
   for (const [deckId, chat] of recent) {
     // Held by position rather than appended, so the second pass can upgrade one turn
     // in place without the two passes needing to agree about ordering.
-    const kept: (DeckAgentTranscriptEntry | null)[] = chat.entries.map(() => null);
+    const kept: (DeckAgentTranscriptEntry | null)[] = chat.entries.map(
+      () => null,
+    );
     for (let index = chat.entries.length - 1; index >= 0; index -= 1) {
       const lean = withoutToolPayloads(chat.entries[index]);
       const size = JSON.stringify(lean).length;
@@ -642,7 +700,9 @@ function readStoredChat(value: unknown): DeckAgentChat | null {
     unpricedCalls: readNonNegative(value.unpricedCalls),
     // Held to the composer's own limit, so restored text can always be sent.
     draft:
-      typeof value.draft === "string" ? value.draft.slice(0, MAX_DRAFT_CHARS) : "",
+      typeof value.draft === "string"
+        ? value.draft.slice(0, MAX_DRAFT_CHARS)
+        : "",
     updatedAt: typeof value.updatedAt === "string" ? value.updatedAt : "",
   };
 }
@@ -652,7 +712,10 @@ function readStoredEntry(value: unknown): DeckAgentTranscriptEntry | null {
     return null;
   }
   const { role, content } = value.message;
-  if ((role !== "user" && role !== "assistant") || typeof content !== "string") {
+  if (
+    (role !== "user" && role !== "assistant") ||
+    typeof content !== "string"
+  ) {
     return null;
   }
   const toolCalls = Array.isArray(value.toolCalls)
@@ -698,6 +761,9 @@ function readStoredAppliedEdit(value: unknown): DeckAgentAppliedEdit | null {
     added: readStoredNames(value.added),
     removed: readStoredNames(value.removed),
     moved: readStoredNames(value.moved),
+    ...(Array.isArray(value.textChanges)
+      ? { textChanges: readStoredNames(value.textChanges) }
+      : {}),
     // Carried through storage because the log outlives the page too: the edit this block
     // describes is still the deck's newest recorded change after a reload, so its Undo has
     // to come back with it. Absent stays absent — a block an older build stored names no
@@ -935,13 +1001,11 @@ function planEntryMessages(
       { role: "assistant", tool_calls: pairs.map((pair) => pair.call) },
       // Every call answered, immediately and in the order it was made, so the group is
       // whole wherever the backend's history window happens to cut.
-      ...pairs.map(
-        (pair): DeckAgentRequestMessage => ({
-          role: "tool",
-          tool_call_id: pair.call.id,
-          content: pair.result,
-        }),
-      ),
+      ...pairs.map((pair): DeckAgentRequestMessage => ({
+        role: "tool",
+        tool_call_id: pair.call.id,
+        content: pair.result,
+      })),
       ...spokenMessages(entry.message.content, shed),
     ],
   };
@@ -969,7 +1033,12 @@ function spokenMessages(
     framed.length > 0 ? `interrupted after ${framed.join(", ")}` : "";
   const spoken = framing && prose ? `${framing}\n\n${prose}` : framing || prose;
   return spoken
-    ? [{ role: "assistant", content: postedText(spoken, MAX_POSTED_PROSE_CHARS) }]
+    ? [
+        {
+          role: "assistant",
+          content: postedText(spoken, MAX_POSTED_PROSE_CHARS),
+        },
+      ]
     : [];
 }
 
@@ -1094,10 +1163,12 @@ export function toDeckSnapshot(
   name: string,
   entries: DeckCardEntry[],
   updatedAt?: string | null,
+  description = "",
 ): DeckAgentDeckSnapshot {
   const revision = (updatedAt ?? "").trim();
   return {
     name,
+    ...(description ? { description } : {}),
     cards: entries.map((entry) => ({
       scryfall_id: entry.card.scryfall_id,
       quantity: entry.quantity,
@@ -1258,7 +1329,9 @@ export function toDeckAgentHistory(
 
   const sessions: DeckAgentDeckSession[] = [];
   let budget = MAX_POSTED_HISTORY_EDITS;
-  for (const session of log.sessions.slice(-MAX_POSTED_HISTORY_SESSIONS).reverse()) {
+  for (const session of log.sessions
+    .slice(-MAX_POSTED_HISTORY_SESSIONS)
+    .reverse()) {
     if (budget <= 0) {
       break;
     }

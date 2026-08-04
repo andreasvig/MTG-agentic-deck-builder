@@ -20,7 +20,8 @@
   text-rendering: optimizeLegibility;
   font-variant-ligatures: none;
 
-  --mono: ui-monospace, "SF Mono", SFMono-Regular, "JetBrains Mono", Menlo, monospace;
+  --mono:
+    ui-monospace, "SF Mono", SFMono-Regular, "JetBrains Mono", Menlo, monospace;
   --font: var(--mono);
   --font-mono: var(--mono);
 
@@ -1451,6 +1452,102 @@ select {
   min-width: 0;
 }
 
+.deck-heading-copy {
+  flex: 1 1 520px;
+}
+
+.deck-description {
+  max-width: 720px;
+  margin-top: 9px;
+}
+
+.deck-description__text {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+}
+
+.deck-description__text--collapsed {
+  display: -webkit-box;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+}
+
+.deck-description__text:has(+ .deck-description__actions) {
+  color: var(--muted);
+}
+
+.deck-description__actions {
+  display: flex;
+  gap: 10px;
+  margin-top: 5px;
+}
+
+.deck-description__actions button,
+.deck-description-editor__footer button {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0;
+  color: var(--accent-dark);
+  font-size: 10px;
+  font-weight: 700;
+  background: transparent;
+  border: 0;
+}
+
+.deck-description-editor {
+  display: grid;
+  max-width: 720px;
+  gap: 6px;
+  margin-top: 10px;
+}
+
+.deck-description-editor label {
+  color: var(--muted);
+  font-size: 9px;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.deck-description-editor textarea {
+  width: 100%;
+  min-height: 112px;
+  padding: 10px 11px;
+  color: var(--ink);
+  font: inherit;
+  font-size: 12px;
+  line-height: 1.5;
+  resize: vertical;
+  background: var(--surface);
+  border: 1px solid #3f6b46;
+  border-radius: var(--radius);
+  outline: 0;
+}
+
+.deck-description-editor__footer {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 12px;
+}
+
+.deck-description-editor__footer span {
+  margin-right: auto;
+  color: var(--faint);
+  font-size: 9px;
+}
+
+.deck-description-editor__footer .primary-button {
+  padding: 5px 10px;
+  color: white;
+  background: var(--accent-dark);
+  border-radius: var(--radius-sm);
+}
+
 .eyebrow {
   margin: 0 0 3px;
   color: var(--accent);
@@ -1940,7 +2037,10 @@ select {
 .deck-list__head,
 .deck-list__row {
   display: grid;
-  grid-template-columns: 48px minmax(190px, 1.5fr) minmax(150px, 1fr) 70px 70px 92px;
+  grid-template-columns: 48px minmax(190px, 1.5fr) minmax(
+      150px,
+      1fr
+    ) 70px 70px 92px;
   min-width: 693px;
   align-items: center;
   gap: 8px;
@@ -2725,7 +2825,10 @@ select {
 
 .search-filters {
   display: grid;
-  grid-template-columns: minmax(170px, 1.1fr) minmax(176px, 1fr) minmax(190px, 1fr) minmax(190px, 1fr) 36px;
+  grid-template-columns: minmax(170px, 1.1fr) minmax(176px, 1fr) minmax(
+      190px,
+      1fr
+    ) minmax(190px, 1fr) 36px;
   grid-row: 3;
   align-items: end;
   gap: 12px;
@@ -4763,7 +4866,6 @@ select {
   .editor-toolbar {
     flex-wrap: wrap;
   }
-
 }
 
 @media (max-width: 860px) {

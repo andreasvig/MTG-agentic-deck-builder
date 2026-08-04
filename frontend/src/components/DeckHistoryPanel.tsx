@@ -70,7 +70,11 @@ export function DeckHistoryPanel({
   const rows = [...edits].reverse();
 
   return (
-    <div className="history-panel" ref={panelRef} aria-label="Recorded deck history">
+    <div
+      className="history-panel"
+      ref={panelRef}
+      aria-label="Recorded deck history"
+    >
       <header>
         <Icon name="history" aria-hidden="true" size={15} />
         <h2>History</h2>
@@ -112,7 +116,8 @@ export function DeckHistoryPanel({
               <span className="history-row__head">
                 <strong>Before any edits</strong>
                 {appliedEditId === null ? (
-                  <Icon name="check"
+                  <Icon
+                    name="check"
                     aria-label="The deck stands here"
                     className="history-row__here"
                     size={14}
@@ -151,7 +156,8 @@ function HistoryRow({
           <strong>{actor === "agent" ? "Agent" : "You"}</strong>
           <time dateTime={entry.at}>{clockFace(entry.at)}</time>
           {current ? (
-            <Icon name="check"
+            <Icon
+              name="check"
               aria-label="The deck stands here"
               className="history-row__here"
               size={14}
@@ -179,6 +185,13 @@ function describeEntry(entry: DeckHistoryEntry["entry"]): string {
   const parts = [
     ...entry.cards.map(describeDeckCardChange),
     ...(entry.name ? [`renamed to ${entry.name.after}`] : []),
+    ...(entry.description
+      ? [
+          entry.description.after
+            ? "updated deck description"
+            : "cleared deck description",
+        ]
+      : []),
   ];
   return parts.length > 0 ? parts.join(" · ") : entry.summary;
 }

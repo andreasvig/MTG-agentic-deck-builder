@@ -13,6 +13,7 @@ from mtg_deck_builder.card_catalog import CardSearchUnavailable
 from mtg_deck_builder.config import DeckAgentToolSettings
 from mtg_deck_builder.deck_agent_tools import (
     EDIT_DECK,
+    EDIT_DECK_TEXT,
     READ_DECK,
     READ_HISTORY,
     READ_PAGE,
@@ -230,9 +231,7 @@ RELATIONSHIPS = {
 class StubTaggerCatalog:
     def card_enrichment(self, oracle_id: UUID) -> CardEnrichment:
         related = {
-            field: [
-                RelatedOracleCard(oracle_id=MANA_VAULT, name=name) for name in names
-            ]
+            field: [RelatedOracleCard(oracle_id=MANA_VAULT, name=name) for name in names]
             for field, names in RELATIONSHIPS.get(oracle_id, {}).items()
         }
         return CardEnrichment(
@@ -322,9 +321,7 @@ class StubEdhrecService:
         return EdhrecSimilarCardList(
             oracle_id=oracle_id,
             suggestions=(
-                EdhrecSimilarSuggestion(
-                    rank=1, name="Fyndhorn Elves", oracle_id=BASALT_MONOLITH
-                ),
+                EdhrecSimilarSuggestion(rank=1, name="Fyndhorn Elves", oracle_id=BASALT_MONOLITH),
                 EdhrecSimilarSuggestion(rank=2, name="elvish mystic", oracle_id=None),
                 EdhrecSimilarSuggestion(rank=3, name="Woodland Mystic", oracle_id=None),
                 EdhrecSimilarSuggestion(rank=4, name="Mana Vault", oracle_id=MANA_VAULT),
@@ -438,12 +435,8 @@ def make_web_toolbox(
 
 def make_deck(*, commander: bool = True) -> DeckAgentDeckSnapshot:
     cards = [
-        DeckAgentDeckCard(
-            scryfall_id=PRINTING[SOL_RING], quantity=1, section="mainboard"
-        ),
-        DeckAgentDeckCard(
-            scryfall_id=PRINTING[FOREST], quantity=1, section="mainboard"
-        ),
+        DeckAgentDeckCard(scryfall_id=PRINTING[SOL_RING], quantity=1, section="mainboard"),
+        DeckAgentDeckCard(scryfall_id=PRINTING[FOREST], quantity=1, section="mainboard"),
         DeckAgentDeckCard(scryfall_id=PRINTING[ELVES], quantity=1, section="mainboard"),
     ]
     if commander:
@@ -507,9 +500,7 @@ def test_read_deck_reports_a_printing_the_catalog_does_not_know() -> None:
     deck = DeckAgentDeckSnapshot(
         name="Ghalta Stompy",
         cards=[
-            DeckAgentDeckCard(
-                scryfall_id=PRINTING[SOL_RING], quantity=1, section="mainboard"
-            ),
+            DeckAgentDeckCard(scryfall_id=PRINTING[SOL_RING], quantity=1, section="mainboard"),
             DeckAgentDeckCard(scryfall_id=stranger, quantity=1, section="mainboard"),
         ],
     )
@@ -691,9 +682,7 @@ def test_a_card_block_labels_and_quotes_every_field() -> None:
 
 def test_a_two_word_subtype_is_not_split_but_two_card_types_are() -> None:
     outcome = run(make_toolbox(), SEE_CARDS, {"cards": ["Ancient Den"]}, make_deck())
-    ghalta = run(
-        make_toolbox(), SEE_CARDS, {"cards": ["Ghalta, Primal Hunger"]}, make_deck()
-    )
+    ghalta = run(make_toolbox(), SEE_CARDS, {"cards": ["Ghalta, Primal Hunger"]}, make_deck())
 
     # Card types and supertypes are always single words, so they become separate
     # values; a subtype need not be (`Time Lord`), so that side is kept as printed.
@@ -881,9 +870,7 @@ def test_bad_arguments_come_back_as_a_failed_call_the_model_can_read() -> None:
         toolbox, SEE_CARDS, {"cards": ["Sol Ring"], "details": ["vibes"]}, make_deck()
     )
     no_cards = run(toolbox, SEE_CARDS, {"cards": []}, make_deck())
-    extra_key = run(
-        toolbox, SEE_CARDS, {"cards": ["Sol Ring"], "limit": 3}, make_deck()
-    )
+    extra_key = run(toolbox, SEE_CARDS, {"cards": ["Sol Ring"], "limit": 3}, make_deck())
     not_an_object = run(toolbox, SEE_CARDS, "Sol Ring", make_deck())
     unknown_tool = run(toolbox, "delete_deck", {}, make_deck())
 
@@ -923,7 +910,7 @@ def test_definitions_advertise_every_tool_without_claiming_strict() -> None:
     definitions = make_toolbox().definitions()
 
     names = [definition["function"]["name"] for definition in definitions]
-    assert names == [READ_DECK, SEE_CARDS, EDIT_DECK, READ_HISTORY]
+    assert names == [READ_DECK, SEE_CARDS, EDIT_DECK, EDIT_DECK_TEXT, READ_HISTORY]
     for definition in definitions:
         # Strict mode requires every property in `required`; `details` is optional,
         # and claiming strict anyway once cost an outright provider rejection.
@@ -939,6 +926,10 @@ def test_definitions_advertise_every_tool_without_claiming_strict() -> None:
     assert edit_deck["required"] == ["changes", "reason"]
     change = edit_deck["$defs"]["DeckEditChange"]
     assert sorted(change["required"]) == ["card", "quantity"]
+    edit_text = definitions[3]["function"]["parameters"]
+    assert edit_text["required"] == ["reason"]
+    assert edit_text["properties"]["name"]["anyOf"][0]["maxLength"] == 80
+    assert edit_text["properties"]["description"]["anyOf"][0]["maxLength"] == 2000
 
 
 def test_default_details_must_not_repeat() -> None:
@@ -1059,16 +1050,12 @@ CURVE_QUANTITIES = {
 
 
 def make_curve_toolbox(*, cards: Any = None) -> DeckAgentToolbox:
-    return make_toolbox(
-        card_catalog=StubCardCatalog(cards=CURVE_CARDS if cards is None else cards)
-    )
+    return make_toolbox(card_catalog=StubCardCatalog(cards=CURVE_CARDS if cards is None else cards))
 
 
 def make_curve_deck(*, only_commander: bool = False) -> DeckAgentDeckSnapshot:
     cards = [
-        DeckAgentDeckCard(
-            scryfall_id=PRINTING[CURVE_BOSS], quantity=1, section="command_zone"
-        )
+        DeckAgentDeckCard(scryfall_id=PRINTING[CURVE_BOSS], quantity=1, section="command_zone")
     ]
     if not only_commander:
         cards.extend(
@@ -1096,9 +1083,7 @@ def curve_rows(content: str) -> dict[str, int]:
 
     lines = content.splitlines()
     start = next(index for index, line in enumerate(lines) if line.startswith("Curve"))
-    end = next(
-        index for index, line in enumerate(lines) if line.startswith("Average mana value")
-    )
+    end = next(index for index, line in enumerate(lines) if line.startswith("Average mana value"))
     rows = [line for line in lines[start:end] if line.startswith("|")]
     assert rows[0] == "| MV | Cards |"
     assert rows[1] == "| --- | --- |"
@@ -1115,9 +1100,7 @@ def price_line(content: str) -> str:
 
 
 def average_line(content: str) -> str:
-    return next(
-        line for line in content.splitlines() if line.startswith("Average mana value")
-    )
+    return next(line for line in content.splitlines() if line.startswith("Average mana value"))
 
 
 def test_read_deck_draws_a_quantity_weighted_curve_in_eight_buckets() -> None:
@@ -1214,9 +1197,7 @@ def test_the_unpriced_count_counts_copies_rather_than_distinct_cards() -> None:
     deck = DeckAgentDeckSnapshot(
         name="Curve Test",
         cards=[
-            DeckAgentDeckCard(
-                scryfall_id=PRINTING[CURVE_BOSS], quantity=1, section="command_zone"
-            ),
+            DeckAgentDeckCard(scryfall_id=PRINTING[CURVE_BOSS], quantity=1, section="command_zone"),
             DeckAgentDeckCard(
                 scryfall_id=PRINTING[CURVE_UNPRICED], quantity=3, section="mainboard"
             ),
@@ -1229,9 +1210,7 @@ def test_the_unpriced_count_counts_copies_rather_than_distinct_cards() -> None:
     assert "1 of them" not in line
 
 
-def test_a_price_over_a_deck_with_unresolved_printings_does_not_speak_for_the_deck() -> (
-    None
-):
+def test_a_price_over_a_deck_with_unresolved_printings_does_not_speak_for_the_deck() -> None:
     # Only resolved entries can be priced, so a deck holding a printing the catalog does
     # not know has more cards than the total covers. The line must not call that figure
     # the deck's, and must point at the unresolved list rather than leaving the reader to
@@ -1239,9 +1218,7 @@ def test_a_price_over_a_deck_with_unresolved_printings_does_not_speak_for_the_de
     deck = DeckAgentDeckSnapshot(
         name="Curve Test",
         cards=[
-            DeckAgentDeckCard(
-                scryfall_id=PRINTING[CURVE_BOSS], quantity=1, section="command_zone"
-            ),
+            DeckAgentDeckCard(scryfall_id=PRINTING[CURVE_BOSS], quantity=1, section="command_zone"),
             DeckAgentDeckCard(
                 scryfall_id=UUID("ffffffff-ffff-4fff-8fff-ffffffffffff"),
                 quantity=5,
@@ -1264,9 +1241,7 @@ def test_a_deck_where_nothing_has_a_price_reports_no_total_rather_than_zero() ->
     deck = DeckAgentDeckSnapshot(
         name="Curve Test",
         cards=[
-            DeckAgentDeckCard(
-                scryfall_id=PRINTING[CURVE_UNPRICED], quantity=1, section="mainboard"
-            )
+            DeckAgentDeckCard(scryfall_id=PRINTING[CURVE_UNPRICED], quantity=1, section="mainboard")
         ],
     )
 
@@ -1278,9 +1253,7 @@ def test_a_deck_where_nothing_has_a_price_reports_no_total_rather_than_zero() ->
 
 
 def test_a_deck_holding_only_a_commander_has_no_curve_and_says_so() -> None:
-    outcome = run(
-        make_curve_toolbox(), READ_DECK, BOTH, make_curve_deck(only_commander=True)
-    )
+    outcome = run(make_curve_toolbox(), READ_DECK, BOTH, make_curve_deck(only_commander=True))
 
     # An all-zero table reads as a deck full of nought-cost spells.
     assert "| 0 | 0 |" not in outcome.content
@@ -1293,9 +1266,7 @@ def test_a_deck_holding_only_a_commander_has_no_curve_and_says_so() -> None:
 def test_an_empty_or_absent_deck_gets_no_curve_and_no_price() -> None:
     # Both extras asked for: there is nothing to report either way, and a deck with no
     # cards must not answer with an empty table or a total of nothing.
-    empty = run(
-        make_toolbox(), READ_DECK, BOTH, DeckAgentDeckSnapshot(name="Untitled", cards=[])
-    )
+    empty = run(make_toolbox(), READ_DECK, BOTH, DeckAgentDeckSnapshot(name="Untitled", cards=[]))
     no_deck = run(make_toolbox(), READ_DECK, BOTH, None)
 
     for outcome in (empty, no_deck):
@@ -1343,9 +1314,7 @@ def test_each_extra_is_offered_only_while_it_is_missing() -> None:
     assert "extra_info for more" not in both.content
 
 
-def test_the_mana_extra_prints_each_card_printed_cost_and_falls_back_to_its_value() -> (
-    None
-):
+def test_the_mana_extra_prints_each_card_printed_cost_and_falls_back_to_its_value() -> None:
     outcome = run(make_curve_toolbox(), READ_DECK, MANA, make_curve_deck())
 
     assert outcome.signature == "read_deck(mana)"
@@ -1411,9 +1380,7 @@ def test_a_section_holding_one_unpriced_card_counts_it_beside_the_total() -> Non
     deck = DeckAgentDeckSnapshot(
         name="Curve Test",
         cards=[
-            DeckAgentDeckCard(
-                scryfall_id=PRINTING[CURVE_ZERO], quantity=1, section="mainboard"
-            ),
+            DeckAgentDeckCard(scryfall_id=PRINTING[CURVE_ZERO], quantity=1, section="mainboard"),
             DeckAgentDeckCard(
                 scryfall_id=PRINTING[CURVE_UNPRICED], quantity=2, section="mainboard"
             ),
@@ -1442,9 +1409,7 @@ def test_both_extras_read_in_one_order_however_they_were_asked_for() -> None:
 
 
 def test_an_extra_that_is_not_an_extra_fails_the_call_and_stays_readable() -> None:
-    outcome = run(
-        make_curve_toolbox(), READ_DECK, {"extra_info": ["colour"]}, make_curve_deck()
-    )
+    outcome = run(make_curve_toolbox(), READ_DECK, {"extra_info": ["colour"]}, make_curve_deck())
 
     assert outcome.ok is False
     # The tool line names what was asked for, because a rejected argument is exactly
@@ -1591,10 +1556,7 @@ def test_a_commander_gate_removes_out_of_identity_cards_but_keeps_colorless() ->
     assert "Sol Ring" in restricted.content
     # The model typed the commander's name but not its colour identity, so the removal
     # is the one part of this it could not have predicted.
-    assert (
-        "Cards outside Marwyn, the Nurturer's {G} identity were removed"
-        in restricted.content
-    )
+    assert "Cards outside Marwyn, the Nurturer's {G} identity were removed" in restricted.content
     assert "were removed" not in unrestricted.content
 
 
@@ -1750,9 +1712,7 @@ def test_asking_for_themes_on_a_non_commander_does_not_cost_the_other_details() 
 def test_cards_already_in_the_deck_are_excluded_only_when_asked() -> None:
     toolbox = make_search_toolbox()
 
-    excluded = search(
-        toolbox, {"types": ANY_TYPE, "exclude_cards_in_deck": True}, make_deck()
-    )
+    excluded = search(toolbox, {"types": ANY_TYPE, "exclude_cards_in_deck": True}, make_deck())
     included = search(toolbox, {"types": ANY_TYPE}, make_deck())
 
     assert "Sol Ring" not in excluded.content
@@ -1839,10 +1799,7 @@ def test_the_identity_is_absent_rather_than_disagreeing_with_a_second_flag() -> 
     # Not restricting is expressed by having no identity, so the two fields that
     # would otherwise have to agree cannot disagree.
     assert permissive.catalog_filters(commander).commander_color_identity is None
-    assert (
-        permissive.catalog_filters(commander).include_outside_commander_color_identity
-        is False
-    )
+    assert permissive.catalog_filters(commander).include_outside_commander_color_identity is False
     assert SearchCardsArguments().catalog_filters(None).commander_color_identity is None
 
 
@@ -1854,12 +1811,14 @@ def test_search_cards_is_advertised_only_when_it_can_run() -> None:
         READ_DECK,
         SEE_CARDS,
         EDIT_DECK,
+        EDIT_DECK_TEXT,
         READ_HISTORY,
     ]
     assert [item["function"]["name"] for item in with_engine] == [
         READ_DECK,
         SEE_CARDS,
         EDIT_DECK,
+        EDIT_DECK_TEXT,
         READ_HISTORY,
         SEARCH_CARDS,
     ]
@@ -1960,17 +1919,11 @@ EDIT_CARDS = {
     EDIT_SOL_RING: make_card(EDIT_SOL_RING, "Sol Ring", "Artifact"),
     EDIT_SIGNET: make_card(EDIT_SIGNET, "Arcane Signet", "Artifact"),
     EDIT_BAUBLE: make_card(EDIT_BAUBLE, "Wayfarer's Bauble", "Artifact"),
-    EDIT_GROWTH: make_card(
-        EDIT_GROWTH, "Rampant Growth", "Sorcery", color_identity=["G"]
-    ),
+    EDIT_GROWTH: make_card(EDIT_GROWTH, "Rampant Growth", "Sorcery", color_identity=["G"]),
     # Outside a mono-green commander's identity, which the board warns about and does
     # not block. The agent must behave the same way.
-    EDIT_BOLT: make_card(
-        EDIT_BOLT, "Lightning Bolt", "Instant", color_identity=["R"]
-    ),
-    EDIT_FOREST: make_card(
-        EDIT_FOREST, "Forest", "Basic Land — Forest", color_identity=["G"]
-    ),
+    EDIT_BOLT: make_card(EDIT_BOLT, "Lightning Bolt", "Instant", color_identity=["R"]),
+    EDIT_FOREST: make_card(EDIT_FOREST, "Forest", "Basic Land — Forest", color_identity=["G"]),
 }
 
 
@@ -1982,18 +1935,10 @@ def make_edit_deck(*, commander: bool = True, forests: int = 3) -> DeckAgentDeck
     """A small Gruul Stompy: a commander, three rocks-and-ramp, and some Forests."""
 
     cards = [
-        DeckAgentDeckCard(
-            scryfall_id=PRINTING[EDIT_SIGNET], quantity=1, section="mainboard"
-        ),
-        DeckAgentDeckCard(
-            scryfall_id=PRINTING[EDIT_BAUBLE], quantity=1, section="mainboard"
-        ),
-        DeckAgentDeckCard(
-            scryfall_id=PRINTING[EDIT_GROWTH], quantity=1, section="mainboard"
-        ),
-        DeckAgentDeckCard(
-            scryfall_id=PRINTING[EDIT_FOREST], quantity=forests, section="mainboard"
-        ),
+        DeckAgentDeckCard(scryfall_id=PRINTING[EDIT_SIGNET], quantity=1, section="mainboard"),
+        DeckAgentDeckCard(scryfall_id=PRINTING[EDIT_BAUBLE], quantity=1, section="mainboard"),
+        DeckAgentDeckCard(scryfall_id=PRINTING[EDIT_GROWTH], quantity=1, section="mainboard"),
+        DeckAgentDeckCard(scryfall_id=PRINTING[EDIT_FOREST], quantity=forests, section="mainboard"),
     ]
     if commander:
         cards.insert(
@@ -2053,9 +1998,61 @@ def test_edit_deck_reports_an_add_and_a_removal_against_the_deck_as_posted() -> 
     assert f"  {REMOVED} Wayfarer's Bauble (was 1)" in outcome.content
     assert outcome.edit is not None
     assert [
-        (change.name, change.quantity, change.previous_quantity)
-        for change in outcome.edit.changes
+        (change.name, change.quantity, change.previous_quantity) for change in outcome.edit.changes
     ] == [("Sol Ring", 1, 0), ("Wayfarer's Bauble", 0, 1)]
+
+
+def test_edit_deck_text_emits_only_effective_full_replacements() -> None:
+    deck = make_deck()
+    deck = deck.model_copy(update={"name": "Untitled Commander", "description": "Casual stompy."})
+    outcome = run(
+        make_toolbox(),
+        EDIT_DECK_TEXT,
+        {
+            "name": "Decisive Ghalta",
+            "description": "High power, easy to pilot, and no long combo turns.",
+            "reason": "capturing the user's durable intent",
+        },
+        deck,
+    )
+
+    assert outcome.ok is True
+    assert outcome.edit is None
+    assert outcome.text_edit is not None
+    assert outcome.text_edit.model_dump(exclude_none=True) == {
+        "deck_name": "Untitled Commander",
+        "reason": "capturing the user's durable intent",
+        "name": "Decisive Ghalta",
+        "description": "High power, easy to pilot, and no long combo turns.",
+    }
+
+    noop = run(
+        make_toolbox(),
+        EDIT_DECK_TEXT,
+        {
+            "description": "Casual stompy.",
+            "reason": "repeating the current brief",
+        },
+        deck,
+    )
+    assert noop.ok is True
+    assert noop.text_edit is None
+    assert "Nothing changed" in noop.content
+
+
+def test_edit_deck_text_rejects_empty_calls_and_oversized_descriptions() -> None:
+    empty = run(make_toolbox(), EDIT_DECK_TEXT, {"reason": "nothing"}, make_deck())
+    oversized = run(
+        make_toolbox(),
+        EDIT_DECK_TEXT,
+        {"description": "x" * 2001, "reason": "too much"},
+        make_deck(),
+    )
+
+    assert empty.ok is False
+    assert oversized.ok is False
+    assert empty.text_edit is None
+    assert oversized.text_edit is None
 
 
 def test_a_change_the_deck_already_satisfies_did_nothing_and_is_not_emitted() -> None:
@@ -2087,7 +2084,7 @@ def test_a_change_the_deck_already_satisfies_did_nothing_and_is_not_emitted() ->
     # land in the history as an entry that changed nothing.
     assert second.ok is True
     assert second.edit is None
-    assert "Nothing changed in \"Gruul Stompy\"" in second.content
+    assert 'Nothing changed in "Gruul Stompy"' in second.content
 
 
 def test_an_unresolvable_card_changes_nothing_and_emits_no_edit() -> None:
@@ -2110,9 +2107,7 @@ def test_an_unresolvable_card_changes_nothing_and_emits_no_edit() -> None:
 
 
 def test_a_quantity_outside_the_bounds_or_absent_fails_validation() -> None:
-    over = edit(
-        {"changes": [{"card": "Sol Ring", "quantity": 100}], "reason": "a hundred rings"}
-    )
+    over = edit({"changes": [{"card": "Sol Ring", "quantity": 100}], "reason": "a hundred rings"})
     absent = edit({"changes": [{"card": "Sol Ring"}], "reason": "some rings"})
 
     for outcome in (over, absent):
@@ -2144,9 +2139,7 @@ def test_an_edit_with_no_deck_open_is_a_failed_call_rather_than_an_exception() -
 
 
 def test_an_add_outside_the_commanders_identity_succeeds_and_names_the_violation() -> None:
-    outcome = edit(
-        {"changes": [{"card": "Lightning Bolt", "quantity": 1}], "reason": "removal"}
-    )
+    outcome = edit({"changes": [{"card": "Lightning Bolt", "quantity": 1}], "reason": "removal"})
 
     # The board treats out-of-identity as a warning rather than a block, and an agent
     # held to a stricter rule than the drag target is inconsistent invisibly.
@@ -2219,9 +2212,7 @@ def test_the_edit_result_does_not_echo_the_callers_own_arguments() -> None:
 def test_a_zone_only_change_reads_as_a_move_and_keeps_the_count() -> None:
     outcome = edit(
         {
-            "changes": [
-                {"card": "Arcane Signet", "quantity": 1, "zone": "commander"}
-            ],
+            "changes": [{"card": "Arcane Signet", "quantity": 1, "zone": "commander"}],
             "reason": "the only legend I have",
         }
     )
@@ -2259,9 +2250,7 @@ def test_a_zone_the_schema_does_not_know_is_a_rejected_call() -> None:
 
 
 def test_an_absent_zone_is_not_the_deck_and_travels_as_absent() -> None:
-    outcome = edit(
-        {"changes": [{"card": "Ghalta, Primal Hunger", "quantity": 0}], "reason": "cut"}
-    )
+    outcome = edit({"changes": [{"card": "Ghalta, Primal Hunger", "quantity": 0}], "reason": "cut"})
 
     assert outcome.edit is not None
     # `None`, not `"mainboard"`. The browser reads absent as "leave placement alone", so a
@@ -2365,8 +2354,7 @@ def test_a_hundred_change_edit_cannot_overflow_the_tool_line() -> None:
     outcome = edit(
         {
             "changes": [
-                {"card": f"{index:03d} " + "a" * 196, "quantity": 1}
-                for index in range(100)
+                {"card": f"{index:03d} " + "a" * 196, "quantity": 1} for index in range(100)
             ],
             "reason": "a" * 200,
         }
@@ -2417,9 +2405,7 @@ def make_history() -> DeckAgentDeckHistory:
                 actor="user",
                 started_at=at(13, 10),
                 ended_at=at(13, 12),
-                edits=[
-                    DeckAgentDeckHistoryEdit(at=at(13, 10), cards=[added("Sol Ring")])
-                ],
+                edits=[DeckAgentDeckHistoryEdit(at=at(13, 10), cards=[added("Sol Ring")])],
             ),
             DeckAgentDeckSession(
                 actor="user",
@@ -2430,9 +2416,7 @@ def make_history() -> DeckAgentDeckHistory:
                         at=at(14, 2),
                         cards=[added("Arcane Signet"), removed("Rampant Growth")],
                     ),
-                    DeckAgentDeckHistoryEdit(
-                        at=at(14, 6), cards=[added("Command Tower")]
-                    ),
+                    DeckAgentDeckHistoryEdit(at=at(14, 6), cards=[added("Command Tower")]),
                 ],
             ),
             DeckAgentDeckSession(
@@ -2568,9 +2552,7 @@ def test_read_history_honours_the_limit_and_the_configured_default() -> None:
     small_default = history(toolbox=make_edit_toolbox(read_history_default_sessions=2))
     clamped = history(
         {"limit": 50},
-        toolbox=make_edit_toolbox(
-            read_history_default_sessions=1, history_max_sessions=1
-        ),
+        toolbox=make_edit_toolbox(read_history_default_sessions=1, history_max_sessions=1),
     )
 
     assert one.content.count("You,") + one.content.count("Me,") == 1
@@ -2632,9 +2614,7 @@ def test_read_deck_points_at_read_history_only_when_there_is_history() -> None:
 
     with_history = asyncio.run(toolbox.run(READ_DECK, {}, deck=deck, history=make_history()))
     absent = asyncio.run(toolbox.run(READ_DECK, {}, deck=deck, history=None))
-    empty = asyncio.run(
-        toolbox.run(READ_DECK, {}, deck=deck, history=DeckAgentDeckHistory())
-    )
+    empty = asyncio.run(toolbox.run(READ_DECK, {}, deck=deck, history=DeckAgentDeckHistory()))
 
     # Five recorded edits across four sessions.
     assert "5 earlier edits are recorded; call read_history" in with_history.content
@@ -2716,9 +2696,7 @@ def test_reading_a_page_carries_its_title_url_and_text() -> None:
     toolbox, _, fetcher = make_web_toolbox()
 
     outcome = asyncio.run(
-        toolbox.run(
-            READ_PAGE, {"url": "https://edhrec.com/commanders/grolnok"}, deck=None
-        )
+        toolbox.run(READ_PAGE, {"url": "https://edhrec.com/commanders/grolnok"}, deck=None)
     )
 
     assert outcome.ok is True
@@ -2799,9 +2777,7 @@ def test_a_download_cut_by_the_byte_cap_is_a_separate_claim_from_more_parts() ->
 
 
 def test_a_failed_search_is_reported_without_ending_the_turn() -> None:
-    toolbox, _, _ = make_web_toolbox(
-        answer=WebSearchUnavailable("The web search came back empty.")
-    )
+    toolbox, _, _ = make_web_toolbox(answer=WebSearchUnavailable("The web search came back empty."))
 
     outcome = asyncio.run(
         toolbox.run(SEARCH_WEB, {"question": "What defines the Grolnok archetype?"}, deck=None)
@@ -2829,9 +2805,7 @@ def test_a_web_signature_names_the_page_without_its_scheme() -> None:
     toolbox, _, _ = make_web_toolbox()
 
     outcome = asyncio.run(
-        toolbox.run(
-            READ_PAGE, {"url": "https://www.edhrec.com/commanders/grolnok"}, deck=None
-        )
+        toolbox.run(READ_PAGE, {"url": "https://www.edhrec.com/commanders/grolnok"}, deck=None)
     )
 
     assert outcome.signature == f"{READ_PAGE}(edhrec.com/commanders/grolnok)"
@@ -2857,9 +2831,7 @@ def test_the_requested_part_reaches_the_reader_and_defaults_to_the_first() -> No
     toolbox, _, fetcher = make_web_toolbox()
 
     asyncio.run(toolbox.run(READ_PAGE, {"url": "https://x.example/p"}, deck=None))
-    asyncio.run(
-        toolbox.run(READ_PAGE, {"url": "https://x.example/p", "page": 7}, deck=None)
-    )
+    asyncio.run(toolbox.run(READ_PAGE, {"url": "https://x.example/p", "page": 7}, deck=None))
 
     assert fetcher.asked == [1, 7]
 
@@ -2945,9 +2917,7 @@ def test_a_curly_apostrophe_is_not_reported_as_a_missing_card() -> None:
     Comparing those without normalising scored real cards as fabrications during the
     bake-off, which is how a metric ends up measuring its own parser."""
 
-    catalog = StubCardCatalog(
-        cards={SOL_RING: make_card(SOL_RING, "Ashnod's Altar", "Artifact")}
-    )
+    catalog = StubCardCatalog(cards={SOL_RING: make_card(SOL_RING, "Ashnod's Altar", "Artifact")})
     # The U+2019 is the subject of the test, not a typo: the stub catalog matches on a
     # bare casefold, so this passes only if the name is normalised before the lookup.
     curly = "Ashnod\u2019s Altar"  # RIGHT SINGLE QUOTATION MARK, spelled as an escape
@@ -2979,9 +2949,7 @@ def test_a_generic_page_is_never_checked_against_the_catalog() -> None:
     )
     toolbox, _, _ = make_web_toolbox(page=page)
 
-    outcome = asyncio.run(
-        toolbox.run(READ_PAGE, {"url": "https://example.com/primer"}, deck=None)
-    )
+    outcome = asyncio.run(toolbox.run(READ_PAGE, {"url": "https://example.com/primer"}, deck=None))
 
     assert "no card called" not in outcome.content
 

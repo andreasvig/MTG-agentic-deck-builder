@@ -2,12 +2,16 @@ import type {
   DeckAgentCardLink,
   DeckAgentChatReply,
   DeckAgentDeckEdit,
+  DeckAgentDeckTextEdit,
   DeckAgentDeckHistory,
   DeckAgentDeckSnapshot,
   DeckAgentRequestMessage,
   DeckAgentToolCall,
 } from "../domain/agent";
-import { readDeckAgentDeckEdit } from "../domain/agent";
+import {
+  readDeckAgentDeckEdit,
+  readDeckAgentDeckTextEdit,
+} from "../domain/agent";
 import type {
   CardEnrichment,
   EdhrecCommanderContext,
@@ -51,10 +55,7 @@ export interface ApiClient {
     oracleId: string,
     signal?: AbortSignal,
   ): Promise<CardEnrichment>;
-  getCard?(
-    oracleId: string,
-    signal?: AbortSignal,
-  ): Promise<CardSearchResult>;
+  getCard?(oracleId: string, signal?: AbortSignal): Promise<CardSearchResult>;
   getCommanderEdhrecContext?(
     oracleId: string,
     signal?: AbortSignal,
@@ -63,10 +64,7 @@ export interface ApiClient {
     oracleId: string,
     signal?: AbortSignal,
   ): Promise<EdhrecSimilarCards>;
-  searchCardTags?(
-    query: string,
-    signal?: AbortSignal,
-  ): Promise<CardTagMatch[]>;
+  searchCardTags?(query: string, signal?: AbortSignal): Promise<CardTagMatch[]>;
   searchCardSubtypes?(
     query: string,
     signal?: AbortSignal,
@@ -113,6 +111,8 @@ export interface DeckAgentStreamHandlers {
    * dropped rather than the turn.
    */
   onDeckEdit?(edit: DeckAgentDeckEdit): void;
+  /** A name/description replacement, ready for the browser to apply. */
+  onDeckTextEdit?(edit: DeckAgentDeckTextEdit): void;
 }
 
 export function createApiClient(
@@ -217,7 +217,9 @@ export function createApiClient(
       const url = new URL(`${normalizedBaseUrl}/cards/search`);
       url.searchParams.set("q", query.trim());
       url.searchParams.set("page", String(page));
-      filters?.colors.forEach((color) => url.searchParams.append("color", color));
+      filters?.colors.forEach((color) =>
+        url.searchParams.append("color", color),
+      );
       if (filters?.includeColorless) {
         url.searchParams.set("include_colorless", "true");
       }
@@ -306,8 +308,7 @@ export function createApiClient(
               colors: filters.colors,
               include_colorless: filters.includeColorless,
               color_mode: filters.colorMode,
-              include_non_commander_legal:
-                filters.includeNonCommanderLegal,
+              include_non_commander_legal: filters.includeNonCommanderLegal,
               include_outside_commander_color_identity:
                 filters.includeOutsideCommanderColorIdentity,
               commander_color_identity: filters.commanderColorIdentity,
@@ -326,10 +327,9 @@ export function createApiClient(
               ? {
                   commander_oracle_id: enhancements.commanderOracleId,
                   enhance_with_edhrec: enhancements.enhanceWithEdhrec,
-                  edhrec_theme:
-                    enhancements.enhanceWithEdhrec
-                      ? (enhancements.edhrecTheme ?? null)
-                      : null,
+                  edhrec_theme: enhancements.enhanceWithEdhrec
+                    ? (enhancements.edhrecTheme ?? null)
+                    : null,
                 }
               : {}),
           }),
@@ -367,7 +367,9 @@ export function createApiClient(
             ...(message.tool_calls && message.tool_calls.length > 0
               ? { tool_calls: message.tool_calls }
               : {}),
-            ...(message.tool_call_id ? { tool_call_id: message.tool_call_id } : {}),
+            ...(message.tool_call_id
+              ? { tool_call_id: message.tool_call_id }
+              : {}),
           })),
           ...(deck ? { deck } : {}),
           // Omitted rather than sent empty when there is none, because "no history was
@@ -606,7 +608,9 @@ function readDeckAgentReply(body: unknown): DeckAgentChatReply | null {
     replayed_message_count: body.replayed_message_count,
     cost_usd: typeof body.cost_usd === "number" ? body.cost_usd : null,
     unpriced_call_count:
-      typeof body.unpriced_call_count === "number" ? body.unpriced_call_count : 0,
+      typeof body.unpriced_call_count === "number"
+        ? body.unpriced_call_count
+        : 0,
     tool_calls: readDeckAgentToolCalls(body.tool_calls),
     card_links: readDeckAgentCardLinks(body.card_links),
   };
@@ -681,6 +685,11 @@ async function readDeckAgentStream(
       const edit = readDeckAgentDeckEdit(event.edit);
       if (edit) {
         handlers.onDeckEdit?.(edit);
+      }
+    } else if (event.type === "deck_text_edit") {
+      const edit = readDeckAgentDeckTextEdit(event.edit);
+      if (edit) {
+        handlers.onDeckTextEdit?.(edit);
       }
     } else if (event.type === "error") {
       // The response was already a 200 by the time this happened, so the failure
@@ -790,8 +799,7 @@ async function readEdhrecCommanderContextResponse(
       body.source !== "cache" &&
       body.source !== "network") ||
     typeof body.commander_oracle_id !== "string" ||
-    (body.commander_name !== null &&
-      typeof body.commander_name !== "string") ||
+    (body.commander_name !== null && typeof body.commander_name !== "string") ||
     !Array.isArray(body.themes) ||
     !body.themes.every(
       (theme) =>
@@ -820,7 +828,9 @@ async function readEdhrecSimilarCardsResponse(
   const body: unknown = await response.json();
   if (
     !isRecord(body) ||
-    !["not_requested", "applied", "unavailable"].includes(String(body.status)) ||
+    !["not_requested", "applied", "unavailable"].includes(
+      String(body.status),
+    ) ||
     (body.source !== null &&
       body.source !== undefined &&
       body.source !== "cache" &&
@@ -847,7 +857,10 @@ async function readCardTagSearchResponse(
   response: Response,
 ): Promise<CardTagMatch[]> {
   if (!response.ok) {
-    throw new ApiError("Card tags are temporarily unavailable.", response.status);
+    throw new ApiError(
+      "Card tags are temporarily unavailable.",
+      response.status,
+    );
   }
   const body: unknown = await response.json();
   if (
@@ -873,7 +886,10 @@ async function readCardSubtypeSearchResponse(
   response: Response,
 ): Promise<CardSubtypeMatch[]> {
   if (!response.ok) {
-    throw new ApiError("Card subtypes are temporarily unavailable.", response.status);
+    throw new ApiError(
+      "Card subtypes are temporarily unavailable.",
+      response.status,
+    );
   }
   const body: unknown = await response.json();
   if (
@@ -944,10 +960,8 @@ function isSearchDebugSummary(value: unknown): value is SearchDebugSummary {
         typeof stage.name === "string" &&
         ["ok", "skipped", "error"].includes(String(stage.status)) &&
         typeof stage.duration_ms === "number" &&
-        (stage.input_count === null ||
-          typeof stage.input_count === "number") &&
-        (stage.output_count === null ||
-          typeof stage.output_count === "number"),
+        (stage.input_count === null || typeof stage.input_count === "number") &&
+        (stage.output_count === null || typeof stage.output_count === "number"),
     ) &&
     isSearchDebugTrace(value.trace)
   );

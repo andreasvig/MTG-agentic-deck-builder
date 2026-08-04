@@ -26,6 +26,7 @@ function entry(
 const deck: Deck = {
   id: "deck-1",
   name: "Ghalta Stompy",
+  description: "",
   format: "commander",
   cards: [entry(ghalta, "command_zone"), entry(solRing), entry(counterspell)],
   created_at: "2026-08-01T09:00:00.000Z",

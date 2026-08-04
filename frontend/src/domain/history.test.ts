@@ -99,6 +99,14 @@ const diffCases: { label: string; before: Deck; after: Deck }[] = [
     after: edited((deck) => ({ ...deck, name: "Naya Beats" })),
   },
   {
+    label: "a deck description edit",
+    before: baseDeck(),
+    after: edited((deck) => ({
+      ...deck,
+      description: "High-power stompy with short, decisive turns.",
+    })),
+  },
+  {
     label: "every axis at once",
     before: baseDeck(),
     after: edited((deck) =>
@@ -106,6 +114,7 @@ const diffCases: { label: string; before: Deck; after: Deck }[] = [
         {
           ...deck,
           name: "Naya Beats",
+          description: "Combat-focused and easy to pilot.",
           cards: [
             ...deck.cards.filter(
               (entry) => entry.card.scryfall_id !== solRing.scryfall_id,
@@ -430,9 +439,7 @@ describe("deck history wording", () => {
     expect(describeDeckCardChange(removed.cards[0])).toBe("−Sol Ring");
     const requantified = deriveDeckDiff(
       baseDeck(),
-      edited((deck) =>
-        withEntry(deck, solRing.scryfall_id, { quantity: 3 }),
-      ),
+      edited((deck) => withEntry(deck, solRing.scryfall_id, { quantity: 3 })),
     ).diff;
     expect(describeDeckCardChange(requantified.cards[0])).toBe(
       "Sol Ring ×1 → ×3",
@@ -549,9 +556,7 @@ describe("deck history travel", () => {
     expect(appliedEditCount(start)).toBe(0);
     expect(undoneEdits(start)).toHaveLength(4);
     expect(planHistoryTravel(rewound.deck, start, "back")).toBeNull();
-    expect(
-      planHistoryTravel(rewound.deck, start, { editId: null }),
-    ).toBeNull();
+    expect(planHistoryTravel(rewound.deck, start, { editId: null })).toBeNull();
   });
 
   it("refuses a whole jump when one edit on the path cannot be replayed", () => {
@@ -571,7 +576,9 @@ describe("deck history travel", () => {
     }
     const start: DeckHistory = { ...pruned, at: null };
 
-    const forward = planHistoryTravel(rewound.deck, start, { editId: "edit-3" });
+    const forward = planHistoryTravel(rewound.deck, start, {
+      editId: "edit-3",
+    });
 
     // Refused whole rather than landing on the one edit before the gap: a deck left halfway
     // through a jump is in a state no recorded edit describes, and the cursor would then
@@ -672,13 +679,8 @@ describe("deck history pruning", () => {
     // Readable, and no longer replayable: replaying it forward would have to rebuild
     // Sol Ring from the payload the prune dropped.
     expect(
-      refused(
-        applyDeckDiff(
-          { ...baseDeck(), cards: [] },
-          oldest,
-          pruned.cards,
-        ),
-      ).problem,
+      refused(applyDeckDiff({ ...baseDeck(), cards: [] }, oldest, pruned.cards))
+        .problem,
     ).toBe("missing_payload");
   });
 
@@ -780,7 +782,8 @@ describe("stored deck history", () => {
     expect(forward.cards.map((card) => card.card.name)).toEqual(["Sol Ring"]);
     expect(forward.cards[0]).not.toHaveProperty("categories");
     expect(
-      applied(applyDeckDiff(forward, invertDeckDiff(entry), parsed.cards)).cards,
+      applied(applyDeckDiff(forward, invertDeckDiff(entry), parsed.cards))
+        .cards,
     ).toEqual([]);
   });
 });
@@ -789,6 +792,7 @@ function baseDeck(): Deck {
   return {
     id: "deck-1",
     name: "Gruul Stompy",
+    description: "",
     format: "commander",
     cards: [
       makeEntry(ghalta, "command_zone"),
@@ -844,7 +848,11 @@ function printing(index: number): CardSearchResult {
   };
 }
 
-function stamp(diff: DeckDiff, id = "edit-1", at = AFTER_UPDATED_AT): DeckEditEntry {
+function stamp(
+  diff: DeckDiff,
+  id = "edit-1",
+  at = AFTER_UPDATED_AT,
+): DeckEditEntry {
   return { id, at, ...diff };
 }
 

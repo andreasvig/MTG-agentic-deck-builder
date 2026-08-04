@@ -29,7 +29,8 @@ The first manual editing slice is usable and tested.
 | Deck agent read-only tools | Shipped: `read_deck` (with `extra_info` for costs, the curve and prices), `see_cards`, `search_cards`, `read_history` |
 | Deck agent web research | Shipped: `search_web` on Perplexity `sonar` with its sources, `read_page` for a plain fetch of one, paginated so a long page is read on rather than cut off — leads only, never card data |
 | Deck site parsers | Shipped: EDHREC, Archidekt, MTGGoldfish, TappedOut, Aetherhub, Commander Spellbook, cEDHstat and YouTube read through their own endpoints behind `read_page`, with any miss falling back to the generic reader. A fetched decklist's names are checked against the local catalog |
-| Deck agent deck editing | Shipped: `edit_deck`, auto-applied, one undo step per edit |
+| Deck name and description | Shipped: editable 2,000-character shared brief, collapsed to three lines |
+| Deck agent deck editing | Shipped: `edit_deck` for cards and `edit_deck_text` for name/description, auto-applied, one undo step per edit |
 | Backend-enforced deck mutation and confirmed patches | Not implemented, and not the direction — see ADR 0036 |
 
 Read [`docs/implementation-status.md`](docs/implementation-status.md) before
@@ -442,6 +443,8 @@ changelog.md           Notable delivered changes
 - Placement is a section: command zone or deck. A deck saved before ADR 0037 opens
   with every card intact and its custom groups dropped, since the board now groups by
   derived card type and a stored group name has nowhere to appear.
+- Every deck carries a plain-text description as its shared current intent. A deck saved
+  before ADR 0046 opens with an empty one; the storage key stays the same.
 
 The browser-local persistence decision and backend migration requirements are
 recorded in
@@ -460,9 +463,10 @@ recorded in
   a turn is thinking, so the panel reports that it is thinking rather than narrating it.
 - The deck agent's panel is desktop-only. It can read the open deck (`read_deck`), look
   cards up (`see_cards`), search the whole catalog under filters it writes itself
-  (`search_cards`), read what has already been done (`read_history`), search the open web
+  (`search_cards`), read what has already been done (`read_history`), maintain the shared
+  name and deck brief (`edit_deck_text`), search the open web
   for brews and write-ups (`search_web`), read one of those pages (`read_page`) and change
-  the deck (`edit_deck`) — but not everything an edit could be. It sets the count a card should be
+  the deck (`edit_deck`) — but not everything a card edit could be. It sets the count a card should be
   at and which of the two zones it sits in, it does not reorder anything, and Partner and
   background command zones are unhandled here as they are in the other tools.
 - Deck history is browser-local and per deck, so it does not survive a browser wipe and

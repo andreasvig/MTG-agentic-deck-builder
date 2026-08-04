@@ -2248,6 +2248,98 @@ test("escape cancels a turn and hands the question back to the composer", async 
   await expect(panel.getByRole("button", { name: "Send message" })).toBeEnabled();
 });
 
+test("the agent can name an untitled deck and maintain its editable brief", async ({
+  page,
+}) => {
+  await clearDeck(page);
+  await page.route("**/api/v1/agent/chat/stream", async (route) => {
+    await fulfillSse(route, [
+      {
+        type: "tool",
+        call: {
+          name: "edit_deck_text",
+          signature: "edit_deck_text(name, description)",
+          ok: true,
+          detail: null,
+          id: "call-brief",
+          arguments_json: JSON.stringify({
+            name: "Decisive Kinnan",
+            description:
+              "cEDH power target. Easy to pilot, with short combo turns and little instant-speed interaction.",
+            reason: "capturing the user's durable intent",
+          }),
+          result: "Updated the deck name and description.",
+        },
+      },
+      {
+        type: "deck_text_edit",
+        edit: {
+          deck_name: "Untitled Commander",
+          reason: "capturing the user's durable intent",
+          name: "Decisive Kinnan",
+          description:
+            "cEDH power target. Easy to pilot, with short combo turns and little instant-speed interaction.",
+        },
+      },
+      {
+        type: "done",
+        reply: {
+          message: {
+            role: "assistant",
+            content: "I captured that as the deck's direction.",
+          },
+          model: "openai/gpt-5.6-luna",
+          replayed_message_count: 1,
+          cost_usd: 0.001,
+          unpriced_call_count: 0,
+          tool_calls: [],
+          card_links: [],
+        },
+      },
+    ]);
+  });
+  await page.goto("/");
+
+  await page.getByLabel("Message the deck agent").fill(
+    "Build this for cEDH, but keep it easy to pilot without long combo turns.",
+  );
+  await page.getByLabel("Send message").click();
+
+  await expect(
+    page.getByRole("heading", { name: "Decisive Kinnan" }),
+  ).toBeVisible();
+  await expect(
+    page.getByText(
+      "cEDH power target. Easy to pilot, with short combo turns and little instant-speed interaction.",
+    ),
+  ).toBeVisible();
+  const transcript = page.getByRole("log", {
+    name: "Deck agent conversation",
+  });
+  await expect(transcript.getByText("Applied deck details")).toBeVisible();
+
+  await transcript.getByRole("button", { name: "Undo" }).click();
+  await expect(
+    page.getByRole("heading", { name: "Untitled Commander" }),
+  ).toBeVisible();
+  const addDescription = page.getByRole("button", { name: "Add description" });
+  await expect(addDescription).toBeVisible();
+  await addDescription.click();
+  await page.getByLabel("Deck description").fill(
+    [
+      "High-power creature combo with a cEDH target.",
+      "Keep the primary lines short and easy to explain.",
+      "Prefer low decision density during ordinary setup turns.",
+      "Avoid plans that require holding up many instant-speed interactions.",
+    ].join("\n"),
+  );
+  await page.getByRole("button", { name: "Save", exact: true }).click();
+  const seeAll = page.getByRole("button", { name: "See all" });
+  await expect(seeAll).toBeVisible();
+  await seeAll.click();
+  await expect(page.getByRole("button", { name: "Show less" })).toBeVisible();
+});
+
 test("a deck leaves the application in a shape a shop can read", async ({
   page,
 }, testInfo) => {

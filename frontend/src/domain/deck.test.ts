@@ -81,6 +81,13 @@ describe("deck domain", () => {
     expect(parsed.cards).toHaveLength(2);
   });
 
+  it("migrates a deck saved before descriptions to an empty brief", () => {
+    const current = createEmptyDeck(new Date("2026-01-01T00:00:00Z"));
+    const { description: _description, ...legacy } = current;
+
+    expect(parseStoredDeck(JSON.stringify(legacy)).description).toBe("");
+  });
+
   it("names each section once, for the board, the inspector and the agent", () => {
     expect(sectionLabel("command_zone")).toBe("Command zone");
     expect(sectionLabel("mainboard")).toBe("Deck");
