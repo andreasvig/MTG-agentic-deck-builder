@@ -193,11 +193,19 @@ export function readDeckAgentDeckTextEdit(
     !isRecord(value) ||
     typeof value.deck_name !== "string" ||
     typeof value.reason !== "string" ||
-    (value.name !== undefined && typeof value.name !== "string") ||
-    (value.description !== undefined && typeof value.description !== "string")
+    (value.name !== undefined &&
+      value.name !== null &&
+      typeof value.name !== "string") ||
+    (value.description !== undefined &&
+      value.description !== null &&
+      typeof value.description !== "string")
   ) {
     return null;
   }
+  // Pydantic serializes these optional fields without `exclude_none`, so a
+  // description-only edit carries `name: null` and a name-only edit carries
+  // `description: null`. Both are absence, exactly like an omitted field; rejecting
+  // either drops the whole live edit after the tool already told the model it ran.
   const name = typeof value.name === "string" ? value.name.trim() : undefined;
   const description =
     typeof value.description === "string"

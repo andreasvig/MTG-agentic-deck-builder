@@ -521,7 +521,9 @@ describe("API client", () => {
     const onDeckTextEdit = vi.fn();
     const fetcher = vi.fn<typeof fetch>().mockResolvedValue(
       sseResponse([
-        'data: {"type":"deck_text_edit","edit":{"deck_name":"Untitled Commander","reason":"capturing intent","name":"Decisive Ghalta","description":"High power and easy to pilot."}}\n\n',
+        // Exact backend serialization: optional Pydantic fields are present as null.
+        'data: {"type":"deck_text_edit","edit":{"deck_name":"Untitled Commander","reason":"capturing intent","name":null,"description":"High power and easy to pilot."}}\n\n',
+        'data: {"type":"deck_text_edit","edit":{"deck_name":"Untitled Commander","reason":"giving it a real name","name":"Decisive Ghalta","description":null}}\n\n',
         'data: {"type":"deck_text_edit","edit":{"deck_name":"Untitled Commander","reason":"missing fields"}}\n\n',
         `data: ${JSON.stringify({
           type: "done",
@@ -547,12 +549,16 @@ describe("API client", () => {
       { onText: () => {}, onToolCall: () => {}, onDeckTextEdit },
     );
 
-    expect(onDeckTextEdit).toHaveBeenCalledTimes(1);
-    expect(onDeckTextEdit).toHaveBeenCalledWith({
+    expect(onDeckTextEdit).toHaveBeenCalledTimes(2);
+    expect(onDeckTextEdit).toHaveBeenNthCalledWith(1, {
       deck_name: "Untitled Commander",
       reason: "capturing intent",
-      name: "Decisive Ghalta",
       description: "High power and easy to pilot.",
+    });
+    expect(onDeckTextEdit).toHaveBeenNthCalledWith(2, {
+      deck_name: "Untitled Commander",
+      reason: "giving it a real name",
+      name: "Decisive Ghalta",
     });
   });
 

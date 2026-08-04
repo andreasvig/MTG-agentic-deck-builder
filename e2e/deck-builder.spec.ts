@@ -2360,6 +2360,65 @@ test("the agent can name an untitled deck and maintain its editable brief", asyn
   await expect(page.getByRole("button", { name: "Show less" })).toBeVisible();
 });
 
+test("a description-only agent edit survives the backend's null name field", async ({
+  page,
+}) => {
+  await clearDeck(page);
+  const description =
+    "A Gruul partner token deck that turns landfall Rocks and Saprolings into combat pressure.";
+  await page.route("**/api/v1/agent/chat/stream", async (route) => {
+    await fulfillSse(route, [
+      {
+        type: "tool",
+        call: {
+          name: "edit_deck_text",
+          signature: "edit_deck_text(description)",
+          ok: true,
+          detail: null,
+          id: "call-description-only",
+          arguments_json: JSON.stringify({
+            description,
+            reason: "capturing the deck's intent",
+          }),
+          result: "Updated the deck description.",
+        },
+      },
+      {
+        type: "deck_text_edit",
+        edit: {
+          deck_name: "Untitled Commander",
+          reason: "capturing the deck's intent",
+          // `_sse` deliberately keeps Pydantic's optional nulls. This exact field is
+          // what the browser used to reject, dropping the otherwise valid edit whole.
+          name: null,
+          description,
+        },
+      },
+      {
+        type: "done",
+        reply: {
+          message: { role: "assistant", content: "I added the deck description." },
+          model: "openai/gpt-5.6-luna",
+          replayed_message_count: 1,
+          cost_usd: 0.001,
+          unpriced_call_count: 0,
+          tool_calls: [],
+          card_links: [],
+        },
+      },
+    ]);
+  });
+  await page.goto("/");
+
+  await page.getByLabel("Message the deck agent").fill("Please add a description.");
+  await page.getByLabel("Send message").click();
+
+  const brief = page.getByRole("region", { name: "Deck intent brief" });
+  await expect(brief.getByText(description)).toBeVisible();
+  await expect(brief.getByText("Updated by agent")).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Untitled Commander" })).toBeVisible();
+});
+
 test("a deck leaves the application in a shape a shop can read", async ({
   page,
 }, testInfo) => {

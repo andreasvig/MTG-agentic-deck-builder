@@ -868,6 +868,30 @@ describe("agent deck edits", () => {
     });
     expect(
       readDeckAgentDeckTextEdit({
+        deck_name: "Gruul Landfall",
+        reason: "capturing intent",
+        name: null,
+        description: "Landfall tokens with a strict €80 budget.",
+      }),
+    ).toEqual({
+      deck_name: "Gruul Landfall",
+      reason: "capturing intent",
+      description: "Landfall tokens with a strict €80 budget.",
+    });
+    expect(
+      readDeckAgentDeckTextEdit({
+        deck_name: "Untitled Commander",
+        reason: "giving the deck its first real name",
+        name: "Rockfall Swarm",
+        description: null,
+      }),
+    ).toEqual({
+      deck_name: "Untitled Commander",
+      reason: "giving the deck its first real name",
+      name: "Rockfall Swarm",
+    });
+    expect(
+      readDeckAgentDeckTextEdit({
         deck_name: "Untitled Commander",
         reason: "nothing",
       }),

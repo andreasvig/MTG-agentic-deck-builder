@@ -13,6 +13,8 @@ All notable changes to this project are documented here.
   briefs store plain card names, while older braced names display without the leaked markup.
   When the agent changes a long brief, the box opens and marks itself **Updated by agent** so
   a changed constraint below the three-line clamp cannot look unchanged.
+  Description-only and name-only stream events accept the backend's explicit `null` for the
+  untouched sibling field instead of discarding the successful edit at the browser boundary.
   The agent receives the brief on every turn and proactively
   reconciles durable preferences such as power target, pilot complexity, combo length,
   interaction tolerance, budget and exclusions through `edit_deck_text`. It may freely name

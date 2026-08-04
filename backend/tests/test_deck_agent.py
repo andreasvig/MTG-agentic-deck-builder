@@ -1022,6 +1022,45 @@ def test_a_deck_text_edit_travels_as_its_own_event_beside_the_tool_line() -> Non
     assert events[1].edit.name == "Decisive Kinnan"
 
 
+def test_stream_route_serializes_an_absent_text_edit_field_as_null() -> None:
+    """The browser must treat Pydantic's explicit null as an omitted replacement."""
+
+    text_edit = DeckAgentDeckTextEdit(
+        deck_name="Rockfall Swarm",
+        reason="capturing intent",
+        description="Gruul landfall tokens with an €80 budget.",
+    )
+    client = StubStreamingClient(
+        [[_tool_chunk("edit_deck_text", "{}")], _text_chunks("Captured.")]
+    )
+    with TestClient(create_app()) as http:
+        http.app.state.deck_agent = DeckAgentService(
+            model_client=client,
+            settings=_settings(),
+            toolbox=StubToolbox(text_edit=text_edit),
+        )
+        with http.stream(
+            "POST",
+            "/api/v1/agent/chat/stream",
+            json={"messages": [{"role": "user", "content": "Describe this deck."}]},
+        ) as response:
+            assert response.status_code == 200
+            events = _read_sse(response.iter_lines())
+
+    assert [event["type"] for event in events] == [
+        "tool",
+        "deck_text_edit",
+        "text",
+        "done",
+    ]
+    assert events[1]["edit"] == {
+        "deck_name": "Rockfall Swarm",
+        "reason": "capturing intent",
+        "name": None,
+        "description": "Gruul landfall tokens with an €80 budget.",
+    }
+
+
 def test_no_deck_edit_event_for_a_turn_that_changed_nothing_or_failed() -> None:
     def kinds(toolbox: StubToolbox) -> list[str]:
         client = StubStreamingClient(
