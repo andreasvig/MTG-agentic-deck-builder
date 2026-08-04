@@ -668,6 +668,77 @@ function App() {
           </div>
         </header>
 
+        {/* Region name stays distinct from the textarea's "Deck description"
+            label, so an accessible-name query resolves to one node. */}
+        <section className="deck-brief" aria-label="Deck intent brief">
+          {editingDescription ? (
+            <div className="deck-description-editor">
+              <label htmlFor="deck-description">Deck description</label>
+              <textarea
+                id="deck-description"
+                autoFocus
+                maxLength={2_000}
+                rows={6}
+                value={deckDescriptionDraft}
+                placeholder="Capture this deck's intended power, play pattern, constraints, and open decisions."
+                onChange={(event) =>
+                  setDeckDescriptionDraft(event.target.value)
+                }
+                onKeyDown={(event) => {
+                  if (event.key === "Escape") {
+                    event.preventDefault();
+                    cancelDescriptionEdit();
+                  }
+                }}
+              />
+              <div className="deck-description-editor__footer">
+                <span>{deckDescriptionDraft.length} / 2,000</span>
+                <button type="button" onClick={cancelDescriptionEdit}>
+                  Cancel
+                </button>
+                <button
+                  className="primary-button"
+                  type="button"
+                  onClick={saveDescription}
+                >
+                  Save
+                </button>
+              </div>
+            </div>
+          ) : (
+            <div className="deck-description">
+              <p
+                ref={descriptionText}
+                className={
+                  descriptionExpanded
+                    ? "deck-description__text"
+                    : "deck-description__text deck-description__text--collapsed"
+                }
+              >
+                {deck.description ||
+                  "Add the deck's intent, preferred play pattern, and constraints."}
+              </p>
+              <div className="deck-description__actions">
+                {descriptionOverflows ? (
+                  <button
+                    type="button"
+                    aria-expanded={descriptionExpanded}
+                    onClick={() =>
+                      setDescriptionExpanded((expanded) => !expanded)
+                    }
+                  >
+                    {descriptionExpanded ? "Show less" : "See all"}
+                  </button>
+                ) : null}
+                <button type="button" onClick={beginDescriptionEdit}>
+                  <Icon name="pencil" aria-hidden="true" size={12} />
+                  {deck.description ? "Edit description" : "Add description"}
+                </button>
+              </div>
+            </div>
+          )}
+        </section>
+
         <div className="editor-toolbar" aria-label="Deck controls">
           <button
             className="secondary-button add-cards-button"
@@ -805,74 +876,6 @@ function App() {
               <div className="deck-heading-copy">
                 <p className="eyebrow">Deck editor</p>
                 <h1 id="deck-heading">{deck.name}</h1>
-                {editingDescription ? (
-                  <div className="deck-description-editor">
-                    <label htmlFor="deck-description">Deck description</label>
-                    <textarea
-                      id="deck-description"
-                      autoFocus
-                      maxLength={2_000}
-                      rows={6}
-                      value={deckDescriptionDraft}
-                      placeholder="Capture this deck's intended power, play pattern, constraints, and open decisions."
-                      onChange={(event) =>
-                        setDeckDescriptionDraft(event.target.value)
-                      }
-                      onKeyDown={(event) => {
-                        if (event.key === "Escape") {
-                          event.preventDefault();
-                          cancelDescriptionEdit();
-                        }
-                      }}
-                    />
-                    <div className="deck-description-editor__footer">
-                      <span>{deckDescriptionDraft.length} / 2,000</span>
-                      <button type="button" onClick={cancelDescriptionEdit}>
-                        Cancel
-                      </button>
-                      <button
-                        className="primary-button"
-                        type="button"
-                        onClick={saveDescription}
-                      >
-                        Save
-                      </button>
-                    </div>
-                  </div>
-                ) : (
-                  <div className="deck-description">
-                    <p
-                      ref={descriptionText}
-                      className={
-                        descriptionExpanded
-                          ? "deck-description__text"
-                          : "deck-description__text deck-description__text--collapsed"
-                      }
-                    >
-                      {deck.description ||
-                        "Add the deck's intent, preferred play pattern, and constraints."}
-                    </p>
-                    <div className="deck-description__actions">
-                      {descriptionOverflows ? (
-                        <button
-                          type="button"
-                          aria-expanded={descriptionExpanded}
-                          onClick={() =>
-                            setDescriptionExpanded((expanded) => !expanded)
-                          }
-                        >
-                          {descriptionExpanded ? "Show less" : "See all"}
-                        </button>
-                      ) : null}
-                      <button type="button" onClick={beginDescriptionEdit}>
-                        <Icon name="pencil" aria-hidden="true" size={12} />
-                        {deck.description
-                          ? "Edit description"
-                          : "Add description"}
-                      </button>
-                    </div>
-                  </div>
-                )}
               </div>
               <span>{deck.cards.length} unique printings</span>
             </div>

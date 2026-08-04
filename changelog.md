@@ -6,9 +6,9 @@ All notable changes to this project are documented here.
 
 ### Added
 
-- **Every deck now has a shared intent brief.** The plain-text description sits directly
-  below the name, keeps line breaks, collapses to three lines behind **See all**, and can be
-  edited up to 2,000 characters. The agent receives it on every turn and proactively
+- **Every deck now has a shared intent brief.** The plain-text description sits in its own box
+  under the deck header and above the deck controls, keeps line breaks, collapses to three
+  lines behind **See all**, and can be edited up to 2,000 characters. The agent receives it on every turn and proactively
   reconciles durable preferences such as power target, pilot complexity, combo length,
   interaction tolerance, budget and exclusions through `edit_deck_text`. It may freely name
   only an exact **Untitled Commander**; real names require an explicit request. Name and

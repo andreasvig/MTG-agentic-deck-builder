@@ -16,9 +16,10 @@ unresolved constraints; an append-only scratchpad becomes a diary nobody can rel
 
 ## Decision
 
-Every deck has one plain-text `description`, at most 2,000 characters. It appears immediately
-under the deck name, preserves line breaks, and collapses to three lines with **See all**. The
-user edits the whole value directly.
+Every deck has one plain-text `description`, at most 2,000 characters. It appears in its own box
+directly under the deck header and above the deck controls — read before any editing decision
+rather than buried in the canvas heading — preserves line breaks, and collapses to three lines
+with **See all**. The user edits the whole value directly.
 
 The field is a shared current brief: polished enough to read, with concise open notes where an
 unresolved decision matters. It is rewritten into one current account, never appended as a

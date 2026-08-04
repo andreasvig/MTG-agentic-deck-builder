@@ -1456,6 +1456,24 @@ select {
   flex: 1 1 520px;
 }
 
+/* The intent brief is its own band between the deck header and the deck
+   controls: it is read before any editing decision, so it sits above the
+   toolbar rather than buried in the canvas heading. */
+.deck-brief {
+  padding: 9px 14px 9px 18px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--line);
+}
+
+.deck-brief > .deck-description,
+.deck-brief > .deck-description-editor {
+  margin-top: 0;
+  padding: 8px 10px;
+  background: var(--surface-subtle);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+}
+
 .deck-description {
   max-width: 720px;
   margin-top: 9px;
@@ -4959,6 +4977,10 @@ select {
 
   .editor-toolbar::-webkit-scrollbar {
     display: none;
+  }
+
+  .deck-brief {
+    padding: 8px 10px;
   }
 
   .add-cards-button {
