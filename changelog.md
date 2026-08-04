@@ -6,14 +6,17 @@ All notable changes to this project are documented here.
 
 ### Added
 
-- **Every deck now has a shared intent brief.** The plain-text description sits in its own box
-  under the deck header and above the deck controls, keeps line breaks, collapses to three
-  lines behind **See all**, and can be edited up to 2,000 characters. The agent receives it on every turn and proactively
+- **Every deck now has a shared intent brief.** The Markdown description sits in its own box
+  under the deck header and above the deck controls, renders paragraphs, lists, emphasis,
+  inline code and mana symbols, collapses to three lines behind **See all**, and can be edited
+  up to 2,000 characters. Braces remain transcript-only card markup: future agent-written
+  briefs store plain card names, while older braced names display without the leaked markup.
+  The agent receives the brief on every turn and proactively
   reconciles durable preferences such as power target, pilot complexity, combo length,
   interaction tolerance, budget and exclusions through `edit_deck_text`. It may freely name
   only an exact **Untitled Commander**; real names require an explicit request. Name and
   description changes auto-apply together, remain deck-scoped in background turns, appear in
-  the transcript and history, survive reload, and undo as one change (ADR 0046).
+  the transcript and history, survive reload, and undo as one change (ADRs 0046 and 0047).
 
 - **A cancelled agent turn keeps the work it already did.** Escape before the first
   event still hands the question back; after a tool, prose or edit, the transcript keeps

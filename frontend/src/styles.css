@@ -1484,7 +1484,47 @@ select {
   color: var(--muted);
   font-size: 12px;
   line-height: 1.55;
+}
+
+/* The brief is Markdown, so its blocks are real blocks: browser margins off, one gap
+   between them. Both selectors are a class plus a universal, so the later one wins the
+   top margin — a `> p` rule here would out-specify it and collapse the gap. */
+.deck-description__text > * {
+  margin: 0;
+}
+
+.deck-description__text > * + * {
+  margin-top: 8px;
+}
+
+/* Single newlines inside a block are the writer's own line breaks and are kept. This
+   is on the blocks rather than the box around them, where it would also render the
+   blank line between two blocks and double the gap. */
+.deck-description__text p,
+.deck-description__text li {
   white-space: pre-wrap;
+}
+
+.deck-description__text ul,
+.deck-description__text ol {
+  padding-left: 17px;
+}
+
+.deck-description__text li + li {
+  margin-top: 3px;
+}
+
+.markdown__heading {
+  color: var(--ink-soft);
+  font-weight: 700;
+}
+
+.markdown__code {
+  padding: 0 3px;
+  font-family: var(--mono);
+  font-size: 0.94em;
+  background: var(--wash);
+  border-radius: var(--radius-sm);
 }
 
 .deck-description__text--collapsed {

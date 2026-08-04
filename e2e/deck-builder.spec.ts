@@ -2248,6 +2248,17 @@ test("escape cancels a turn and hands the question back to the composer", async 
   await expect(panel.getByRole("button", { name: "Send message" })).toBeEnabled();
 });
 
+/**
+ * A brief as the agent writes one: Markdown, and one braced name of the kind a brief
+ * saved before that convention was scoped to the transcript still carries.
+ */
+const BRIEF_MARKDOWN = [
+  "cEDH power target, led by {Kinnan, Bonder Prodigy}.",
+  "",
+  "- Easy to pilot, with short combo turns.",
+  "- Little instant-speed interaction.",
+].join("\n");
+
 test("the agent can name an untitled deck and maintain its editable brief", async ({
   page,
 }) => {
@@ -2264,8 +2275,7 @@ test("the agent can name an untitled deck and maintain its editable brief", asyn
           id: "call-brief",
           arguments_json: JSON.stringify({
             name: "Decisive Kinnan",
-            description:
-              "cEDH power target. Easy to pilot, with short combo turns and little instant-speed interaction.",
+            description: BRIEF_MARKDOWN,
             reason: "capturing the user's durable intent",
           }),
           result: "Updated the deck name and description.",
@@ -2277,8 +2287,7 @@ test("the agent can name an untitled deck and maintain its editable brief", asyn
           deck_name: "Untitled Commander",
           reason: "capturing the user's durable intent",
           name: "Decisive Kinnan",
-          description:
-            "cEDH power target. Easy to pilot, with short combo turns and little instant-speed interaction.",
+          description: BRIEF_MARKDOWN,
         },
       },
       {
@@ -2308,11 +2317,16 @@ test("the agent can name an untitled deck and maintain its editable brief", asyn
   await expect(
     page.getByRole("heading", { name: "Decisive Kinnan" }),
   ).toBeVisible();
+  // Rendered as Markdown, and with the braces off the name: the box is not the
+  // transcript, so there is no card to open and nothing to mark up.
+  const brief = page.getByRole("region", { name: "Deck intent brief" });
   await expect(
-    page.getByText(
-      "cEDH power target. Easy to pilot, with short combo turns and little instant-speed interaction.",
-    ),
+    brief.getByText("cEDH power target, led by Kinnan, Bonder Prodigy."),
   ).toBeVisible();
+  await expect(brief.getByRole("listitem")).toHaveText([
+    "Easy to pilot, with short combo turns.",
+    "Little instant-speed interaction.",
+  ]);
   const transcript = page.getByRole("log", {
     name: "Deck agent conversation",
   });

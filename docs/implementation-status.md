@@ -298,9 +298,11 @@ Missing:
 
 - Browser-local deck library with active-deck switching.
 - Create, inline rename, confirm-delete, and session-restore decks.
-- A plain multiline deck description directly under the name, collapsed to three lines
-  behind **See all**, editable by the user and maintained proactively by the agent as a
-  concise current brief with open notes rather than an append-only diary (ADR 0046).
+- A Markdown deck description directly under the name, collapsed to three lines behind
+  **See all**, editable as source by the user and maintained proactively by the agent as a
+  concise current brief with open notes rather than an append-only diary. Paragraphs,
+  lists, emphasis, inline code and mana symbols render in the read view; transcript-style
+  braces around legacy card names do not (ADRs 0046 and 0047).
 - Deleting the final deck creates a fresh empty fallback; restoring it removes
   that untouched placeholder.
 - Commander-art thumbnails in the deck rail.

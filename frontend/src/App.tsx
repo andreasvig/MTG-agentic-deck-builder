@@ -11,6 +11,7 @@ import {
 import { DeckHistoryPanel } from "./components/DeckHistoryPanel";
 import { DeleteDeckDialog } from "./components/DeleteDeckDialog";
 import { ExportDeckDialog } from "./components/ExportDeckDialog";
+import { MarkdownText } from "./components/MarkdownText";
 import { SearchDrawer } from "./components/SearchDrawer";
 import type { CardSearchResult, CardTagFilter } from "./domain/card";
 import { formatEuro, getCardImage } from "./domain/card";
@@ -228,7 +229,7 @@ function App() {
   const returnFocus = useRef<HTMLElement | null>(null);
   const nextSearchRequestId = useRef(1);
   const menuTrigger = useRef<HTMLButtonElement>(null);
-  const descriptionText = useRef<HTMLParagraphElement>(null);
+  const descriptionText = useRef<HTMLDivElement>(null);
   const sidebarRef = useRef<HTMLElement>(null);
   const sidebarClose = useRef<HTMLButtonElement>(null);
 
@@ -707,7 +708,7 @@ function App() {
             </div>
           ) : (
             <div className="deck-description">
-              <p
+              <div
                 ref={descriptionText}
                 className={
                   descriptionExpanded
@@ -715,9 +716,15 @@ function App() {
                     : "deck-description__text deck-description__text--collapsed"
                 }
               >
-                {deck.description ||
-                  "Add the deck's intent, preferred play pattern, and constraints."}
-              </p>
+                {deck.description ? (
+                  <MarkdownText text={deck.description} />
+                ) : (
+                  <p>
+                    Add the deck's intent, preferred play pattern, and
+                    constraints.
+                  </p>
+                )}
+              </div>
               <div className="deck-description__actions">
                 {descriptionOverflows ? (
                   <button

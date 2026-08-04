@@ -2040,6 +2040,50 @@ def test_edit_deck_text_emits_only_effective_full_replacements() -> None:
     assert "Nothing changed" in noop.content
 
 
+def test_edit_deck_text_stores_card_names_without_the_transcript_braces() -> None:
+    """A brief is stored text, so the answer's brace convention does not travel into it.
+
+    The braces exist because the transcript resolves them into cards. The brief is shown
+    in the deck's own box and edited by hand, where they are markup showing through — and
+    a model that braces every name it writes needs the property enforced, not requested.
+    A mana symbol keeps its braces, because the box draws those.
+    """
+
+    deck = make_deck().model_copy(update={"description": ""})
+    outcome = run(
+        make_toolbox(),
+        EDIT_DECK_TEXT,
+        {
+            "description": (
+                "A Gruul landfall deck led by {Toggo, Goblin Weaponsmith} and"
+                " {Tana, the Bloodsower}. Keep the curve under {2}{G}."
+            ),
+            "reason": "recording the deck's intent",
+        },
+        deck,
+    )
+
+    assert outcome.text_edit is not None
+    assert outcome.text_edit.description == (
+        "A Gruul landfall deck led by Toggo, Goblin Weaponsmith and"
+        " Tana, the Bloodsower. Keep the curve under {2}{G}."
+    )
+
+    # Unbracing happens before the comparison that decides whether anything changed, so
+    # re-bracing the brief the deck already holds is still a no-op rather than an edit.
+    unchanged = run(
+        make_toolbox(),
+        EDIT_DECK_TEXT,
+        {
+            "description": "Led by {Toggo, Goblin Weaponsmith}.",
+            "reason": "repeating the current brief",
+        },
+        make_deck().model_copy(update={"description": "Led by Toggo, Goblin Weaponsmith."}),
+    )
+    assert unchanged.text_edit is None
+    assert "Nothing changed" in unchanged.content
+
+
 def test_edit_deck_text_rejects_empty_calls_and_oversized_descriptions() -> None:
     empty = run(make_toolbox(), EDIT_DECK_TEXT, {"reason": "nothing"}, make_deck())
     oversized = run(

@@ -589,6 +589,15 @@ written by `npm run symbols:sync` along with the SVGs in `public/card-symbols/`;
 are committed and neither is edited by hand. `components/CardText.tsx` is the only
 place that renders the result, and every card panel goes through it.
 
+### `domain/markdown.ts` and `components/MarkdownText.tsx`
+
+Parse and render the deck brief's deliberately bounded Markdown. The source remains one
+2,000-character string edited in a textarea; the read view turns paragraphs, ordered and
+unordered lists, emphasis, inline code and known mana/ability symbols into React nodes. It
+does not admit raw HTML or links. Braced non-symbol runs display without their braces for
+briefs saved before card-name braces were scoped to the transcript, while the backend strips
+those braces from future agent-written descriptions before emitting the edit (ADR 0047).
+
 ### `lib/api.ts`
 
 Builds fuzzy GET and agentic POST requests, performs fetch calls, maps public

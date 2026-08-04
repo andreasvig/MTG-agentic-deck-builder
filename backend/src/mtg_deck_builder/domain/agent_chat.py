@@ -1,10 +1,18 @@
 """Strict contracts for the conversational deck agent."""
 
+import re
 from datetime import datetime
 from typing import Annotated, Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, StringConstraints, model_validator
+from pydantic import (
+    AfterValidator,
+    BaseModel,
+    ConfigDict,
+    Field,
+    StringConstraints,
+    model_validator,
+)
 
 from mtg_deck_builder.domain.cards import CardSearchResult
 
@@ -41,6 +49,39 @@ DeckDescription = Annotated[
     str,
     StringConstraints(strip_whitespace=True, max_length=2_000),
 ]
+
+# A braced run with no nesting and no newline, and the shape of a mana or ability
+# symbol. Both mirror the answer parser: `{Sol Ring}` and `{T}` arrive through one
+# syntax, and the second pattern is what tells them apart without a symbol table.
+_BRACED_RUN = re.compile(r"\{([^{}\n]{1,200})\}")
+_SYMBOL_SHAPED = re.compile(r"^[A-Z0-9/½∞]{1,7}$")
+
+
+def _unbrace_card_names(text: str) -> str:
+    """Drop the braces the model puts around card names it writes into the brief.
+
+    Braces are an answer convention: the transcript resolves them against the catalog
+    and draws a card. Nothing resolves the brief — it is stored text shown in the deck's
+    own box and edited by hand in a textarea — so a braced name there is markup showing
+    through, in the one field the user reads most often. The prompt says to write plain
+    names; this makes it a property of what gets stored rather than a request.
+
+    Runs shaped like a symbol keep their braces, because `{2}{G}` is drawn in the box
+    too and stripping those would turn a cost into letters.
+    """
+
+    return _BRACED_RUN.sub(
+        lambda match: (
+            match.group(0)
+            if _SYMBOL_SHAPED.match(match.group(1))
+            else match.group(1).strip()
+        ),
+        text,
+    )
+
+
+DeckBrief = Annotated[DeckDescription, AfterValidator(_unbrace_card_names)]
+"""A description the *model* wrote, normalised. The user's own text is never rewritten."""
 
 MAX_TOOL_PAYLOAD_CHARS = 24_000
 """How much of one tool call's arguments or result may travel, per payload.
@@ -337,7 +378,7 @@ class EditDeckTextArguments(DeckAgentModel):
     """Full replacements for the deck's name and intent, applied as one edit."""
 
     name: DeckName | None = None
-    description: DeckDescription | None = None
+    description: DeckBrief | None = None
     reason: ShortLabel
 
     @model_validator(mode="after")

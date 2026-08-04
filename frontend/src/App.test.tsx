@@ -71,9 +71,11 @@ describe("deck workspace", () => {
     fireEvent.change(editor, { target: { value: description } });
     await user.click(screen.getByRole("button", { name: "Save" }));
 
-    expect(screen.getByText(/cEDH power target/)).toHaveClass(
-      "deck-description__text--collapsed",
-    );
+    // The clamp is on the box around the prose, not on one paragraph: a brief in
+    // Markdown is several elements, and three lines is three lines of the whole thing.
+    expect(
+      screen.getByText(/cEDH power target/).closest(".deck-description__text"),
+    ).toHaveClass("deck-description__text--collapsed");
     const seeAll = screen.getByRole("button", { name: "See all" });
     expect(seeAll).toHaveAttribute("aria-expanded", "false");
     await user.click(seeAll);
@@ -92,6 +94,38 @@ describe("deck workspace", () => {
       screen.getByText(
         "Add the deck's intent, preferred play pattern, and constraints.",
       ),
+    ).toBeInTheDocument();
+  });
+
+  it("renders the brief as Markdown, and a braced name as the name", () => {
+    window.localStorage.setItem(
+      DECK_STORAGE_KEY,
+      JSON.stringify({
+        ...createEmptyDeck(new Date("2026-01-01T00:00:00Z"), "Gruul Stompy"),
+        description: [
+          "A landfall deck led by {Toggo, Goblin Weaponsmith}.",
+          "",
+          "Constraints:",
+          "- **No** stax.",
+          "- Budget under €150.",
+        ].join("\n"),
+      }),
+    );
+    render(<App />);
+
+    const brief = screen.getByRole("region", { name: "Deck intent brief" });
+    // Braces are the transcript's convention, and only the transcript resolves them
+    // into cards. The brief has nothing to open, so the reader sees the name.
+    expect(
+      within(brief).getByText("A landfall deck led by Toggo, Goblin Weaponsmith."),
+    ).toBeInTheDocument();
+    expect(
+      within(brief)
+        .getAllByRole("listitem")
+        .map((item) => item.textContent),
+    ).toEqual(["No stax.", "Budget under €150."]);
+    expect(
+      within(brief).getByText("No", { selector: "strong" }),
     ).toBeInTheDocument();
   });
 

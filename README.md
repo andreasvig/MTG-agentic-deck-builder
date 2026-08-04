@@ -29,7 +29,7 @@ The first manual editing slice is usable and tested.
 | Deck agent read-only tools | Shipped: `read_deck` (with `extra_info` for costs, the curve and prices), `see_cards`, `search_cards`, `read_history` |
 | Deck agent web research | Shipped: `search_web` on Perplexity `sonar` with its sources, `read_page` for a plain fetch of one, paginated so a long page is read on rather than cut off — leads only, never card data |
 | Deck site parsers | Shipped: EDHREC, Archidekt, MTGGoldfish, TappedOut, Aetherhub, Commander Spellbook, cEDHstat and YouTube read through their own endpoints behind `read_page`, with any miss falling back to the generic reader. A fetched decklist's names are checked against the local catalog |
-| Deck name and description | Shipped: editable 2,000-character shared brief, collapsed to three lines |
+| Deck name and description | Shipped: editable 2,000-character Markdown brief, collapsed to three lines |
 | Deck agent deck editing | Shipped: `edit_deck` for cards and `edit_deck_text` for name/description, auto-applied, one undo step per edit |
 | Backend-enforced deck mutation and confirmed patches | Not implemented, and not the direction — see ADR 0036 |
 
@@ -443,8 +443,10 @@ changelog.md           Notable delivered changes
 - Placement is a section: command zone or deck. A deck saved before ADR 0037 opens
   with every card intact and its custom groups dropped, since the board now groups by
   derived card type and a stored group name has nowhere to appear.
-- Every deck carries a plain-text description as its shared current intent. A deck saved
-  before ADR 0046 opens with an empty one; the storage key stays the same.
+- Every deck carries a Markdown description as its shared current intent. A deck saved
+  before ADR 0046 opens with an empty one; the storage key stays the same. Braced card
+  names from an older agent-written brief display as plain names because braces are the
+  transcript's card-link convention, not stored-description syntax (ADR 0047).
 
 The browser-local persistence decision and backend migration requirements are
 recorded in

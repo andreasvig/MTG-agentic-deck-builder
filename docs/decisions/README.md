@@ -61,6 +61,8 @@ tradeoffs; they are not task lists.
 | [0043](0043-the-interface-is-printed-on-paper.md) | Accepted | Cream stock, mono type, square edges, no shadows; 40 hand-drawn pixel icons replace lucide-react |
 | [0044](0044-a-deck-leaves-as-a-list-a-shop-can-read.md) | Accepted | Export in three formats; plain text is headingless so a shop can price every line, plus a prefilled TCGplayer cart |
 | [0045](0045-interrupted-turn-replay-and-deck-scoped-execution.md) | Accepted | Interrupted turns replay completed work; running turns and their edits stay scoped to their decks |
+| [0046](0046-deck-description-is-shared-intent.md) | Accepted (partly superseded) | Every deck has one editable shared intent brief; ADR 0047 changes its read rendering |
+| [0047](0047-deck-brief-renders-bounded-markdown.md) | Accepted | The deck brief renders bounded Markdown; card-name braces remain transcript-only markup |
 
 ## Updating Decisions
 
