@@ -816,7 +816,7 @@ export function DeckAgentPanel({
         {entries.length === 0 ? (
           <p className="deck-agent__empty">
             Ask about the deck you are building. The agent can read your deck
-            and look cards up, but it cannot change anything.
+            and look cards up, then apply changes you can Undo.
           </p>
         ) : (
           entries.map((entry, index) => (

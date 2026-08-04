@@ -370,6 +370,20 @@ it("renders nothing when the client cannot chat", () => {
   expect(container).toBeEmptyDOMElement();
 });
 
+it("introduces the agent as able to apply undoable changes", () => {
+  render(
+    <DeckAgentPanel
+      deckId="deck-a"
+      client={client(vi.fn().mockResolvedValue(reply("Done.")))}
+    />,
+  );
+
+  expect(
+    screen.getByText(/then apply changes you can Undo/),
+  ).toBeInTheDocument();
+  expect(screen.queryByText(/cannot change anything/)).not.toBeInTheDocument();
+});
+
 it("adds up what the conversation costs, only while debug mode is on", async () => {
   const chat = vi
     .fn()

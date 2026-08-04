@@ -41,6 +41,9 @@ mistyped mana cost does not silently change meaning.
 
 The three-line clamp covers the rendered block tree rather than one paragraph. Editing, history,
 undo, background-deck ownership, storage and the stale-replay rule remain those of ADR 0046.
+An agent-authored description change on the open deck expands the brief and marks the history
+entry as **Updated by agent**. Otherwise a change confined below the clamp would be applied but
+look identical to the user. A later edit, Undo or deck switch clears that marker.
 
 ## Consequences
 

@@ -2327,6 +2327,11 @@ test("the agent can name an untitled deck and maintain its editable brief", asyn
     "Easy to pilot, with short combo turns.",
     "Little instant-speed interaction.",
   ]);
+  await expect(brief.getByText("Updated by agent")).toBeVisible();
+  await expect(brief.getByRole("button", { name: "Show less" })).toHaveAttribute(
+    "aria-expanded",
+    "true",
+  );
   const transcript = page.getByRole("log", {
     name: "Deck agent conversation",
   });
@@ -2338,6 +2343,7 @@ test("the agent can name an untitled deck and maintain its editable brief", asyn
   ).toBeVisible();
   const addDescription = page.getByRole("button", { name: "Add description" });
   await expect(addDescription).toBeVisible();
+  await expect(brief.getByText("Updated by agent")).toHaveCount(0);
   await addDescription.click();
   await page.getByLabel("Deck description").fill(
     [

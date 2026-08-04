@@ -91,6 +91,7 @@ function App() {
   const [editingDescription, setEditingDescription] = useState(false);
   const [descriptionExpanded, setDescriptionExpanded] = useState(false);
   const [descriptionOverflows, setDescriptionOverflows] = useState(false);
+  const [agentBriefEditId, setAgentBriefEditId] = useState<string | null>(null);
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [historyOpen, setHistoryOpen] = useState(false);
@@ -194,6 +195,17 @@ function App() {
       if (!outcome.applied) {
         return refusedDeckEdit(outcome.reason);
       }
+      if (
+        outcome.recorded?.diff.description !== undefined &&
+        deckId === deck.id
+      ) {
+        // The changed part of a long brief may sit below the three-line clamp. An agent
+        // update that leaves the box collapsed can therefore look like it never happened,
+        // even while the transcript says it did. Open the brief and mark the exact history
+        // entry so the new text is visible; a later edit or Undo naturally clears the mark.
+        setDescriptionExpanded(true);
+        setAgentBriefEditId(outcome.recorded.editId);
+      }
       return outcome.recorded
         ? summarizeDeckEditRecord(
             outcome.recorded.diff,
@@ -202,7 +214,7 @@ function App() {
           )
         : null;
     },
-    [applyTextEdit],
+    [applyTextEdit, deck.id],
   );
 
   /**
@@ -238,6 +250,8 @@ function App() {
         (entry) => entry.card.scryfall_id === selectedCard.scryfall_id,
       )
     : undefined;
+  const agentBriefUpdated =
+    agentBriefEditId !== null && lastRecordedEditId === agentBriefEditId;
 
   const openSearch = useCallback(
     (
@@ -333,7 +347,6 @@ function App() {
   useEffect(() => {
     setRenamingDeck(false);
     setEditingDescription(false);
-    setDescriptionExpanded(false);
     setDeleteDialogOpen(false);
     setDeckNameDraft(deck.name);
     setDeckDescriptionDraft(deck.description);
@@ -341,11 +354,27 @@ function App() {
   }, [deck.description, deck.id, deck.name]);
 
   useEffect(() => {
+    // Expansion and the update marker describe what happened on the deck currently in
+    // front of the user. They do not travel to another deck and reappear there later.
+    setDescriptionExpanded(false);
+    setAgentBriefEditId(null);
+  }, [deck.id]);
+
+  useEffect(() => {
+    if (
+      agentBriefEditId !== null &&
+      lastRecordedEditId !== agentBriefEditId
+    ) {
+      // Undo or any later edit makes this no longer the fresh agent update. Clear the
+      // remembered id as well as hiding the marker, so travelling through old history
+      // cannot make a stale "Updated by agent" label reappear.
+      setAgentBriefEditId(null);
+    }
+  }, [agentBriefEditId, lastRecordedEditId]);
+
+  useEffect(() => {
     if (!deck.description) {
       setDescriptionOverflows(false);
-      return;
-    }
-    if (descriptionExpanded) {
       return;
     }
     const measure = () => {
@@ -353,10 +382,19 @@ function App() {
       if (!node) {
         return;
       }
+      const lineHeight = Number.parseFloat(
+        window.getComputedStyle(node).lineHeight,
+      );
+      const exceedsThreeRenderedLines =
+        Number.isFinite(lineHeight) &&
+        lineHeight > 0 &&
+        node.scrollHeight > lineHeight * 3 + 1;
       // The content fallback makes the behavior testable in jsdom, which reports no
-      // layout dimensions; real browsers use the actual three-line box.
+      // layout dimensions; real browsers compare the full rendered block tree against
+      // three text lines even while it is expanded, when clientHeight equals scrollHeight.
       setDescriptionOverflows(
-        node.scrollHeight > node.clientHeight + 1 ||
+        exceedsThreeRenderedLines ||
+          node.scrollHeight > node.clientHeight + 1 ||
           deck.description.length > 180 ||
           deck.description.split("\n").length > 3,
       );
@@ -382,6 +420,7 @@ function App() {
 
   const beginDescriptionEdit = () => {
     setDeckDescriptionDraft(deck.description);
+    setAgentBriefEditId(null);
     setEditingDescription(true);
   };
 
@@ -671,7 +710,10 @@ function App() {
 
         {/* Region name stays distinct from the textarea's "Deck description"
             label, so an accessible-name query resolves to one node. */}
-        <section className="deck-brief" aria-label="Deck intent brief">
+        <section
+          className={`deck-brief ${agentBriefUpdated ? "deck-brief--agent-updated" : ""}`}
+          aria-label="Deck intent brief"
+        >
           {editingDescription ? (
             <div className="deck-description-editor">
               <label htmlFor="deck-description">Deck description</label>
@@ -726,6 +768,12 @@ function App() {
                 )}
               </div>
               <div className="deck-description__actions">
+                {agentBriefUpdated ? (
+                  <span className="deck-description__agent-update">
+                    <Icon name="bot" aria-hidden="true" size={12} />
+                    Updated by agent
+                  </span>
+                ) : null}
                 {descriptionOverflows ? (
                   <button
                     type="button"

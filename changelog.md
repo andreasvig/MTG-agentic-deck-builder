@@ -11,6 +11,8 @@ All notable changes to this project are documented here.
   inline code and mana symbols, collapses to three lines behind **See all**, and can be edited
   up to 2,000 characters. Braces remain transcript-only card markup: future agent-written
   briefs store plain card names, while older braced names display without the leaked markup.
+  When the agent changes a long brief, the box opens and marks itself **Updated by agent** so
+  a changed constraint below the three-line clamp cannot look unchanged.
   The agent receives the brief on every turn and proactively
   reconciles durable preferences such as power target, pilot complexity, combo length,
   interaction tolerance, budget and exclusions through `edit_deck_text`. It may freely name

@@ -971,6 +971,62 @@ describe("agent deck edits", () => {
     expect(storedDeck().description).toBe("");
   });
 
+  it("opens and marks a long brief when the agent changes its hidden tail", async () => {
+    const sharedBeginning = [
+      "A Gruul landfall and combat-damage deck led by Toggo and Tana.",
+      "Build a wide board while landfall creates Rocks.",
+      "Keep turns proactive and combat-focused.",
+    ];
+    const original = [...sharedBeginning, "Current constraint: stay under €150."].join(
+      "\n",
+    );
+    const updated = [
+      ...sharedBeginning,
+      "Current constraint: **stay under €80 and avoid infinite combos**.",
+    ].join("\n");
+    seedDeck({ name: "Gruul Landfall", description: original });
+    serveAgentTurn([
+      {
+        type: "deck_text_edit",
+        edit: {
+          deck_name: "Gruul Landfall",
+          reason: "capturing the tighter budget and combo preference",
+          description: updated,
+        },
+      },
+      doneFrame("I updated the deck brief."),
+    ]);
+    render(<App />);
+
+    expect(screen.getByRole("button", { name: "See all" })).toHaveAttribute(
+      "aria-expanded",
+      "false",
+    );
+    await ask("Lower the budget to €80 and avoid infinite combos.");
+
+    const brief = screen.getByRole("region", { name: "Deck intent brief" });
+    expect(
+      within(brief).getByText("stay under €80 and avoid infinite combos", {
+        selector: "strong",
+      }),
+    ).toBeInTheDocument();
+    expect(within(brief).getByText("Updated by agent")).toBeInTheDocument();
+    expect(
+      within(brief).getByRole("button", { name: "Show less" }),
+    ).toHaveAttribute("aria-expanded", "true");
+    expect(
+      within(brief).getByText(/A Gruul landfall/).closest(".deck-description__text"),
+    ).not.toHaveClass("deck-description__text--collapsed");
+
+    await userEvent.setup().click(
+      within(
+        screen.getByRole("log", { name: "Deck agent conversation" }),
+      ).getByRole("button", { name: "Undo" }),
+    );
+    expect(within(brief).queryByText("Updated by agent")).not.toBeInTheDocument();
+    expect(within(brief).getByText(/stay under €150/)).toBeInTheDocument();
+  });
+
   it("applies a streamed deck edit, records it as the agent's, and undoes it", async () => {
     seedDeck({ cards: [deckEntry(gamble)] });
     serveAgentTurn([
