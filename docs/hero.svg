@@ -1,0 +1,49 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="640" viewBox="0 0 1280 640" role="img" aria-labelledby="title description">
+  <title id="title">MAGE — Magic's Agentic Gathering Engine</title>
+  <desc id="description">A paper-and-ink diagram showing a natural-language Magic card request becoming a typed local search and ranked results.</desc>
+  <rect width="1280" height="640" fill="#faf8f1"/>
+  <rect x="24" y="24" width="1232" height="592" fill="none" stroke="#d8d2c5" stroke-width="2"/>
+
+  <g font-family="ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace">
+    <text x="64" y="72" fill="#3f6b46" font-size="18" font-weight="700" letter-spacing="2">OPEN SOURCE · LOCAL FIRST</text>
+
+    <g fill="#24211d">
+      <text x="64" y="178" font-size="92" font-weight="800">M</text>
+      <text x="133" y="178" font-size="30" font-weight="700">agic's</text>
+      <text x="64" y="272" font-size="92" font-weight="800">A</text>
+      <text x="133" y="272" font-size="30" font-weight="700">gentic</text>
+      <text x="64" y="366" font-size="92" font-weight="800">G</text>
+      <text x="133" y="366" font-size="30" font-weight="700">athering</text>
+      <text x="64" y="460" font-size="92" font-weight="800">E</text>
+      <text x="133" y="460" font-size="30" font-weight="700">ngine</text>
+    </g>
+
+    <line x1="420" y1="76" x2="420" y2="560" stroke="#d8d2c5" stroke-width="2"/>
+
+    <text x="468" y="96" fill="#3f6b46" font-size="18" font-weight="700" letter-spacing="2">SEARCH BY INTENT</text>
+
+    <rect x="468" y="126" width="748" height="94" rx="3" fill="#fffdf8" stroke="#716b61" stroke-width="2"/>
+    <text x="492" y="158" fill="#3f6b46" font-size="15" font-weight="700">1 · INPUT</text>
+    <text x="492" y="194" fill="#24211d" font-size="25" font-weight="700">Cards which untap Elves for less than €1</text>
+
+    <path d="M842 220 L842 246 M834 238 L842 246 L850 238" fill="none" stroke="#3f6b46" stroke-width="3" stroke-linecap="square"/>
+
+    <rect x="468" y="246" width="748" height="174" rx="3" fill="#eef2e8" stroke="#3f6b46" stroke-width="2"/>
+    <text x="492" y="278" fill="#3f6b46" font-size="15" font-weight="700">2 · LLM GENERATES A TYPED LOCAL QUERY</text>
+    <text x="492" y="315" fill="#24211d" font-size="19">search_local_cards({</text>
+    <text x="522" y="346" fill="#24211d" font-size="19">semantic_sort: "repeatable creature untap",</text>
+    <text x="522" y="377" fill="#24211d" font-size="19">price_eur: { maximum: 1 }, sort_by: "semantic"</text>
+    <text x="492" y="408" fill="#24211d" font-size="19">})</text>
+
+    <path d="M842 420 L842 446 M834 438 L842 446 L850 438" fill="none" stroke="#3f6b46" stroke-width="3" stroke-linecap="square"/>
+
+    <rect x="468" y="446" width="748" height="112" rx="3" fill="#fffdf8" stroke="#716b61" stroke-width="2"/>
+    <text x="492" y="478" fill="#3f6b46" font-size="15" font-weight="700">3 · LLM RERANKS THE BOUNDED RESULTS</text>
+    <rect x="492" y="495" width="322" height="42" rx="2" fill="#eef2e8" stroke="#b8c9b1"/>
+    <text x="508" y="522" fill="#24211d" font-size="17" font-weight="700">1  Wirewood Symbiote  €0.25</text>
+    <rect x="836" y="495" width="238" height="42" rx="2" fill="#eef2e8" stroke="#b8c9b1"/>
+    <text x="852" y="522" fill="#24211d" font-size="17" font-weight="700">2  Vitalize  €0.89</text>
+
+    <text x="64" y="575" fill="#716b61" font-size="15" font-weight="700" letter-spacing="1.3">AGENTIC SEARCH · EIGHT PRODUCT TOOLS · UNDOABLE EDITS</text>
+  </g>
+</svg>

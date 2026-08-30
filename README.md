@@ -2,6 +2,8 @@
 
 ### Magic's Agentic Gathering Engine
 
+![MAGE — intent-based card search compiled into a typed local query](docs/hero.svg)
+
 MAGE is a local-first Commander deck builder built around a simple idea: an AI
 agent should not sit beside a product as a generic chat box. It should understand
 the product, use the same domain tools as the user, and make changes that remain
