@@ -55,6 +55,9 @@ All notable changes to this project are documented here.
   preservation checkpoint, along with the unreferenced legacy backend-status component
   and its CSS. Runtime scripts, the active roadmap, changelog, and ADR history remain.
   Browser flows now open the default-collapsed advanced filters before exercising them.
+  Original code and documentation are MIT-licensed, while a separate third-party notice
+  keeps Wizards and Scryfall material outside that grant and records the Fan Content
+  Policy boundary.
 
 - **Manabase is now MAGE: Magic's Agentic Gathering Engine.** The sidebar lockup
   stacks the four words with oversized initials that read MAGE vertically. A pixel-M

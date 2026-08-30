@@ -245,6 +245,15 @@ Issues and focused pull requests are welcome. Keep the current architecture and
 product invariants in [`AGENTS.md`](AGENTS.md) in view, update documentation with
 behavioral changes, and include tests that fail when the new contract is broken.
 
-MAGE is unofficial fan software and is not endorsed by Wizards of the Coast.
-Magic: The Gathering and its associated properties belong to Wizards of the Coast.
-Card data and images are provided by [Scryfall](https://scryfall.com/).
+## License
+
+MAGE's original source code and documentation are available under the
+[MIT License](LICENSE). Magic: The Gathering assets, card data, images, symbols,
+names, and rules text are not covered by that license. See
+[`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md) for the complete boundary and
+attribution.
+
+MAGE is unofficial Fan Content permitted under Wizards' Fan Content Policy. It
+is not approved or endorsed by Wizards. Some materials used are © Wizards of
+the Coast LLC. Card data and images are provided by
+[Scryfall](https://scryfall.com/).

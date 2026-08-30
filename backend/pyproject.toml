@@ -7,6 +7,7 @@ name = "mtg-agentic-deck-builder-api"
 version = "0.1.0"
 description = "FastAPI backend for MAGE, the local-first agentic Commander deck builder."
 readme = "README.md"
+license = "MIT"
 requires-python = ">=3.12,<3.15"
 dependencies = [
     "fastapi>=0.139.2,<0.140",

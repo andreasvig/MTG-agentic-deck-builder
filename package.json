@@ -2,6 +2,7 @@
   "name": "mtg-agentic-deck-builder",
   "version": "0.1.0",
   "private": true,
+  "license": "MIT",
   "description": "MAGE — a local-first, agentic Commander deck builder",
   "scripts": {
     "setup": "uv sync --project backend --all-groups && npm install --prefix frontend",

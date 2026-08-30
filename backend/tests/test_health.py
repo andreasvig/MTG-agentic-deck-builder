@@ -114,7 +114,7 @@ def test_settings_load_repository_search_yaml() -> None:
     assert "never resend an earlier tool request unchanged" in (
         settings.search.agentic.system_prompt
     )
-    # The prompt uses the markdown skeleton Andreas specified.
+    # The prompt uses the product's required Markdown skeleton.
     for heading in ("# Task", "# Inputs", "# Output", "# Tools", "# Guidelines"):
         assert heading in settings.search.agentic.system_prompt
     # `# Tools` explains every tool field, so no field reaches the model unexplained.
@@ -138,7 +138,7 @@ def test_settings_load_repository_search_yaml() -> None:
         assert f"`{value}`" in tools_section, value
     # The stated result cap must be the configured one, never a stale number.
     assert str(settings.search.agentic.local_tool.hard_max_results) in tools_section
-    # Weights are Andreas's to tune; only the wiring is pinned here.
+    # Product owners may tune weights; only the wiring is pinned here.
     weights = settings.search.agentic.ranking.weighted
     assert max(weights.semantic, weights.edhrec_inclusion) > 0
     # Every worked example must be a valid tool payload with a semantic_sort.
