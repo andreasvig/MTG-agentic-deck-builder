@@ -2,7 +2,7 @@
   "name": "mtg-agentic-deck-builder",
   "version": "0.1.0",
   "private": true,
-  "description": "Local-first Commander deck builder development workspace",
+  "description": "MAGE — a local-first, agentic Commander deck builder",
   "scripts": {
     "setup": "uv sync --project backend --all-groups && npm install --prefix frontend",
     "catalog:sync": "uv run --project backend python -m mtg_deck_builder.catalog_sync",

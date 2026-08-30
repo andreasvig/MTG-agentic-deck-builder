@@ -1,7 +1,7 @@
 # Current Architecture
 
-This document describes the code that runs today. Target architecture is
-recorded separately in `plan.md` and proposed ADRs.
+This document describes the code that runs today. Future direction is recorded
+separately in `plan.md` and proposed ADRs.
 
 ## Runtime Topology
 

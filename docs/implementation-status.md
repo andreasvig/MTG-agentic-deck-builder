@@ -1,6 +1,6 @@
 # Implementation Status
 
-Last verified: 2026-08-05 at `4cfb21b`
+Last verified: 2026-08-30
 
 This is the canonical feature ledger. It describes the repository as it exists,
 not the intended end state.

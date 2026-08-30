@@ -243,6 +243,15 @@ async function openSearch(page: Page) {
   ).toBeVisible();
 }
 
+async function openSearchFilters(page: Page) {
+  const trigger = page.getByRole("button", { name: "Show search filters" });
+  await expect(trigger).toBeVisible();
+  await trigger.click();
+  await expect(
+    page.getByRole("region", { name: "Card search filters" }),
+  ).toBeVisible();
+}
+
 /**
  * Turn on debug mode from the interface settings.
  *
@@ -440,6 +449,7 @@ test("desktop deck-building flow remains fast and reversible", async ({
   expect(initialGroupBounds?.width).toBeLessThanOrEqual(240);
 
   await openSearch(page);
+  await openSearchFilters(page);
   const searchInput = page.getByRole("textbox", {
     name: "Search cards",
   });
@@ -583,6 +593,7 @@ test("desktop deck-building flow remains fast and reversible", async ({
   await cardDialog.getByRole("button", { name: "mana rock" }).click();
   const tagSearchDialog = page.getByRole("dialog", { name: "Find cards" });
   await expect(tagSearchDialog).toBeVisible();
+  await openSearchFilters(page);
   await expect(
     tagSearchDialog.getByRole("button", {
       name: "Remove mana rock tag",
@@ -1149,6 +1160,7 @@ test("search filters shape requests without crowding the results", async ({
   await page.goto("/");
   await enableDebugMode(page);
   await openSearch(page);
+  await openSearchFilters(page);
   await page.getByRole("radio", { name: "Exact" }).click();
   await page.getByRole("checkbox", { name: "Blue" }).click();
   await page.getByRole("checkbox", { name: "Colorless" }).click();
@@ -1291,6 +1303,7 @@ test("commander colors warn before and after an illegal addition", async ({
   ).toHaveCount(0);
 
   await openSearch(page);
+  await openSearchFilters(page);
   await expect(
     page.getByRole("checkbox", { name: "Enhance with EDHREC" }),
   ).toBeChecked();

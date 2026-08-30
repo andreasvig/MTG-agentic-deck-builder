@@ -2732,55 +2732,6 @@ select {
   width: 100%;
 }
 
-.connection-status {
-  display: grid;
-  grid-template-columns: 20px minmax(0, 1fr) 34px;
-  min-height: 52px;
-  align-items: center;
-  gap: 7px;
-  margin-top: auto;
-  padding: 7px 4px 7px 8px;
-  color: var(--muted);
-  background: var(--surface-subtle);
-  border: 1px solid var(--line);
-  border-radius: var(--radius);
-}
-
-.connection-status--checking > svg {
-  color: var(--warning);
-  animation: status-pulse 1.4s ease-in-out infinite;
-}
-
-.connection-status--online > svg {
-  color: var(--accent);
-}
-
-.connection-status--offline > svg {
-  color: var(--danger);
-}
-
-.connection-status > div {
-  display: grid;
-  min-width: 0;
-  gap: 1px;
-}
-
-.connection-status strong,
-.connection-status span {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.connection-status strong {
-  color: var(--ink-soft);
-  font-size: 9px;
-}
-
-.connection-status span {
-  font-size: 8px;
-}
-
 .drawer-layer {
   position: fixed;
   z-index: 100;

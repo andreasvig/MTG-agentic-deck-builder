@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "mtg-agentic-deck-builder-api"
 version = "0.1.0"
-description = "FastAPI backend for the local-first MTG Commander deck builder."
+description = "FastAPI backend for MAGE, the local-first agentic Commander deck builder."
 readme = "README.md"
 requires-python = ">=3.12,<3.15"
 dependencies = [

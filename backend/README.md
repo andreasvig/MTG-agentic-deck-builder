@@ -1,6 +1,6 @@
 # Backend
 
-FastAPI card-discovery and deck-agent service for MTG Agentic Deck Builder.
+FastAPI card-discovery and deck-agent service for MAGE.
 
 Read the repository-level [`AGENTS.md`](../AGENTS.md) and
 [`docs/architecture.md`](../docs/architecture.md) before changing boundaries.

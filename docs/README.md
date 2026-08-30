@@ -1,7 +1,7 @@
 # Documentation Index
 
-This directory separates current implementation facts, durable decisions,
-research, and future plans.
+This directory separates current implementation facts, durable decisions, and
+future plans.
 
 ## Read Order For New Contributors
 
@@ -35,23 +35,19 @@ These must stay synchronized with code in the same commit.
 ADRs explain why durable choices were made. An accepted ADR should not be
 silently contradicted by implementation.
 
-### Product And Research
+### Product Direction
 
 - [`../plan.md`](../plan.md)
-- [`archidekt-ux-benchmark.md`](archidekt-ux-benchmark.md)
 
-These documents guide scope and tradeoffs. Planned items are not evidence of
+This document guides scope and tradeoffs. Planned items are not evidence of
 implementation.
 
 ### History
 
 - [`../changelog.md`](../changelog.md)
-- [`../deck-editing-plan.md`](../deck-editing-plan.md)
-- [`../search-cards-tool-plan.md`](../search-cards-tool-plan.md)
 
-The changelog records notable delivered changes. The two implementation plans are
-retained as historical build records and carry explicit banners; they are not current
-contracts. Git history remains the detailed source of chronology.
+The changelog records notable delivered changes. Git history remains the detailed
+source of chronology.
 
 ## Status Vocabulary
 

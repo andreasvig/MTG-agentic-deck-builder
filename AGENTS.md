@@ -1,7 +1,7 @@
 # Repository Agent Guide
 
 This file applies to the entire repository. It is the operational contract for
-coding agents and human contributors working on MTG Agentic Deck Builder.
+coding agents and human contributors working on MAGE.
 
 ## Start Here
 

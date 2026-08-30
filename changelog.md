@@ -48,6 +48,14 @@ All notable changes to this project are documented here.
 
 ### Changed
 
+- **The repository is ready for a public audience.** The root README now leads with
+  MAGE's agentic-search and product-tool ideas before a tested setup path, states the
+  local/remote data boundary directly, and keeps detailed implementation facts in the
+  docs. Two superseded build plans and a one-off UX benchmark were removed after the
+  preservation checkpoint, along with the unreferenced legacy backend-status component
+  and its CSS. Runtime scripts, the active roadmap, changelog, and ADR history remain.
+  Browser flows now open the default-collapsed advanced filters before exercising them.
+
 - **Manabase is now MAGE: Magic's Agentic Gathering Engine.** The sidebar lockup
   stacks the four words with oversized initials that read MAGE vertically. A pixel-M
   replaces the former colour-pie mark where the full lockup cannot fit, including the favicon. The browser

@@ -1,6 +1,6 @@
 # Frontend
 
-React 19 and TypeScript interface for the local Commander deck builder.
+React 19 and TypeScript interface for MAGE.
 
 Read [`../AGENTS.md`](../AGENTS.md),
 [`../docs/architecture.md`](../docs/architecture.md), and
@@ -42,7 +42,6 @@ src/
     CardInspector.tsx         Centered card details and placement control
     DeckHistoryPanel.tsx      Recorded diffs, and travel to any of them
     CardArt.tsx               Remote art with fallback
-    ConnectionStatus.tsx      Backend health state
   domain/
     card.ts                   Search/card types and helpers
     deck.ts                   Persistence schema, migration, warnings
