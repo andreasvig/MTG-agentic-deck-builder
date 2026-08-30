@@ -1,4 +1,6 @@
-# MTG Agentic Deck Builder
+# MAGE
+
+**Magic's Agentic Gathering Engine** — a local-first, agentic Commander deck builder.
 
 A private, local-first Commander deck builder with a React frontend and a
 FastAPI card-discovery backend. The shipped product is a fast manual deck
@@ -9,7 +11,7 @@ undoable from a durable per-deck history.
 
 ## Project Status
 
-The first manual editing slice is usable and tested.
+The local editor, progressive card search, and desktop deck agent are usable and tested.
 
 | Area | Status |
 | --- | --- |
@@ -17,16 +19,17 @@ The first manual editing slice is usable and tested.
 | Fuzzy title scores and traces | Shipped |
 | Browser-local deck library | Shipped |
 | Durable per-deck edit history, with back, forward and a jump to any diff | Shipped |
-| Custom groups and derived card types | Shipped |
+| Derived card-type grouping | Shipped; custom groups were removed in ADR 0037 |
 | Color-identity and singleton warnings | Partial validation |
 | Backend deck persistence | Not implemented |
 | Local SQLite card catalog | Shipped |
 | Local Scryfall Tagger sidecar | Shipped for details, filters, relationships, and embedding concepts |
 | On-demand EDHREC commander/theme ranking | Shipped for browsing and agentic search |
-| Import/export and analytics | Not implemented |
+| Export | Shipped: plain text, MTG Arena, CSV, and a TCGplayer cart |
+| Import and deck analytics | Not implemented |
 | Progressive one-tool agentic card search | Shipped |
 | Deck agent chat | Shipped, desktop only, streamed, one saved conversation and running turn per deck |
-| Deck agent read-only tools | Shipped: `read_deck` (with `extra_info` for costs, the curve and prices), `see_cards`, `search_cards`, `read_history` |
+| Deck agent read-only tools | Shipped: `read_deck`, `see_cards`, `search_cards`, `read_history`, `search_web`, `read_page` |
 | Deck agent web research | Shipped: `search_web` on Perplexity `sonar` with its sources, `read_page` for a plain fetch of one, paginated so a long page is read on rather than cut off — leads only, never card data |
 | Deck site parsers | Shipped: EDHREC, Archidekt, MTGGoldfish, TappedOut, Aetherhub, Commander Spellbook, cEDHstat and YouTube read through their own endpoints behind `read_page`, with any miss falling back to the generic reader. A fetched decklist's names are checked against the local catalog |
 | Deck name and description | Shipped: editable 2,000-character Markdown brief, collapsed to three lines |
@@ -121,8 +124,8 @@ cp .env.example .env
 npm run catalog:sync
 ```
 
-Title search works without an API key. Natural-language agentic search requires
-`OPENROUTER_API_KEY` in `.env`.
+Title search works without an API key. Natural-language agentic search and the deck
+agent require `OPENROUTER_API_KEY` in `.env` while their config blocks are enabled.
 
 The first catalog sync also downloads the local embedding model and builds the
 semantic sidecar for every card. Later syncs skip both artifacts when current.
@@ -169,9 +172,10 @@ reload-enabled development processes on `Ctrl+C`.
 
 ```text
 React browser application
-  |- deck library, mutations, derived edit history and undo, localStorage
-  |- applies the agent's resolved deck edits; the backend never mutates a deck
-  |- editor, search drawer, trace viewer, responsive shell
+  |- deck library, shared briefs, mutations and derived edit-history cursor, localStorage
+  |- per-deck chat, drafts, running turns and cost
+  |- applies the agent's resolved card/text events; the backend never mutates a deck
+  |- editor, search drawer, trace viewer, agent panel, responsive shell
   |
   | HTTP JSON
   v
@@ -184,6 +188,8 @@ FastAPI
   |- uncapped RapidFuzz title scoring and local filters
   |- local semantic vector sort with no relevance cutoff
   |- one-tool OpenRouter search continuation
+  |- eight-tool deck agent over posted deck/history snapshots
+  |- Sonar research plus paginated public-page/deck-site readers
   |- append-only search diagnostics
   |
   +--> Scryfall default_cards (refresh command only)
@@ -378,7 +384,9 @@ npm run build --prefix frontend
 test.
 
 `npm run test:e2e` starts the app on the default ports and requires them to be
-free. Stop a running development session first.
+free. Stop a running development session first, or intentionally reuse that exact
+checkout's stack with
+`PLAYWRIGHT_REUSE_EXISTING_SERVER=true npm run test:e2e`.
 
 See [`docs/development.md`](docs/development.md) for the environment table,
 test matrix, common change workflows, troubleshooting, and pre-commit checks.
@@ -399,7 +407,7 @@ backend/
     search_debug.py    JSONL trace construction
     deck_agent.py      Conversational deck agent and its tool loop
     deck_agent_tools.py  read_deck, see_cards, search_cards, read_history, edit_deck,
-                         search_web, read_page
+                         edit_deck_text, search_web, read_page
     web_search.py      Perplexity Sonar search, with its citations
     semantic_index.py  Local embedding index and cosine sorting
   tests/               Backend contract and behavior tests
@@ -459,7 +467,7 @@ recorded in
   Rule Zero override model.
 - No persisted price history or true Cardmarket trend integration.
 - No full printing/finish chooser.
-- No plaintext import/export.
+- No plaintext import. Export is shipped in three formats.
 - No deck analytics.
 - The deck agent streams its turns, but not its reasoning: at `xhigh` effort most of
   a turn is thinking, so the panel reports that it is thinking rather than narrating it.

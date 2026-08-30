@@ -48,6 +48,13 @@ All notable changes to this project are documented here.
 
 ### Changed
 
+- **Manabase is now MAGE: Magic's Agentic Gathering Engine.** The sidebar lockup
+  stacks the four words with oversized initials that read MAGE vertically. A pixel-M
+  replaces the former colour-pie mark where the full lockup cannot fit, including the favicon. The browser
+  title, README, roadmap, and deck-agent identity use the new name. Existing
+  `manabase.*` browser storage keys remain unchanged so the rebrand cannot strand a
+  user's decks, history, conversations, or debug preference (ADR 0048).
+
 - **A column is ordered by what its cards cost, and that is now the default sort.** Mana
   value first, then how many coloured pips the cost has, then those pips in WUBRG order —
   so at any one value every single-pip cost sits together and every double-pip cost after

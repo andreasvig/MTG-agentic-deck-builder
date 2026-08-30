@@ -275,32 +275,15 @@ export const ICONS = {
     [3, 4, 6, 4],
     [2, 5, 8, 2],
   ],
-  /* The brand: the colour pie. Five pips at the vertices of a pentagon, wired
-     together — WUBRG, the one diagram every Magic player already reads, and
-     the thing a manabase is a choice about. Drawn as 2x2 nodes on 1-unit
-     edges: the brand is the one glyph that never renders below 20px, so it
-     can afford a hairline the rest of the set cannot. */
+  /* Compact MAGE mark. The full lockup writes M/A/G/E vertically; places too
+     small for four readable rows use its first initial as one printed glyph. */
   brand: [
-    [5, 0, 2, 2],
-    [10, 3, 2, 2],
-    [8, 9, 2, 2],
-    [2, 9, 2, 2],
-    [0, 3, 2, 2],
-    [7, 1, 1, 1],
-    [8, 2, 1, 1],
-    [9, 3, 1, 1],
-    [4, 1, 1, 1],
-    [3, 2, 1, 1],
-    [2, 3, 1, 1],
-    [10, 5, 1, 1],
-    [10, 6, 1, 1],
-    [9, 7, 1, 1],
-    [9, 8, 1, 1],
-    [1, 5, 1, 1],
-    [1, 6, 1, 1],
-    [2, 7, 1, 1],
-    [2, 8, 1, 1],
-    [4, 10, 4, 1],
+    [0, 1, 2, 10],
+    [10, 1, 2, 10],
+    [2, 2, 2, 3],
+    [4, 4, 2, 3],
+    [6, 4, 2, 3],
+    [8, 2, 2, 3],
   ],
 } as const satisfies Record<string, readonly Rect[]>;
 

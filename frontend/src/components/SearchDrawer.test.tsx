@@ -54,6 +54,11 @@ describe("card search dialog", () => {
       />,
     );
 
+    const user = userEvent.setup();
+    await user.click(
+      screen.getByRole("button", { name: "Show search filters" }),
+    );
+
     expect(
       screen.getByRole("checkbox", { name: "Enhance with EDHREC" }),
     ).toBeChecked();
@@ -120,6 +125,10 @@ describe("card search dialog", () => {
       />,
     );
 
+    await user.click(
+      screen.getByRole("button", { name: "Show search filters" }),
+    );
+
     const themePicker = await screen.findByRole("combobox", {
       name: "EDHREC deck theme",
     });
@@ -168,14 +177,38 @@ describe("card search dialog", () => {
       .getByRole("button", { name: "Close card search" })
       .focus();
     await user.tab({ shift: true });
-    expect(
-      screen.getByRole("checkbox", {
-        name: "Show non-Commander-legal cards",
-      }),
-    ).toHaveFocus();
+    expect(screen.getByRole("button", { name: /^Search$/ })).toHaveFocus();
 
     await user.keyboard("{Escape}");
     expect(onClose).toHaveBeenCalledOnce();
+  });
+
+  it("keeps advanced search filters collapsed until requested", async () => {
+    const user = userEvent.setup();
+    render(
+      <SearchDrawer
+        entries={[]}
+        client={idleClient}
+        onAdd={vi.fn()}
+        onSetQuantity={vi.fn()}
+        onClose={vi.fn()}
+      />,
+    );
+
+    const toggle = screen.getByRole("button", {
+      name: "Show search filters",
+    });
+    expect(toggle).toHaveAttribute("aria-expanded", "false");
+    expect(
+      screen.queryByRole("region", { name: "Card search filters" }),
+    ).not.toBeInTheDocument();
+
+    await user.click(toggle);
+
+    expect(
+      screen.getByRole("region", { name: "Card search filters" }),
+    ).toBeInTheDocument();
+    expect(toggle).toHaveAttribute("aria-expanded", "true");
   });
 
   it("sends color, mana value, and EUR price filters with the search", async () => {
@@ -193,6 +226,9 @@ describe("card search dialog", () => {
       />,
     );
 
+    await user.click(
+      screen.getByRole("button", { name: "Show search filters" }),
+    );
     await user.type(screen.getByRole("textbox", { name: "Search cards" }), "ramp");
     await user.click(screen.getByRole("radio", { name: "Exact" }));
     await user.click(screen.getByRole("checkbox", { name: "Blue" }));
@@ -777,6 +813,9 @@ describe("card search dialog", () => {
       ),
     );
     await user.click(
+      screen.getByRole("button", { name: "Show search filters" }),
+    );
+    await user.click(
       screen.getByRole("checkbox", {
         name: "Show non-Commander-legal cards",
       }),
@@ -828,6 +867,9 @@ describe("card search dialog", () => {
       />,
     );
 
+    await user.click(
+      screen.getByRole("button", { name: "Show search filters" }),
+    );
     await user.type(
       screen.getByRole("searchbox", { name: "Search card tags" }),
       "elfs",
@@ -887,6 +929,9 @@ describe("card search dialog", () => {
       />,
     );
 
+    await user.click(
+      screen.getByRole("button", { name: "Show search filters" }),
+    );
     await user.click(screen.getByRole("checkbox", { name: "Creature" }));
     await user.type(
       screen.getByRole("searchbox", { name: "Search card subtypes" }),

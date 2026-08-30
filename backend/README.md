@@ -1,6 +1,6 @@
 # Backend
 
-FastAPI card-discovery service for MTG Agentic Deck Builder.
+FastAPI card-discovery and deck-agent service for MTG Agentic Deck Builder.
 
 Read the repository-level [`AGENTS.md`](../AGENTS.md) and
 [`docs/architecture.md`](../docs/architecture.md) before changing boundaries.
@@ -10,7 +10,7 @@ Search behavior is specified in [`docs/search.md`](../docs/search.md).
 
 The backend currently owns:
 
-- Health and card-search HTTP APIs.
+- Health, card-search, and deck-agent HTTP APIs.
 - Provider-neutral card/search contracts.
 - Atomic Scryfall bulk-data synchronization and wire normalization.
 - Read-only local SQLite card catalog.
@@ -38,13 +38,20 @@ The backend currently owns:
 - Stored agent-ranked pagination that serves cached batches without a model
   call and starts one continuation round only after exhaustion. Later rounds
   receive every prior tool request and must deliberately broaden their search.
+- Streamed and plain-JSON deck-agent turns from a browser-posted transcript, deck
+  snapshot, and bounded history log.
+- Eight deck-agent tools: six read-only local/research tools plus `edit_deck` and
+  `edit_deck_text`, which resolve events for the browser to apply.
+- Per-turn provider-reported cost, interrupted-call replay, stale deck-result
+  substitution, braced card-name resolution, Sonar web research, and paginated page
+  reading with structured adapters for known deck sites.
 
 The backend does not currently own:
 
 - Deck CRUD or persistence.
-- Deck mutations.
+- Applying or persisting deck mutations; the backend resolves card/text edit events,
+  while the browser remains authoritative.
 - Complete Commander validation.
-- Deck chat/tools.
 
 ## Run
 
@@ -67,10 +74,13 @@ Endpoints:
 
 ```text
 GET http://127.0.0.1:43127/api/v1/health
+POST http://127.0.0.1:43127/api/v1/agent/chat
+POST http://127.0.0.1:43127/api/v1/agent/chat/stream
 GET http://127.0.0.1:43127/api/v1/cards/search?q=forest
 GET http://127.0.0.1:43127/api/v1/cards/search?q=&commander_oracle_id={uuid}&enhance_with_edhrec=true
 POST http://127.0.0.1:43127/api/v1/cards/search/agentic
 GET http://127.0.0.1:43127/api/v1/cards/{oracle_id}/edhrec
+GET http://127.0.0.1:43127/api/v1/cards/{oracle_id}/edhrec/similar
 GET http://127.0.0.1:43127/api/v1/cards/tags/search?q=mana
 GET http://127.0.0.1:43127/api/v1/cards/subtypes/search?q=elf
 GET http://127.0.0.1:43127/api/v1/cards/{oracle_id}
@@ -85,8 +95,11 @@ src/mtg_deck_builder/
   api/
     router.py        API prefix, health, router composition
     cards.py         Query translation and public errors
+    agent.py         Plain and SSE deck-agent routes
+    errors.py        Shared public error envelope
   domain/
     agentic_search.py  Strict local-tool, ranked-output, and trace contracts
+    agent_chat.py    Transcript, snapshot, history, reply, and stream contracts
     cards.py         Strict card/search contracts
     deck.py          Early deck contracts, not routed yet
   providers/
@@ -95,13 +108,18 @@ src/mtg_deck_builder/
     scryfall.py      Scryfall wire models, mapping, and title scores
     tagger.py        Tagger acquisition wire models and transport
     edhrec.py        EDHREC commander-page transport and wire validation
+    web_page.py      Bounded public-page fetch and deterministic pagination
+    web_sites.py     Structured adapters behind `read_page`
   agentic_card_search.py  Tool execution, orchestration, sessions, paging
+  deck_agent.py     Conversational tool loop and stream emission
+  deck_agent_tools.py  Eight deck/catalog/history/research tools
   agentic_search.py  Non-network request/response runtime guards
   agentic_search_debug.py  Full redacted agent-trace builder and JSONL writer
   card_catalog.py    Atomic bulk import and read-only SQLite catalog
   catalog_sync.py    Explicit catalog-refresh CLI
   config.py          YAML/environment settings and validation
   edhrec_catalog.py  Raw/normalized 30-day commander cache
+  web_search.py      Perplexity Sonar search and citations
   main.py            FastAPI construction and lifespan dependencies
   search.py          Local fuzzy ranking, filtering, and pagination
   search_debug.py    Trace construction and JSONL writes
@@ -144,6 +162,12 @@ src/mtg_deck_builder/
   typed `unavailable` status.
 - Search debug records candidates, WRatio, title confidence, and filter
   outcomes, not secret headers.
+- The backend never claims that emitting a deck event mutated a deck. The browser
+  applies `deck_edit` and `deck_text_edit` through its typed store and reports the
+  actual outcome in the transcript.
+- Optional Pydantic fields in `deck_text_edit` serialize as `null` unless excluded.
+  Consumers and fixtures must preserve that exact producer shape; `null` and omission
+  both mean “leave this field unchanged.”
 
 A `CardSearchPage` change requires synchronized frontend interface, runtime
 validation, test fixtures, and E2E fixture updates.
@@ -178,6 +202,11 @@ command. Typed agentic requests may use it; fuzzy title ranking itself does not.
 
 Runtime and debug settings load from environment variables and `.env` using
 the `MTG_` prefix.
+
+The separate top-level `agent:` block in `config.yaml` owns the deck agent's model,
+reasoning effort, memory window, tool loop, system prompt, tool descriptions, and web
+research settings. `OPENROUTER_API_KEY` is required while either configured agent is
+enabled; ordinary fuzzy title search remains local without it.
 
 | Variable | Default |
 | --- | --- |
@@ -221,6 +250,11 @@ Test ownership:
   and 30-day freshness.
 - `test_health.py`: health, CORS, settings.
 - `test_deck_models.py`: backend deck contract validation.
+- `test_deck_agent.py`: routes, exact SSE serialization, tool loop, streaming, replay,
+  costs, and reply contracts.
+- `test_deck_agent_tools.py`: all eight tool contracts and renderings.
+- `test_web_research.py`, `test_web_sites.py`, and `test_web_sites_live.py`: research
+  boundaries, adapters, pagination, Sonar mapping, and opt-in live drift checks.
 
 Committed tests use small in-memory bulk fixtures and remain independent from
 live provider queries.
@@ -249,7 +283,7 @@ live provider queries.
 - Add trace details and deterministic tests.
 - Update `config.yaml` and `docs/search.md` with any new tuning value.
 
-### Future Deck API
+### Future Persisted Deck API
 
 Do not expose the existing backend deck models directly as CRUD before defining:
 
@@ -258,6 +292,8 @@ Do not expose the existing backend deck models directly as CRUD before defining:
 - Validation result model.
 - Browser-local import migration.
 - Atomic history/undo semantics.
-- Agent patch compatibility.
+- Compatibility with the shipped auto-applied card/text event contract.
 
-ADR 0006 records the proposed mutation boundary.
+ADR 0006's confirmed-patch proposal was superseded by ADR 0036. A future persisted
+service must retain ADR 0036's atomic auto-apply/history behavior rather than reviving
+the old confirmation flow accidentally.

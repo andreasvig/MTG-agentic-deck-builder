@@ -18,7 +18,8 @@ npm run catalog:sync
 ```
 
 `npm run setup` synchronizes the backend environment, including development
-dependencies, and installs frontend packages. Search requires no API key.
+dependencies, and installs frontend packages. Local fuzzy title search requires no API
+key; the configured search agent and deck agent require `OPENROUTER_API_KEY`.
 The catalog command downloads Scryfall's current compressed `default_cards`
 export, atomically installs the local search database, downloads the configured
 FastEmbed ONNX model on first use, and builds the matching semantic sidecar.
@@ -174,6 +175,7 @@ Temporary environment overrides use nested names:
 | Scryfall mapping, importer, or search route | pytest, Ruff, local sanity query |
 | Frontend domain or API | Vitest and production build |
 | Deck mutation or migration | domain/hook tests and E2E |
+| Deck-agent tool, event, or replay contract | backend pytest, frontend parser/panel tests, build, and exact E2E workflow |
 | Search result or trace UI | component tests, build, E2E |
 | Responsive interaction | E2E plus desktop/mobile screenshot inspection |
 | Root runner | smoke test |
@@ -183,8 +185,9 @@ Temporary environment overrides use nested names:
 
 `npm run test:e2e` starts a server on the default ports with
 `reuseExistingServer=false`. Stop an active development runner before invoking
-it. `npm test` can run while the default ports are occupied because the smoke
-test uses `41738` and `43128`.
+it, or deliberately reuse that exact checkout's running stack with
+`PLAYWRIGHT_REUSE_EXISTING_SERVER=true npm run test:e2e`. `npm test` can run while the
+default ports are occupied because the smoke test uses `41738` and `43128`.
 
 ## Common Change Workflows
 
@@ -206,11 +209,17 @@ Current phase:
 
 1. Add a named operation in `useDeck.ts`.
 2. Return a useful accessibility announcement.
-3. Ensure mutation history receives exactly one prior deck snapshot.
+3. Ensure the before/after pair derives exactly one history entry and that the
+   round-trip property table covers every changed `Deck` field.
 4. Preserve immutable updates.
 5. Update persistence migration when schema changes.
 6. Add focused hook/domain coverage.
 7. Exercise the workflow in Playwright.
+
+If the mutation is agent-reachable, also update the backend event, frontend runtime
+reader, exact producer-shaped API fixture, transcript outcome, and stale-replay
+classification. Optional Pydantic fields may serialize as explicit `null`; do not model
+the boundary from a hand-written consumer object.
 
 Future backend phase:
 
@@ -283,6 +292,15 @@ blank-query browse or agentic commander request recreates a missing sidecar.
 
 The frontend runtime validator rejected the response. Compare
 `CardSearchPage` in the backend and frontend, then update fixtures.
+
+### Deck Agent Returns 503 Or Does Not Apply An Edit
+
+The deck agent needs `OPENROUTER_API_KEY` while `agent.enabled` is true. If the tool line
+appears but the deck does not change, inspect the SSE event itself before debugging the
+store: the backend emits resolved `deck_edit` / `deck_text_edit` events and the browser
+is the only mutator. In particular, a description-only text event contains `name: null`.
+Compare the producer's serialized event with `frontend/src/domain/agent.ts`, then run the
+focused backend route, frontend API, and Chrome description-only tests.
 
 ### E2E Cannot Start
 

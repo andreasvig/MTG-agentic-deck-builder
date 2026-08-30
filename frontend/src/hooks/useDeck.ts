@@ -132,8 +132,8 @@ export type DeckEditOutcome =
  * How a caller turns the deck an edit is about to be applied to into the edit to apply.
  *
  * A function rather than a value because resolving an edit reads the deck — a cut names a
- * printing whose payload has to come from the deck that holds it, and a group name has to
- * be turned into the id this deck files cards under. Handed the deck the verdict will be
+ * printing whose payload has to come from the deck that holds it, and a requested zone has
+ * to be turned into the section this deck uses. Handed the deck the verdict will be
  * reached against, so the resolution and the verdict cannot be about two different decks.
  * That matters within a single turn: the agent may edit twice, and the second edit is about
  * the deck the first one left behind, which no value captured in an earlier render can be.

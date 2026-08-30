@@ -1,5 +1,10 @@
 # `search_cards` — a third deck-agent tool
 
+> **Historical implementation plan.** `search_cards` shipped in ADR 0035 and has since
+> been integrated into the eight-tool deck agent. Use `docs/implementation-status.md`,
+> `docs/search.md`, and the ADR index for the current contract; the detail below is kept
+> as build history.
+
 The deck agent gets the search agent's engine, but drives every filter itself, and
 can point it at a commander other than the one in the command zone.
 

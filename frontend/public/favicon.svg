@@ -1,27 +1,13 @@
-<!-- The colour pie, on the same 12x12 grid as the `brand` glyph in
+<!-- The compact MAGE initial, on the same 12x12 grid as the `brand` glyph in
      src/components/Icon.tsx, printed on the paper stock. Keep the two in step. -->
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 12 12" shape-rendering="crispEdges">
   <rect width="12" height="12" fill="#f2efe9"/>
   <g fill="#3f6b46">
-    <rect x="5" y="0" width="2" height="2"/>
-    <rect x="10" y="3" width="2" height="2"/>
-    <rect x="8" y="9" width="2" height="2"/>
-    <rect x="2" y="9" width="2" height="2"/>
-    <rect x="0" y="3" width="2" height="2"/>
-    <rect x="7" y="1" width="1" height="1"/>
-    <rect x="8" y="2" width="1" height="1"/>
-    <rect x="9" y="3" width="1" height="1"/>
-    <rect x="4" y="1" width="1" height="1"/>
-    <rect x="3" y="2" width="1" height="1"/>
-    <rect x="2" y="3" width="1" height="1"/>
-    <rect x="10" y="5" width="1" height="1"/>
-    <rect x="10" y="6" width="1" height="1"/>
-    <rect x="9" y="7" width="1" height="1"/>
-    <rect x="9" y="8" width="1" height="1"/>
-    <rect x="1" y="5" width="1" height="1"/>
-    <rect x="1" y="6" width="1" height="1"/>
-    <rect x="2" y="7" width="1" height="1"/>
-    <rect x="2" y="8" width="1" height="1"/>
-    <rect x="4" y="10" width="4" height="1"/>
+    <rect x="0" y="1" width="2" height="10"/>
+    <rect x="10" y="1" width="2" height="10"/>
+    <rect x="2" y="2" width="2" height="3"/>
+    <rect x="4" y="4" width="2" height="3"/>
+    <rect x="6" y="4" width="2" height="3"/>
+    <rect x="8" y="2" width="2" height="3"/>
   </g>
 </svg>

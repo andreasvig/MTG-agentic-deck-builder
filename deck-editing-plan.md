@@ -1,5 +1,11 @@
 # Deck stats, `edit_deck`, and a durable deck history
 
+> **Historical implementation plan.** The work shipped through ADRs 0036–0039 and was
+> later extended by ADRs 0045–0047. Custom groups, snapshot-stack undo, unconditional
+> curve/price output, and any wording below that describes future implementation are
+> superseded. Use `docs/implementation-status.md`, `docs/architecture.md`, and the ADR
+> index for the current contract.
+
 > Project: mtg-agentic-deck-builder
 
 Three asks, one shared mechanism:

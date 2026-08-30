@@ -46,9 +46,12 @@ implementation.
 ### History
 
 - [`../changelog.md`](../changelog.md)
+- [`../deck-editing-plan.md`](../deck-editing-plan.md)
+- [`../search-cards-tool-plan.md`](../search-cards-tool-plan.md)
 
-The changelog records notable delivered changes. Git history remains the
-detailed source of chronology.
+The changelog records notable delivered changes. The two implementation plans are
+retained as historical build records and carry explicit banners; they are not current
+contracts. Git history remains the detailed source of chronology.
 
 ## Status Vocabulary
 

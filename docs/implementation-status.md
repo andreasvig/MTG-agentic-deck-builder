@@ -1,6 +1,6 @@
 # Implementation Status
 
-Last verified: 2026-08-02
+Last verified: 2026-08-05 at `4cfb21b`
 
 This is the canonical feature ledger. It describes the repository as it exists,
 not the intended end state.
@@ -9,6 +9,8 @@ not the intended end state.
 
 ### Runtime And Tooling
 
+- MAGE product identity: **Magic's Agentic Gathering Engine**, with a vertical
+  acronym lockup and compact pixel-M mark (ADR 0048).
 - React 19, TypeScript, Vite frontend.
 - FastAPI and Pydantic backend.
 - Root runner that starts both services and shuts down child processes cleanly.
@@ -148,6 +150,10 @@ not the intended end state.
   from `done`; an interrupted turn has no `done`, so Escape stores the streamed tool
   calls, partial prose and applied edits with an interrupted marker. Cancelling before
   the first event returns the question to the composer instead (ADR 0045).
+- A `deck_text_edit` event may carry the untouched optional field as explicit `null`,
+  because the backend serializes its Pydantic events without excluding `None`. The
+  frontend treats `null` and omission as the same absence; route, parser and Chrome
+  coverage pin the exact description-only wire shape (ADR 0047).
 - Enter sends, Shift+Enter breaks a line, and a failed turn keeps its question in
   the transcript so sending again retries with the context intact.
 - Running conversation cost in the header while debug mode is on, marked `+` when
@@ -177,20 +183,20 @@ not the intended end state.
   - `see_cards(cards, details)` — named or short-id cards at the requested depth:
     rules, prices, Tagger tags, EDHREC similar cards, EDHREC inclusion for this
     deck's commander, Commander legality. Defaults to rules.
-  - `edit_deck_text(name, description, reason)` — full replacements for the deck's
-    human-readable identity and shared intent. It proactively reconciles durable user
-    preferences into a current brief, may freely replace only the exact default name, and
-    applies as one visible, undoable history entry (ADR 0046).
-  - Each card renders as labelled, quoted fields, and the details always appear in
+    Each card renders as labelled, quoted fields, and the details always appear in
     one fixed order with `similar` last, whatever order they were asked for. `similar`
     groups Tagger's relationship lists under the labels the card panel uses, merges
     EDHREC's similar cards into `Similar cards`, and names each card once under the
     group that says the most about it (ADR 0032).
-  - `themes` — the deck themes EDHREC tracks for a card *as a commander*, most played
+    `themes` reports the deck themes EDHREC tracks for a card *as a commander*, most played
     first with the deck count behind each, capped at twenty (ADR 0035). These are the
     slugs `search_cards` takes as `commander.edhrec_theme`. Only a card that can legally
     be a commander has a page, so for anything else the detail says which of the two is
     true rather than reporting a bare absence.
+  - `edit_deck_text(name, description, reason)` — full replacements for the deck's
+    human-readable identity and shared intent. It proactively reconciles durable user
+    preferences into a current brief, may freely replace only the exact default name, and
+    applies as one visible, undoable history entry (ADR 0046).
   - `search_cards(...)` — the whole local catalog, filtered and ordered by the model
     rather than by an interface panel (ADR 0035). It is the search agent's own
     `LocalCardSearchTool`, so every ordering and filter field is the same one, and
@@ -206,9 +212,9 @@ not the intended end state.
     cards, and a *missing* EDHREC lookup. What the model itself sent is not echoed back.
     Every refusal — an EDHREC ordering with no evidence, no criteria at all, an
     unknown commander or theme — comes back as text the model adapts to.
-  - `edit_deck(changes, reason)` — the one tool that changes the deck (ADR 0036). Each
+  - `edit_deck(changes, reason)` — the card-writing tool (ADR 0036). Each
     change states the copy count wanted **afterwards** rather than an operation: add is
-    `quantity: 1`, cut is `quantity: 0`, a move is the same quantity with a new `group`,
+    `quantity: 1`, cut is `quantity: 0`, a move is the same quantity with a new `zone`,
     a swap is two changes. So there is no discriminator, no conditional field, and the
     call is idempotent — a change the deck already satisfies is dropped before the edit
     is emitted, which is what makes a retry safe. The backend mutates nothing: it
@@ -246,12 +252,13 @@ not the intended end state.
     are checked against the local catalog and the misses are named, normalising
     typographic punctuation first. `pytest -m live` checks every adapter against the
     real endpoints; the default run excludes it.
-  - Both web tools are advertised only when both can run, and every result they return
+    Both web tools are advertised only when both can run, and every result they return
     ends by saying that nothing in it has been checked against the catalog. Sonar's
     reasoning is sound and its identifiers are not — deck counts wrong by up to 128x, a
     real card returned under an invented name — and neither is visible to a reader.
-- The browser posts a deck snapshot with each turn, carrying identity and placement
-  only; names, types, rules and prices are resolved from the local catalog. It posts the
+- The browser posts a deck snapshot with each turn, carrying the name, description,
+  revision, card identities and placement; types, rules and prices are resolved from the
+  local catalog. It posts the
   deck's history log alongside it, pruned newest-first to the backend's three bounds —
   50 sessions, 500 edits, 250 cards per edit — because a request over any of them is
   refused whole, which would fail the chat turn rather than the history.
@@ -260,8 +267,8 @@ not the intended end state.
   tense — `Applied: +2 / −1` over the names — with an **Undo** rather than a confirm.
   There is no proposed diff and no confirmation step; the durable history log is the
   safety net. The block reports what the deck **did**, not what the agent asked for: the
-  reducer can refuse an edit the backend was happy to emit — an illegal second commander,
-  an unknown group — and a refusal renders the deck's own sentence with no Undo. The Undo
+  reducer can refuse an edit the backend was happy to emit — an illegal second commander
+  or a third command-zone card — and a refusal renders the deck's own sentence with no Undo. The Undo
   sits on the newest edited turn only.
 - Every tool call is shown in the transcript as its own line above the answer,
   regardless of debug mode, with failed calls marked.
@@ -353,7 +360,7 @@ Missing:
 - Centered card detail dialog on desktop and contained full-screen mobile view.
 - Tagger tags and related-card navigation inside that deck card dialog.
 - Desktop navigation rail and mobile deck-action toolbar.
-- Responsive search, deck-name editing, custom-group creation, and card actions.
+- Responsive search, deck-name/brief editing, history travel, and card actions.
 - Columns sorted by mana cost by default: value, then coloured-pip count, then WUBRG,
   so a stacked column reads as the curve.
 - A paper interface: cream stock, one monospace face, hairline rules, no drop shadows
@@ -544,8 +551,8 @@ missing or stale sidecar is an explicit unavailable state fixed by
 - The deck agent reads the deck from a snapshot posted with each turn, not from
   backend state, and resolves every card fact from the local catalog. `edit_deck` does not
   change that: the backend computes a resolved change and emits it, and the browser is the
-  only thing that applies one. Command-zone legality and group existence live in
-  `frontend/src/domain/deck.ts` and are deliberately not duplicated in the backend, so the
+  only thing that applies one. Command-zone legality lives in
+  `frontend/src/domain/deck.ts` and is deliberately not duplicated in the backend, so the
   browser can and does refuse an edit the backend emitted.
 - Deck edit history is browser-local too, per deck, under `manabase.deck-history.v1`, in
   the same storage quota as the deck library and the chat transcripts. It does not survive
@@ -561,6 +568,6 @@ missing or stale sidecar is an explicit unavailable state fixed by
    the current UI behavior.
 2. Add browser-local library import and migration into that service.
 3. Implement complete Commander validation against shared domain models.
-4. Add plaintext import/export and full printing selection.
+4. Add plaintext import and full printing selection; export is already shipped.
 5. Move deck history behind that service so it survives a browser wipe, keeping the
    browser-local log as importable legacy data.

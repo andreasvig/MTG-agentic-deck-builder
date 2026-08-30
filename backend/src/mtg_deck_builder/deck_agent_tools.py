@@ -1,4 +1,4 @@
-"""The deck agent's access to its data: seven tools, and name resolution.
+"""The deck agent's access to its data: eight tools, and name resolution.
 
 `read_deck` and `read_history` are answered entirely from what the browser posted
 with the turn — the backend holds no deck and no history of one — while `see_cards`
@@ -10,10 +10,12 @@ data.
 against the posted snapshot and emits it, and the browser applies it as one undo
 step. What that buys is a result that can be *accurate* rather than proposed — the
 deck as it was is in the request, so the tool can say what the change did to it.
+`edit_deck_text` follows the same boundary for full name and description replacements;
+both writing tools become one browser-side history entry per successful call.
 Everything it declines to block, it reports: colour identity, singleton and the
 hundred-card bound are warnings here because they are warnings on the board too, and
 an agent held to a stricter rule than the drag target is inconsistent in a way the
-user cannot see. Command-zone legality and group existence stay in
+user cannot see. Command-zone legality stays in
 `frontend/src/domain/deck.ts`, unduplicated.
 
 `search_cards` is the search agent's own engine with the filters moved: the

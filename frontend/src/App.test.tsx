@@ -54,6 +54,16 @@ afterEach(() => {
 });
 
 describe("deck workspace", () => {
+  it("identifies the product with the MAGE lockup", () => {
+    render(<App />);
+
+    expect(
+      screen.getByRole("img", {
+        name: "MAGE — Magic's Agentic Gathering Engine",
+      }),
+    ).toBeInTheDocument();
+  });
+
   it("edits, collapses, expands, persists, and undoes the deck description", async () => {
     const user = userEvent.setup();
     render(<App />);
@@ -699,6 +709,9 @@ describe("deck workspace", () => {
     expect(
       await screen.findByRole("dialog", { name: "Find cards" }),
     ).toBeInTheDocument();
+    await user.click(
+      screen.getByRole("button", { name: "Show search filters" }),
+    );
     expect(
       screen.getByRole("button", { name: "Remove mana rock tag" }),
     ).toBeInTheDocument();

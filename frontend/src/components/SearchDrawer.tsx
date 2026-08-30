@@ -96,7 +96,7 @@ export function SearchDrawer({
     colors: [],
     tags: initialTags,
   }));
-  const [filtersOpen, setFiltersOpen] = useState(true);
+  const [filtersOpen, setFiltersOpen] = useState(false);
   const [enhanceWithEdhrec, setEnhanceWithEdhrec] = useState(true);
   const [edhrecContext, setEdhrecContext] =
     useState<EdhrecCommanderContext | null>(null);

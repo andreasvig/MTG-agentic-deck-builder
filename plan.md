@@ -1,93 +1,99 @@
-# MTG Agentic Deck Builder
+# MAGE — Magic's Agentic Gathering Engine
 
 ## Goal
 
-Build a local-first Commander deck builder inspired by Archidekt: fast manual
-editing today, strong card discovery, and eventually a deck-scoped assistant
-that can explain and propose safe changes.
+Build a private, local-first Commander deck builder with fast manual editing,
+strong card discovery, and a deck-scoped agent that can inspect, research, and
+change the same deck the user is editing.
 
 This file is the forward-looking product roadmap. Read
-[`docs/implementation-status.md`](docs/implementation-status.md) for the
+[`docs/implementation-status.md`](docs/implementation-status.md) for the exact
 shipped boundary and [`docs/decisions/README.md`](docs/decisions/README.md) for
-durable technical decisions.
+durable product and architecture decisions.
 
 ## Product Principles
 
-- Local and single-user; no accounts or cloud sync.
+- Local and single-user; no accounts or cloud sync in the current product.
 - Commander-focused rather than a general-purpose MTG deck builder.
 - Card-first visual editing with a compact list alternative.
+- One placement axis: Command zone or deck. Card-type columns are derived, not
+  user-authored categories.
 - Support legal multi-card command zones rather than assuming one commander.
 - Keep canonical card data and typed search local; make optional community
   enrichment explicit, bounded, cached, and safely degradable.
-- Route future deck mutations through one typed backend service shared by the
-  UI and assistant.
-- Show assistant changes as a visible diff and require confirmation.
+- Agent edits apply immediately through the browser's typed deck operations and
+  are protected by the same durable history as manual edits. Do not restore the
+  superseded proposed-patch/confirmation flow without a new product decision.
+- Route future persisted deck mutations through one typed backend service shared
+  by the UI and agent. Neither should write directly to SQLite.
+- Keep the deck's shared brief as current intent, not an append-only chat diary.
 
 ## Shipped Foundation
 
 ### Editor
 
-- Browser-local multi-deck library.
-- Confirmed, current-session-recoverable deck deletion.
-- Command zone, Not assigned, and user-created custom groups.
-- Visual and list layouts defaulting to derived Card types, with Custom as the
-  editable grouping mode.
-- Add, remove, quantity, movement, sorting, prices, and session undo.
-- Singleton and commander color-identity warnings.
-- One commander by default, with recognized Partner, Partner with, Friends
-  forever, Background, and Doctor's companion pairs allowed as a second.
-- Desktop and mobile search, inspection, and editing workflows.
+- Browser-local multi-deck library with create, switch, inline rename,
+  confirm-delete, and current-session restore.
+- One derived card-type grouping under a permanent Command zone heading; custom
+  groups and the maybeboard are not part of the active model.
+- Stacked visual and dense list views, card movement between the two sections,
+  quantity editing, price totals, and mana-cost/name/price sorting.
+- Durable per-deck edit history with back, forward, and a jump to any retained
+  diff. History and cursor position survive reload.
+- Singleton and commander color-identity warnings plus recognized Partner,
+  Partner with, Friends forever, Background, and Doctor's companion pairs.
+- A 2,000-character shared Markdown intent brief, edited whole by the user or
+  maintained by the deck agent, and recorded in the same history as card edits.
+- Plain-text, MTG Arena, and CSV export, plus a prefilled TCGplayer cart.
+- Paper/ink visual system and a hand-drawn 12x12 pixel icon set.
 
-### Card Search
+### Card Search And Data
 
-- Scryfall `default_cards` bulk data imported atomically into local SQLite.
-- One representative printing per Oracle card in search results.
-- Complete-catalog RapidFuzz title ranking without a result threshold or
-  candidate-pool cap.
-- Six-card pages with local Commander legality, commander identity, card-type,
-  subtype, Tagger, color, mana-value, and EUR filters.
-- A 75% preview-confidence boundary used only to decide whether the first six
-  fuzzy results are strong enough; it never truncates the fuzzy ranking.
-- Progressive agentic search for weak-title and natural-language queries.
-- Exactly one `search_local_cards` tool call per agent round.
-- Cached agent-ranked pages followed by explicit user-triggered continuation
-  rounds that exclude cards already shown or examined.
-- Always-on local semantic sorting after structured filters, with no similarity
-  cutoff.
-- Explicit local acquisition of Scryfall Tagger Oracle-card tags and
-  relationships into a resumable SQLite sidecar. Card details and immutable
-  user-selected tag filters consume it; bounded deduplicated gameplay tags also
-  enrich semantic document v2, while exact relationships stay separate.
-- Default-on EDHREC enhancement for single-commander blank-query browsing,
-  using one on-demand commander page, a 30-day raw/normalized cache, and a
-  visible local-sort fallback.
-- Seven-step debug traces plus complete secret-redacted JSONL diagnostics.
+- Scryfall `default_cards` imported atomically into a local SQLite catalog, one
+  cheapest ordinary printing per Oracle card.
+- Complete-catalog RapidFuzz title ranking, local filters, six-card pages, and
+  progressive agentic search for weak-title or natural-language requests.
+- Exactly one `search_local_cards` call per search-agent round, local semantic
+  sorting with no cutoff, and explicit continuation rounds after cached pages.
+- Optional resumable Tagger sidecar for labels, relationships, filters, and
+  bounded semantic-document concepts.
+- Optional on-demand EDHREC commander/theme and similar-card caches with visible
+  fallback when unavailable.
+- Interface-wide debug mode, focused seven-step traces, provider-reported cost,
+  and complete secret-redacted JSONL diagnostics.
 
-Typed search does not query Scryfall or EDHREC. Scryfall is used for explicit
-catalog refreshes and remote card images. Optional EDHREC ranking fetches only
-after a commander-specific filter-only cache miss.
+### Deck Agent
 
-## Target Architecture
+- Desktop chat panel with one persisted conversation, draft, cost total, and
+  running turn per deck; up to three decks may run concurrently.
+- Streamed tools and prose, interruption that preserves completed work, and
+  replay of completed calls with stale deck-dependent results substituted.
+- Eight tools: `read_deck`, `see_cards`, `search_cards`, `read_history`,
+  `search_web`, `read_page`, `edit_deck`, and `edit_deck_text`.
+- Card edits and name/brief replacements auto-apply to the deck that started the
+  turn as one reducer action, one history entry, and one undoable step.
+- Local catalog data remains authoritative. Sonar and fetched pages are research
+  leads, with known deck sites read through structured adapters where possible.
+
+## Current And Target Architecture
 
 ```text
-React UI
-  |- current browser-local deck library
-  `- card search drawer
-          |
-          v
-FastAPI
-  |- local SQLite card catalog
-  |- fuzzy title search
-  |- local semantic vector sidecar
-  `- one-tool OpenRouter search agent
+Current
+Browser localStorage owns decks, shared briefs, chats, and edit history
+Browser deck store applies manual and agent edits
+FastAPI owns card discovery and resolves deck-agent tool events from posted snapshots
+Local SQLite owns derived card/search/enrichment data
 
-Next:
-React UI -> typed deck/rules service -> SQLite deck storage
-Deck assistant -> the same typed deck/rules service
+Next persistence boundary
+React UI and deck agent
+  -> typed backend deck/rules service
+  -> SQLite deck repository and mutation history
 ```
 
-The assistant must never write directly to SQLite. Manual and assistant changes
-must have identical validation, persistence, history, and undo behavior.
+The migration must preserve existing browser libraries, descriptions, histories,
+and chat ownership. The current agent event contract remains useful during the
+migration: a successful write must still be atomic, deck-scoped, accurately
+reported, and undoable.
 
 ## Roadmap
 
@@ -95,67 +101,66 @@ must have identical validation, persistence, history, and undo behavior.
 
 - Define the SQLite deck repository and migrations.
 - Define typed deck commands and one mutation service.
-- Import `manabase.deck-library.v2` safely.
-- Preserve current UI behavior during the migration.
+- Import `manabase.deck-library.v2`, descriptions, and browser-local history
+  without deleting the local source before server import succeeds.
+- Preserve current UI behavior and agent ownership while moving authority.
 - Persist atomic mutation history and named snapshots.
 
 ### 2. Complete Commander Rules
 
 - Validate 100-card size, singleton exceptions, format legality, and color
-  identity.
+  identity through a shared result model.
 - Validate single-commander eligibility and remaining special or future
   command-zone combinations.
 - Separate errors, warnings, and explicit Rule Zero overrides.
-- Use the same validation from the UI and future assistant tools.
+- Keep manual and agent edits on the same validation boundary.
 
 ### 3. Portability, Printing, Pricing, And Insight
 
-- Add plaintext import/export with preview and unmatched-line reporting.
+- Add plaintext import with preview and unmatched-line reporting; export is
+  already shipped.
 - Add complete printing and finish selection.
-- Persist timestamped price observations if trend history proves useful.
-- Add mana curve, color production, card-type, functional-category, and deck
+- Persist timestamped price observations only if trend history proves useful.
+- Add mana curve, color production, probability, functional-category, and deck
   completion analysis.
 - Add multi-select and bulk editing where it shortens repeated work.
 
-### 4. Safe Deck Assistant
+### 4. Deck-Agent Hardening
 
-- Add a deck-scoped chat interface in the reserved workspace.
-- Give it typed tools to inspect the deck, run shared validation, search the
-  local card catalog, and propose a deck patch.
-- Show additions, removals, swaps, and explanations before confirmation.
-- Apply confirmed patches atomically through the deck service.
-- Make each applied patch undoable as one operation.
-
-The current OpenRouter card-search implementation does not commit the future
-deck assistant to a particular orchestration framework.
+- Add a mobile entry point.
+- Let the rail stop a background turn and surface a background failure without
+  opening that deck first.
+- Add full-reload browser coverage for interrupted-turn replay.
+- Build an evaluation set for deck advice, tool choice, and edit quality before
+  changing the prompt or model from anecdotes.
+- Decide whether unresolved braced card names need debug-visible diagnostics.
 
 ### 5. Search Refinement
 
 - Build a representative query evaluation set before changing the 75% routing
-  boundary.
-- Evaluate semantic-sort quality and tune the embedding document or model only
-  against measured queries.
+  boundary, semantic document, or embedding model.
 - Add a trace retention and size policy.
 - Schedule catalog refreshes only when the local workflow needs automation.
+- Revisit Tagger descriptions or relationship-based retrieval only against
+  measured search failures.
 
 ## Deferred
 
 - Accounts, hosted collaboration, public deck discovery, and cloud sync.
-- Collection inventory and marketplace cart workflows.
-- Direct third-party account synchronization.
+- Collection inventory and third-party account synchronization.
 - Full game simulation and automated playtesting.
 - Power or bracket scoring until a clear product model is chosen.
 - Bulk or background scraping of recommendation sites.
+- A model spend cap; cost is reported rather than enforced today.
 
 ## Open Decisions
 
-- Whether deck pricing defaults to the selected printing or the cheapest
-  eligible printing.
-- Whether price history provides enough value to add another data provider.
-- How to handle a confirmed assistant patch when the deck changed after the
-  proposal was created.
-- Which evaluation cases should govern future semantic-model changes.
-- Whether Tagger descriptions or relationship classifiers should later support
-  a separate concept vector or exact candidate expansion. Current membership
-  rows expose no usable strength/status signal, and relationships stay outside
-  semantic document v2.
+- Whether backend persistence should import browser history as authoritative
+  history or as a one-time legacy snapshot.
+- Whether deck pricing should continue following the selected printing once full
+  printing choice exists, and whether price history merits another provider.
+- Which evaluation cases should govern future search-model and deck-agent changes.
+- Whether Tagger descriptions or relationship classifiers should support a
+  separate concept vector or exact candidate expansion.
+- How a mobile deck-agent entry point shares space with the existing deck-action
+  toolbar without pushing the deck out of view.

@@ -446,7 +446,7 @@ agent:
       Defaults to rules when you ask for nothing in particular.
 
     edit_deck_description: |
-      Change what the open deck holds. This is the only tool that changes anything,
+      Change which cards the open deck holds. This is the card-writing tool,
       and the change is made the moment the call returns: there is nothing to confirm
       and nothing waiting on the user.
 
@@ -787,7 +787,7 @@ agent:
   system_prompt: |
     # Task
 
-    You are the deck assistant inside Manabase, a local-first Magic: The Gathering Commander deck builder. You are talking to the one person who uses it: an experienced Commander player working on a single deck.
+    You are the deck assistant inside MAGE (Magic's Agentic Gathering Engine), a local-first Magic: The Gathering Commander deck builder. You are talking to the one person who uses it: an experienced Commander player working on a single deck.
 
     # What you can see
 

@@ -3,7 +3,7 @@
 - Status: Accepted
 - Date: 2026-08-02
 
-Extends [ADR 0037](0037-deck-grouping-is-derived-from-card-type.md), which made every
+Extends [ADR 0037](0037-one-placement-axis-and-a-commander-the-agent-can-set.md), which made every
 group a drop target carrying a `DeckSection`.
 
 ## Context

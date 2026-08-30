@@ -20,7 +20,7 @@ tradeoffs; they are not task lists.
 | [0002](0002-scryfall-authority-and-derived-catalog.md) | Accepted | Card-data ownership |
 | [0003](0003-layered-observable-search.md) | Superseded | Former layered search |
 | [0004](0004-browser-local-deck-library.md) | Accepted (transitional) | Current deck persistence |
-| [0005](0005-editor-grouping-and-inspection.md) | Accepted | Editor information architecture |
+| [0005](0005-editor-grouping-and-inspection.md) | Accepted (partly superseded) | Editor information architecture; ADR 0037 replaced its grouping model |
 | [0006](0006-agent-uses-typed-deck-patches.md) | Superseded | Former proposed confirmed-patch agent mutation |
 | [0007](0007-single-fuzzy-title-search.md) | Accepted | One fuzzy title-search path |
 | [0008](0008-local-catalog-serves-search.md) | Accepted | Local catalog search reads and pagination |
@@ -58,11 +58,12 @@ tradeoffs; they are not task lists.
 | [0040](0040-web-research-through-sonar.md) | Accepted | `search_web` and `read_page` on Perplexity `sonar`; the catalog stays the authority |
 | [0041](0041-deck-sites-are-read-through-their-own-data.md) | Accepted | Eight deck sites read through their own endpoints behind `read_page`, never a second tool |
 | [0042](0042-the-visual-board-is-a-stack.md) | Accepted | The visual board stacks, each card showing its own printed top; a card is dragged by its art |
-| [0043](0043-the-interface-is-printed-on-paper.md) | Accepted | Cream stock, mono type, square edges, no shadows; 40 hand-drawn pixel icons replace lucide-react |
+| [0043](0043-the-interface-is-printed-on-paper.md) | Accepted | Cream stock, mono type, square edges, no shadows; hand-drawn pixel icons replace lucide-react |
 | [0044](0044-a-deck-leaves-as-a-list-a-shop-can-read.md) | Accepted | Export in three formats; plain text is headingless so a shop can price every line, plus a prefilled TCGplayer cart |
 | [0045](0045-interrupted-turn-replay-and-deck-scoped-execution.md) | Accepted | Interrupted turns replay completed work; running turns and their edits stay scoped to their decks |
 | [0046](0046-deck-description-is-shared-intent.md) | Accepted (partly superseded) | Every deck has one editable shared intent brief; ADR 0047 changes its read rendering |
 | [0047](0047-deck-brief-renders-bounded-markdown.md) | Accepted | The deck brief renders bounded Markdown; card-name braces remain transcript-only markup |
+| [0048](0048-mage-product-name-and-vertical-lockup.md) | Accepted | MAGE product name, vertical expanded lockup, and compact pixel-M mark |
 
 ## Updating Decisions
 

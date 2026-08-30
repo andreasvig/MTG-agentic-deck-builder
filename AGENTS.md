@@ -44,13 +44,12 @@ the documentation in the same change when drift is found.
   reads it. `npm run symbols:sync` writes both; neither is edited by hand (ADR 0034).
 - Deck libraries are currently browser-local and persisted in `localStorage`.
 - There is no deck CRUD API or SQLite persistence yet.
-- Progressive card-search agent execution is shipped. The deck chat agent is
-  shipped with five tools: `read_deck`, `see_cards` (ADR 0029), `search_cards`
-  (ADR 0035), `read_history` and `edit_deck` (ADR 0036). The first four are
-  read-only. The backend holds no deck, so the browser posts a deck snapshot and a
-  bounded history log with each turn, and `edit_deck` cannot mutate anything: it
-  resolves a change against the posted snapshot and emits a `deck_edit` stream
-  event the browser applies.
+- Progressive card-search agent execution is shipped. The deck chat agent has eight
+  tools, six read-only: `read_deck`, `see_cards`, `search_cards`, `read_history`,
+  `search_web`, `read_page`, plus the two writing tools `edit_deck` and
+  `edit_deck_text`. The backend holds no deck, so the browser posts a deck snapshot
+  and bounded history log with each turn. The writing tools only resolve events
+  (`deck_edit` or `deck_text_edit`) against that snapshot; the browser applies them.
 - `search_cards` reuses the search agent's `LocalCardSearchTool` unchanged. Its two
   prompts describe one engine — the field reference in
   `agent.tools.search_cards_description`, the craft under `# Searching for cards` in
@@ -94,6 +93,15 @@ Do not change these without an explicit product decision and ADR update:
   `read_history` result whose recorded deck revision differs from the posted snapshot is
   substituted with the instruction to read the current deck. Never replay it as an
   observation; non-deck-dependent tool results remain unchanged (ADR 0045).
+- Every deck has one shared current intent brief, not an append-only diary. The user
+  edits its complete source; the agent may maintain it through `edit_deck_text`; both
+  enter the same durable history as card edits. The read view renders only ADR 0047's
+  bounded Markdown subset and expands visibly after an agent update.
+- Pydantic's SSE serialization includes optional text-edit fields as `null` unless
+  explicitly excluded. Frontend readers must treat `null` and omission as the same
+  absence for `name` and `description`, and boundary fixtures must use the backend's
+  serialized shape. A hand-built event that simply omits the field does not cover the
+  production contract.
 - Debug mode is one interface-wide preference in the editor toolbar, shared by the
   search trace and the deck agent cost. Do not reintroduce a per-surface toggle.
 - Model cost is read from the provider's reported `usage.cost`, never computed from

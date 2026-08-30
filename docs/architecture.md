@@ -9,12 +9,12 @@ recorded separately in `plan.md` and proposed ADRs.
 Browser
   |
   | React application (127.0.0.1:41737)
-  | - deck library, and a durable per-deck diff history that undo replays backwards
+  | - deck library, shared intent briefs, and a durable per-deck diff-history cursor
   | - localStorage persistence
   | - search, editor, dialogs, responsive shell
-  | - applies the agent's resolved deck edits; the backend never mutates a deck
+  | - applies the agent's resolved card and deck-text edits; the backend never mutates a deck
   |
-  | HTTP JSON
+  | HTTP JSON + server-sent events
   v
 FastAPI (127.0.0.1:43127/api/v1)
   |
@@ -45,11 +45,13 @@ FastAPI (127.0.0.1:43127/api/v1)
        |                           read_history (posted history log, newest first)
        |                           edit_deck (resolves a change against the posted
        |                                      snapshot; mutates nothing)
+       |                           edit_deck_text (resolves a name/brief replacement;
+       |                                           mutates nothing)
        |                           search_web (Perplexity sonar; summary + sources)
        |                           read_page (plain fetch of one cited URL)
        |-- one final completion advertising no tools, so a turn always answers
        |-- streamed: `tool` as each call runs, `text` as the answer is written,
-       |             `deck_edit` the moment edit_deck succeeds
+       |             `deck_edit` / `deck_text_edit` when a writing tool succeeds
        `--> reply, the calls it made, and the cost summed over every completion
              `-- on a debug turn, each call's arguments and its exact result
   |
@@ -80,10 +82,10 @@ Scryfall Oracle-tag bulk + Tagger relationship edges
                               -> atomic semantic sidecar refresh
 ```
 
-The backend does not currently persist decks. The frontend does not call a
-deck API. `edit_deck` does not change that: it computes a resolved change against
-the snapshot posted with the turn and emits it as a `deck_edit` event, and the
-browser is the only thing that applies one (ADR 0036).
+The backend does not currently persist decks. The frontend does not call a deck API.
+`edit_deck` and `edit_deck_text` do not change that: each computes a resolved event
+against the snapshot posted with the turn, and the browser is the only thing that
+applies it (ADRs 0036 and 0046).
 
 ## Process Lifecycle
 
@@ -148,7 +150,8 @@ progressive HTTP contract.
 The reply also carries `card_links`: the card names the answer braced, resolved against
 the local catalog so the chat can open them (ADR 0033).
 
-Also the streamed turn's events — `text`, `tool`, `deck_edit`, `done`, `error` — where
+Also the streamed turn's events — `text`, `tool`, `deck_edit`, `deck_text_edit`, `done`,
+`error` — where
 `done` carries the same reply the JSON route returns, so nothing stored depends on which
 route produced it (ADR 0031).
 
@@ -161,6 +164,12 @@ therefore safe to retry. `DeckAgentDeckHistory` is the browser's log, posted wit
 exactly as the deck snapshot is and bounded by `MAX_HISTORY_SESSIONS`,
 `MAX_HISTORY_EDITS` and `MAX_HISTORY_EDIT_CARDS` — exceeding any of them is a 422 that
 fails the whole turn, so the client prunes newest-first before sending.
+
+`deck_text_edit` carries a full replacement for the name, description, or both, plus
+the agent's reason and the deck name that owns the turn. Pydantic serializes an untouched
+optional sibling as `null`; the frontend accepts that as equivalent to omission. Exact
+route-shaped coverage pins this boundary because a hand-written event that simply leaves
+the field out does not exercise the production wire shape (ADRs 0046 and 0047).
 
 Strict contracts for the deck agent's chat turn: an alternating transcript whose
 newest message must be the user's, and a reply carrying the assistant message, the
@@ -412,15 +421,16 @@ every completion in the turn cost, counting any that reported no figure. On a tu
 that asked for `debug`, each reported call also carries the arguments the model sent
 and the exact text the tool returned, taken from the call that ran rather than
 re-rendered, and truncated with a visible marker rather than silently cut (ADR 0030). It
-emits a `deck_edit` event the moment `edit_deck` succeeds, and threads the posted history
-log from the request into the toolbox so `read_history` can answer from it (ADR 0036).
+emits a `deck_edit` or `deck_text_edit` event the moment the corresponding writing tool
+succeeds, and threads the posted history log from the request into the toolbox so
+`read_history` can answer from it (ADRs 0036 and 0046).
 
 ### `deck_agent_tools.py`
 
-The agent's seven tools (ADRs 0029, 0035, 0036, 0039 and 0040), six of them read-only
-and five of them local. `search_web` and `read_page` are the only two that leave this
-machine and the only two whose results are not authoritative; both are described at the
-end of this section. `read_deck` is answered entirely from the
+The agent's eight tools (ADRs 0029, 0035, 0036, 0039, 0040 and 0046), six of them
+read-only and six of them local. `search_web` and `read_page` are the only two that leave
+this machine and the only two whose results are not authoritative; both are described at
+the end of this section. `read_deck` is answered entirely from the
 deck snapshot the browser posted with the turn, resolved against the local catalog so
 names and types come from the catalog rather than the client; it returns the deck
 grouped by primary type with short ids and no card text. Its one argument, `extra_info`,
@@ -463,12 +473,18 @@ before emitting the edit, so a retried call cannot double-add. Only an unresolva
 and an out-of-range quantity fail the call, and either fails all of it: colour identity,
 the singleton rule and the hundred-card bound are **warnings**, because the board treats
 them that way and an agent held to a stricter rule than the drag target is inconsistent
-invisibly. Command-zone legality and group existence stay in the frontend's
+invisibly. Command-zone legality stays in the frontend's
 `domain/deck.ts`, unduplicated, so the browser can and does refuse an emitted edit.
 `read_history` renders the posted log newest session first with the actor as `You` and
 `Me`, and a client that posted no history reads differently from a deck with no recorded
 edits, because the two lead somewhere different. `read_deck`'s footer points at it only
 when history is present.
+
+`edit_deck_text` is the second writing tool (ADR 0046). It resolves full name and/or
+description replacements against the posted snapshot, normalizes agent-authored brief
+text, drops a no-op, and emits one atomic event carrying the reason. The browser applies
+it through the same deck store and derived history as a card edit, so rename plus brief
+replacement is one undoable step rather than two adjacent mutations.
 
 `search_web` and `read_page` are the two tools from ADR 0040, and the only two that
 leave this machine. `search_web` asks Perplexity `sonar` through `web_search.py` and
@@ -476,7 +492,7 @@ renders the answer as prose, its citations numbered beneath it in the order Sona
 returned them — its markers cite positionally, so the order is load-bearing — and an
 offer to read any of them. `read_page` fetches one URL through `providers/web_page.py`, one part at a time: a long
 document is split rather than cut off, and each part with a successor ends by naming the
-call that fetches it. Seven deck sites are read through their own endpoints rather than
+call that fetches it. Eight deck sites are read through their own endpoints rather than
 their markup (ADR 0041, `providers/web_sites.py`) — on MTGGoldfish the generic reader
 returns a deck page containing no cards at all.
 Both are advertised only when both can run, because a search that produces links is half
@@ -514,12 +530,18 @@ relationships remain a separate graph.
 
 ### `components/Icon.tsx`
 
-Every icon in the application: 40 glyphs hand-set as `[x, y, w, h]` rects on a 12x12
+Every icon in the application: 42 glyphs hand-set as `[x, y, w, h]` rects on a 12x12
 grid and rendered in `currentColor` with `shape-rendering="crispEdges"` (ADR 0043).
 There is no icon dependency. `dev/IconSheet.tsx`, reachable at `#icons` in the dev
 server, renders the whole set at the four sizes the app ships plus an 8x blow-up on the
 grid; edit a glyph and look at it there before shipping, because the failure mode is
 legible at 26px and mush at 11.
+
+The primary product lockup is text rather than one of those glyphs: four rows read
+**Magic's**, **Agentic**, **Gathering**, **Engine**, with each initial oversized so MAGE
+is legible down the first column without duplicating the letter in the rest of its word.
+The 12x12 `brand` glyph and favicon are the compact pixel-M mark for places too small to
+carry the full vertical name (ADR 0048).
 
 ### `domain/card.ts`
 
@@ -527,16 +549,16 @@ Provider-neutral card and search response types plus presentation-safe helpers.
 
 ### `domain/deck.ts`
 
-Browser persistence schema, migration, group placement, primary card type, and
+Browser persistence schema, migration, section placement, primary card type, and
 commander color-identity helpers. It also owns the current command-zone
 composition policy: one copy of one commander by default, or two cards when
 their Oracle text/type lines form a recognized legal Commander pairing.
 
-Stable IDs:
+Stable section values:
 
 ```text
 command_zone
-unassigned
+mainboard
 ```
 
 Persistence keys:
@@ -554,6 +576,10 @@ payloads it needs, `invertDeckDiff` swaps every change's `before` and `after`,
 `applyDeckDiff` replays a diff in either direction against a deck and a payload pool,
 `appendToHistory` places an edit in a session, `pruneHistory` enforces both caps, and
 `parseDeckHistory` validates what came back out of storage.
+
+The diff models card quantity/section, name, and description. A name/brief replacement
+therefore travels, inverts, and replays through the same cursor as a card change; adding a
+new mutable `Deck` field without extending this module would silently make history partial.
 
 The design exists so that no mutation site declares its own diff. `useDeck`'s reducer
 already holds the deck before and after every mutation, so the record is complete by
@@ -614,14 +640,17 @@ The current deck application service. It owns:
 - Shared command-zone guards for adds, moves, and quantity changes.
 - Deriving a diff for every mutation from the before/after pair the reducer holds, and
   appending it to the deck's durable history log with an actor (ADR 0036).
-- `applyEdit(edit, actor)`, the one mutator that takes an actor and the one the agent's
-  edits arrive through. The whole edit is one reducer action, one history entry and one
-  undo step, and it is refused whole rather than applied in part. It answers with the
+- `applyEdit(planner, actor, deckId?)` and `applyTextEdit(edit, actor, deckId?)`, the
+  agent-facing card and name/brief paths. Each whole edit is one reducer action, one
+  history entry and one undo step, and a card edit is refused whole rather than applied
+  in part. The optional deck id keeps a background turn's edit on the deck that started
+  it. Both answer with the
   outcome, because the reducer can refuse an edit and a caller that assumed otherwise
   would describe an intention.
-- `undo`, which inverts the last recorded entry and applies it, so it survives a reload.
-  It pops the entry rather than recording its inverse. `canUndo` is established by
-  planning the undo through the real applier, not by counting entries.
+- Back/forward/history travel through `planHistoryTravel`, which replays recorded diffs
+  without deleting them and advances `DeckHistory.at`. Availability is established by
+  planning through the real applier, not by counting entries; a jump that cannot replay
+  in full moves the deck not at all (ADR 0038).
 - Archiving a deleted deck's history with the deck and restoring it with the deck.
 - `localStorage` persistence, for the library and the history log.
 - User-facing live-region announcements.
@@ -661,6 +690,12 @@ never happened. A refusal renders the deck's own sentence and carries no Undo. T
 sits on the newest edited turn only, because `undo` reverses the deck's last recorded
 change and an older block's Undo would promise that block's reversal and deliver a
 different one.
+
+A `deck_text_edit` goes through the same ownership and history path. For the open deck,
+a description change also expands the bounded brief and marks it **Updated by agent**;
+otherwise a replacement confined below the three-line clamp can succeed while the primary
+surface looks unchanged. A later edit, history travel, or deck switch clears that marker
+(ADRs 0046 and 0047).
 
 ### `hooks/useDeckAgentChats.ts`
 
@@ -726,10 +761,11 @@ replay, refuses a jump it cannot make in full, and announces why.
 Page shell, navigation rail, mobile toolbar, dialogs, menus, and composition of
 deck and search services.
 
-It also owns the two things only the browser can resolve about an agent edit (ADR 0036):
-translating the wire shape into `useDeck`'s `DeckEdit` — taking each cut or moved card's
-payload from the deck, and treating an absent `section` as *leave placement alone* rather
-than as the mainboard — and reading the history log out of `localStorage` at the moment a
+It also owns the things only the browser can resolve about an agent edit (ADRs 0036 and
+0046): translating the card-edit wire shape into `useDeck`'s `DeckEdit` — taking each cut
+or moved card's payload from the deck, and treating an absent `section` as *leave placement
+alone* rather than as the mainboard — translating a name/description replacement into one
+`DeckTextEdit`, and reading the history log out of `localStorage` at the moment a
 turn is **sent**, because the log is written by an effect after the render that changed
 the deck, so a value captured in that render would be missing exactly the edit the
 question is about. A translation that cannot resolve a card refuses the whole edit and
@@ -839,4 +875,4 @@ React UI and agent
 ```
 
 The migration must preserve browser-local libraries and must not allow the
-future agent to bypass deck validation or mutation history.
+agent to bypass deck validation or mutation history.

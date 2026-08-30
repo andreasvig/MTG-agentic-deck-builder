@@ -482,10 +482,20 @@ function App() {
         aria-label={isMobile && navigationOpen ? "Navigation" : undefined}
       >
         <div className="brand">
-          <span className="brand-mark" aria-hidden="true">
-            <Icon name="brand" size={25} />
+          <span
+            className="mage-logo"
+            role="img"
+            aria-label="MAGE — Magic's Agentic Gathering Engine"
+          >
+            <span className="mage-logo__letter" aria-hidden="true">M</span>
+            <span className="mage-logo__word" aria-hidden="true">agic's</span>
+            <span className="mage-logo__letter" aria-hidden="true">A</span>
+            <span className="mage-logo__word" aria-hidden="true">gentic</span>
+            <span className="mage-logo__letter" aria-hidden="true">G</span>
+            <span className="mage-logo__word" aria-hidden="true">athering</span>
+            <span className="mage-logo__letter" aria-hidden="true">E</span>
+            <span className="mage-logo__word" aria-hidden="true">ngine</span>
           </span>
-          <span>Manabase</span>
           <button
             ref={sidebarClose}
             className="icon-button sidebar-close"
